@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>模拟酒馆环境 - Bootstrap 测试</title>
+<style>
+  body { background: #1a1a1a; color: #eee; font-family: sans-serif; padding: 20px; }
+  .chat-msg { background: #222; border-radius: 12px; padding: 16px; margin-bottom: 16px; max-width: 900px; }
+  .chat-msg .text { color: #ccc; margin-bottom: 12px; }
+  .raw { display: none; }
+</style>
+</head>
+<body>
+<h2>🏠 模拟酒馆聊天窗口</h2>
+<p>下方是模拟的 DM 消息。正则脚本已把 &lt;battle&gt; 块替换为 Battle Forge bootstrap 面板：</p>
+
+<div class="chat-msg">
+  <div class="text">
+    哥布林从阴影中扑出！盗贼敏捷地侧身闪避。DM 叙述文字…… 战斗打响！
+  </div>
+  <!-- 正则替换后的位置（$1 已注入战斗数据） -->
+  <div id="panel-host"></div>
+</div>
+
+<script>
+// 模拟酒馆正则替换：加载 bootstrap 并注入 $1 捕获组
+fetch('/st-bootstrap.html')
+  .then(r => r.text())
+  .then(html => {
+    const battleData = `<battle>
+艾尔玛|init 18|hp 24/28|pos -5,15|att 0|status poisoned
+盗贼|init 15|hp 21/21|pos 0,10|att 0|next
+牧师|init 13|hp 30/30|pos 10,5|att 1|status stunned
+哥布林甲|init 9|hp 7/7|pos 20,0|att 2
+哥布林乙|init 7|hp 5/7|pos 25,5|att 2|status prone
+</battle>`;
+    // 与酒馆一致：$1 替换为捕获组
+    const replaced = html.replace('$1', battleData);
+    // 写入 iframe（模拟酒馆把 ```html 代码块渲染为 iframe srcdoc）
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'width:100%;border:0;border-radius:12px;';
+    frame.id = 'st-render-iframe';
+    document.getElementById('panel-host').appendChild(frame);
+    frame.srcdoc = replaced;
+  });
+</script>
+</body>
+</html>

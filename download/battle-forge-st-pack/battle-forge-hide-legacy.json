@@ -1,0 +1,20 @@
+[
+  {
+    "id": "battle-forge-hide-legacy",
+    "scriptName": "battle-forge-hide-legacy",
+    "findRegex": "/<(?:battle|encounter|statblock)>[\\s\\S]*?<\\/(?:battle|encounter|statblock)>/g",
+    "replaceString": "",
+    "placement": [
+      1,
+      2
+    ],
+    "disabled": false,
+    "markdownOnly": true,
+    "promptOnly": false,
+    "runOnEdit": true,
+    "substituteRegex": 0,
+    "minDepth": 4,
+    "maxDepth": null,
+    "invert": {}
+  }
+]

@@ -1,0 +1,24 @@
+夜色中，豺狼人猎手拦住了去路！
+
+<UpdateVariable>
+<JSONPatch>
+[
+  {"op":"replace","path":"/角色列表/艾尔玛/等级","value":3},
+  {"op":"replace","path":"/角色列表/艾尔玛/生命值","value":{"当前":15,"最大":15,"临时":0}},
+  {"op":"replace","path":"/角色列表/艾尔玛/护甲等级","value":{"总值":15}},
+  {"op":"replace","path":"/角色列表/艾尔玛/属性","value":{"力量":12,"敏捷":14,"体质":13,"智力":10,"感知":12,"魅力":8}},
+  {"op":"replace","path":"/角色列表/艾尔玛/施法/法术位/1环","value":{"当前":4,"最大":4}},
+  {"op":"replace","path":"/角色列表/艾尔玛/施法/法术书","value":{"治疗真言":{}}},
+  {"op":"replace","path":"/角色列表/艾尔玛/物品/武器/+1长剑","value":{"伤害公式":"1d8","伤害类型":"挥砍","映射属性":"力量","魔法加值":1,"熟练":true}}
+]
+</JSONPatch>
+</UpdateVariable>
+
+<encounter>
+[{"name":"豺狼人猎手","ac":14,"hp":22,"speed":30,"aiProfile":"brutal","abilities":{"str":14,"dex":12,"con":13,"int":8,"wis":11,"cha":8},"attacks":[{"name":"矛","kind":"melee","attackBonus":4,"dice":"1d6+2","damageType":"piercing","range":5,"multiAttack":1}]}]
+</encounter>
+
+<battle>
+艾尔玛|hp 15/15|pos 10,15|att 0
+豺狼人猎手|hp 22/22|pos 15,15|att 2
+</battle>

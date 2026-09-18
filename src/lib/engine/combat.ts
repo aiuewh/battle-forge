@@ -1,0 +1,416 @@
+/**
+ * 战斗结算引擎：攻击、伤害管线、豁免、死亡豁免、专注、擒抱/推撞
+ * 纯函数：输入单位 + 参数，返回结果（由 store 应用变更）
+ */
+import type {
+  BattleUnit, DamageType, RollMode, CheckResult, DamageResult,
+  AttackResult, DieRoll, DeathSaves,
+} from './types';
+import { rollFormula, judgeCheck } from './dice';
+import {
+  abilityMod, getSaveBonus, attackRollModeAgainst, coverBonus, concentrationDc, proficiencyBonus, getAbilityMod,
+} from './rules';
+import { aggregateEffects } from './conditions';
+
+// ---------- 攻击 ----------
+
+export interface AttackOptions {
+  /** 攻击加值（默认自动算不了，必须传：武器熟练+属性） */
+  attackBonus: number;
+  /** 目标 AC（含掩护加值后的有效 AC） */
+  targetAc: number;
+  mode?: RollMode; // 不传则按条件自动判定
+  /** 武器伤害公式，如 1d8+3 */
+  weaponDamage: string;
+  /** 额外伤害骰（2024 重击不翻倍），如 神能 2d8 */
+  riderDamage?: string;
+  riderType?: DamageType;
+  weaponType?: DamageType;
+  /** 远程攻击在近战范围劣势提示（不强制） */
+  isRanged?: boolean;
+  /** 是否应用目标抗性 */
+  applyResistances?: boolean;
+  forcedAttackRoll?: number;
+  forcedDamageRolls?: number[];
+}
+
+export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: AttackOptions): AttackResult {
+  // 反 DoS/反 NaN：非法数值入口钳制（NaN 加值/AC 会泄漏 NaN 到检定结果与 UI）
+  const safeBonus = Number.isFinite(opts.attackBonus) ? opts.attackBonus : 0;
+  const safeAc = Number.isFinite(opts.targetAc) ? opts.targetAc : 15;
+  opts = { ...opts, attackBonus: safeBonus, targetAc: safeAc };
+  // 攻击骰模式：显式指定 > 条件自动判定
+  let mode: RollMode = opts.mode ?? 'normal';
+  let reason = '指定';
+  if (!opts.mode) {
+    const auto = attackRollModeAgainst(attacker, target);
+    mode = auto.mode;
+    reason = auto.reasons.join('、') || '常规';
+  }
+
+  const attackDice = rollFormula('1d20', {
+    mode,
+    bonus: opts.attackBonus,
+    forcedRolls: opts.forcedAttackRoll !== undefined ? [opts.forcedAttackRoll] : undefined,
+  });
+  const attack: CheckResult = {
+    dice: attackDice,
+    target: opts.targetAc,
+    total: attackDice.total,
+    outcome: 'failure',
+    label: '攻击检定',
+  };
+  const raw = attackDice.rawD20 ?? 0;
+  const isCrit = raw === 20;
+  const isCritMiss = raw === 1;
+  const hit = isCrit || (!isCritMiss && attackDice.total >= opts.targetAc);
+  attack.outcome = isCrit ? 'critical-success' : isCritMiss ? 'critical-failure' : hit ? 'success' : 'failure';
+
+  if (!hit) return { attack, hit: false, critical: false };
+
+  // ----- 伤害 -----
+  const rolls: DieRoll[] = [];
+  let weaponTotal = 0;
+  let riderTotal = 0;
+
+  // 武器骰：重击时仅骰子翻倍（掷两遍同数量），修正值（+3 等）不翻倍（2024 规则）
+  const critMultiplier = isCrit ? 2 : 1;
+  let weaponDiceSum = 0;
+  let weaponMod = 0;
+  for (let i = 0; i < critMultiplier; i++) {
+    const w = rollFormula(opts.weaponDamage, {
+      forcedRolls: opts.forcedDamageRolls && i === 0 ? opts.forcedDamageRolls : undefined,
+    });
+    for (const r of w.rolls) rolls.push({ ...r, tag: 'weapon' });
+    weaponDiceSum += w.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0);
+    weaponMod = w.modifier;
+  }
+  weaponTotal = weaponDiceSum + weaponMod;
+  // rider 骰：2024 重击不翻倍
+  if (opts.riderDamage) {
+    const rd = rollFormula(opts.riderDamage);
+    for (const r of rd.rolls) rolls.push({ ...r, tag: 'rider' });
+    riderTotal += rd.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0) + rd.modifier;
+  }
+
+  const rawTotal = weaponTotal + riderTotal;
+  const damage = applyDamageModifiers(target, rawTotal, opts.weaponType ?? 'slashing', rolls, opts.applyResistances !== false);
+  return {
+    attack,
+    hit: true,
+    critical: isCrit,
+    damage: { ...damage, rawRolls: rolls },
+  };
+}
+
+// ---------- 伤害管线：免疫 > 抗性 > 易伤 ----------
+
+export function applyDamageModifiers(
+  target: BattleUnit,
+  raw: number,
+  type: DamageType,
+  rolls?: DieRoll[],
+  applyMods = true,
+): DamageResult {
+  let final = raw;
+  let note = '';
+  if (applyMods) {
+    if (target.immunities.includes(type)) {
+      final = 0;
+      note = `${type} 免疫`;
+    } else if (target.vulnerabilities.includes(type)) {
+      final = raw * 2;
+      note = `${type} 易伤 ×2`;
+    } else if (target.resistances.includes(type)) {
+      final = Math.floor(raw / 2);
+      note = `${type} 抗性 ×½`;
+    }
+  }
+  // 临时 HP 先扣
+  let appliedToHp = final;
+  if (target.tempHp > 0) {
+    const absorbed = Math.min(target.tempHp, final);
+    appliedToHp = final - absorbed;
+    if (absorbed > 0) note += `${note ? ' · ' : ''}临时HP吸收 ${absorbed}`;
+  }
+  const willDrop = target.hp - appliedToHp <= 0;
+  const concentration = target.concentration && appliedToHp > 0 ? concentrationDc(appliedToHp) : null;
+  return {
+    rawRolls: rolls ?? [],
+    rawTotal: raw,
+    final,
+    multiplierNote: note,
+    appliedToHp,
+    targetId: target.id,
+    concentrationDc: concentration,
+    deathFailures: 0,
+    killed: false,
+  };
+}
+
+// ---------- 豁免 ----------
+
+export interface SaveOptions {
+  ability: 'str' | 'dex' | 'con' | 'int' | 'wis' | 'cha';
+  dc: number;
+  mode?: RollMode;
+  /** 半伤（成功伤害减半） */
+  halfOnSuccess?: boolean;
+  sourceDamage?: number;
+  forcedRoll?: number;
+}
+
+export interface SaveResult {
+  check: CheckResult;
+  damageTaken: number;
+  halfApplied: boolean;
+}
+
+export function resolveSave(target: BattleUnit, opts: SaveOptions): SaveResult {
+  const agg = aggregateEffects(target.statuses);
+  // 自动失败（麻痹：力量/敏捷自动失败）
+  if (agg.autoFailSaves.has(opts.ability)) {
+    const check: CheckResult = {
+      dice: { formula: 'auto-fail', rolls: [], modifier: 0, total: 0, mode: 'normal' },
+      target: opts.dc,
+      total: 0,
+      outcome: 'failure',
+      label: `${opts.ability.toUpperCase()} 豁免（自动失败）`,
+    };
+    return {
+      check,
+      damageTaken: opts.sourceDamage ?? 0,
+      halfApplied: false,
+    };
+  }
+  // 条件劣势：束缚→敏捷劣势、中毒不影响豁免
+  let mode: RollMode = opts.mode ?? 'normal';
+  if (mode === 'normal' && opts.ability === 'dex' && target.statuses.includes('restrained')) {
+    mode = 'disadvantage';
+  }
+  // 力竭3级：豁免劣势
+  if (mode === 'normal') {
+    const ex = target.statuses.find(s => s.startsWith('exhaustion:'));
+    if (ex) {
+      const lv = parseInt(ex.split(':')[1] || '0', 10);
+      if (lv >= 3) mode = 'disadvantage';
+    }
+  }
+
+  const bonus = getSaveBonus(target, opts.ability);
+  const dice = rollFormula('1d20', {
+    mode, bonus,
+    forcedRolls: opts.forcedRoll !== undefined ? [opts.forcedRoll] : undefined,
+  });
+  const judged = judgeCheck(dice, opts.dc);
+  const check: CheckResult = { dice, target: opts.dc, total: dice.total, outcome: judged.outcome, label: `${opts.ability.toUpperCase()} 豁免 DC${opts.dc}` };
+  const success = judged.outcome === 'success' || judged.outcome === 'critical-success';
+  let damageTaken = opts.sourceDamage ?? 0;
+  let halfApplied = false;
+  if (success && opts.halfOnSuccess && opts.sourceDamage !== undefined) {
+    damageTaken = Math.floor(opts.sourceDamage / 2);
+    halfApplied = true;
+  }
+  return { check, damageTaken, halfApplied };
+}
+
+// ---------- 死亡豁免 ----------
+
+export interface DeathSaveResult {
+  check: CheckResult;
+  success: boolean;
+  newState: DeathSaves;
+  event: 'none' | 'stable' | 'dead' | 'revive-1hp' | 'double-fail';
+}
+
+export function resolveDeathSave(unit: BattleUnit, forcedRoll?: number): DeathSaveResult {
+  const ds: DeathSaves = unit.deathSaves
+    ? { ...unit.deathSaves }
+    : { successes: 0, failures: 0, stable: false, dead: false };
+  const dice = rollFormula('1d20', { forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined });
+  const raw = dice.rawD20 ?? 0;
+  let event: DeathSaveResult['event'] = 'none';
+
+  if (raw === 20) {
+    // 裸20：恢复 1 HP
+    ds.successes = 0; ds.failures = 0; ds.stable = false; ds.dead = false;
+    event = 'revive-1hp';
+  } else if (raw === 1) {
+    ds.failures += 2;
+    event = 'double-fail';
+  } else if (dice.total >= 10) {
+    ds.successes += 1;
+    if (ds.successes >= 3) { ds.stable = true; ds.successes = 0; ds.failures = 0; event = 'stable'; }
+  } else {
+    ds.failures += 1;
+  }
+  if (ds.failures >= 3) { ds.dead = true; event = 'dead'; }
+
+  return {
+    check: {
+      dice, target: 10, total: dice.total,
+      outcome: raw === 20 ? 'critical-success' : raw === 1 ? 'critical-failure' : dice.total >= 10 ? 'success' : 'failure',
+      label: '死亡豁免 DC10',
+    },
+    success: dice.total >= 10,
+    newState: ds,
+    event,
+  };
+}
+
+/** 对 0 HP 单位造成伤害时结算死亡豁免失败 */
+export function damageAtZeroHp(unit: BattleUnit, amount: number, isCrit: boolean): { failures: number; killed: boolean } {
+  let failures = 1;
+  if (isCrit) failures = 2;
+  const ds = unit.deathSaves ?? { successes: 0, failures: 0, stable: false, dead: false };
+  const totalFails = ds.failures + failures;
+  return { failures, killed: totalFails >= 3 };
+}
+
+// ---------- 专注 ----------
+
+export interface ConcentrationResult {
+  check: CheckResult;
+  broken: boolean;
+}
+
+export function resolveConcentration(unit: BattleUnit, damage: number, forcedRoll?: number): ConcentrationResult {
+  const dc = concentrationDc(damage);
+  const bonus = getSaveBonus(unit, 'con');
+  const dice = rollFormula('1d20', { bonus, forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined });
+  const success = dice.total >= dc;
+  return {
+    check: {
+      dice, target: dc, total: dice.total,
+      outcome: success ? 'success' : 'failure',
+      label: `专注豁免 DC${dc}（伤害${damage}）`,
+    },
+    broken: !success,
+  };
+}
+
+// ---------- 擒抱 / 推撞（2024：武装打击选项） ----------
+
+export interface UnarmedStrikeResult {
+  check: CheckResult;
+  grappled: boolean;
+  shoved: 'none' | 'prone' | 'push5';
+}
+
+/** 擒抓：攻击检定 vs 目标 AC；逃脱 DC = 8 + 力量调整 + 熟练 */
+export function escapeDc(grappler: BattleUnit): number {
+  return 8 + getAbilityMod(grappler, 'str') + proficiencyBonus(grappler.level ?? grappler.cr);
+}
+
+export function grappleAttack(grappler: BattleUnit, target: BattleUnit, bonus: number, forcedRoll?: number): UnarmedStrikeResult {
+  const dice = rollFormula('1d20', {
+    bonus,
+    mode: 'normal',
+    forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined,
+  });
+  const success = (dice.rawD20 === 20) || (dice.rawD20 !== 1 && dice.total >= target.ac);
+  return {
+    check: {
+      dice, target: target.ac, total: dice.total,
+      outcome: dice.rawD20 === 20 ? 'critical-success' : dice.rawD20 === 1 ? 'critical-failure' : success ? 'success' : 'failure',
+      label: `擒抱检定 vs AC${target.ac}`,
+    },
+    grappled: success,
+    shoved: 'none',
+  };
+}
+
+// ---------- 治疗 ----------
+
+export interface HealResult {
+  amount: number;
+  newHp: number;
+  fromZero: boolean;
+  deathSavesReset: boolean;
+}
+
+export function resolveHeal(unit: BattleUnit, amount: number): HealResult {
+  const fromZero = unit.hp <= 0;
+  const newHp = Math.min(unit.maxHp, Math.max(0, unit.hp) + amount);
+  return {
+    amount,
+    newHp,
+    fromZero,
+    deathSavesReset: fromZero, // 恢复 HP 时死亡豁免重置
+  };
+}
+
+// ---------- 稳定伤势 ----------
+
+export function stabilize(unit: BattleUnit): boolean {
+  return unit.hp <= 0;
+}
+
+// ---------- 遭遇难度预算（DM 工具） ----------
+
+/** 2024 XP 阈值表（简化：按玩家等级数组） */
+export const XP_THRESHOLDS: Record<number, { easy: number; medium: number; hard: number; deadly: number }> = {
+  1: { easy: 50, medium: 100, hard: 150, deadly: 200 },
+  2: { easy: 100, medium: 200, hard: 300, deadly: 400 },
+  3: { easy: 150, medium: 300, hard: 450, deadly: 600 },
+  4: { easy: 250, medium: 500, hard: 750, deadly: 1000 },
+  5: { easy: 500, medium: 1000, hard: 1500, deadly: 2000 },
+  6: { easy: 600, medium: 1200, hard: 1900, deadly: 2500 },
+  7: { easy: 750, medium: 1500, hard: 2300, deadly: 3200 },
+  8: { easy: 1000, medium: 2000, hard: 3000, deadly: 4000 },
+  9: { easy: 1300, medium: 2600, hard: 3900, deadly: 5200 },
+  10: { easy: 1600, medium: 3200, hard: 4800, deadly: 6400 },
+  11: { easy: 1900, medium: 3900, hard: 5800, deadly: 7700 },
+  12: { easy: 2200, medium: 4500, hard: 6700, deadly: 8900 },
+  13: { easy: 2600, medium: 5300, hard: 7900, deadly: 10500 },
+  14: { easy: 2900, medium: 5900, hard: 8800, deadly: 11600 },
+  15: { easy: 3300, medium: 6700, hard: 10000, deadly: 13300 },
+  16: { easy: 3700, medium: 7500, hard: 11300, deadly: 15000 },
+  17: { easy: 4100, medium: 8300, hard: 12500, deadly: 16700 },
+  18: { easy: 4500, medium: 9100, hard: 13800, deadly: 18400 },
+  19: { easy: 4900, medium: 9900, hard: 15000, deadly: 20100 },
+  20: { easy: 5300, medium: 10700, hard: 16300, deadly: 21800 },
+};
+
+/** CR → XP（2024 MM 简表） */
+export const CR_XP: Array<[number, number]> = [
+  [0, 10], [0.125, 25], [0.25, 50], [0.5, 100],
+  [1, 200], [2, 450], [3, 700], [4, 1100], [5, 1800], [6, 2300],
+  [7, 2900], [8, 3900], [9, 5000], [10, 5900], [11, 7200], [12, 8400],
+  [13, 10000], [14, 11500], [15, 13000], [16, 15000], [17, 18000],
+  [18, 20000], [19, 22000], [20, 25000], [21, 33000], [22, 41000],
+  [23, 50000], [24, 62000], [25, 75000], [26, 90000], [30, 155000],
+];
+
+export function crToXp(cr: number): number {
+  for (const [c, xp] of CR_XP) {
+    if (Math.abs(c - cr) < 0.001) return xp;
+  }
+  return cr >= 26 ? 90000 + (cr - 26) * 15000 : 25;
+}
+
+/** 遭遇难度评估 */
+export function encounterDifficulty(
+  monsterCrs: number[],
+  partyLevels: number[],
+): { totalXp: number; adjustedXp: number; threshold: { easy: number; medium: number; hard: number; deadly: number }; level: 'easy' | 'medium' | 'hard' | 'deadly' | 'trivial' } {
+  const totalXp = monsterCrs.reduce((s, cr) => s + crToXp(cr), 0);
+  const n = monsterCrs.length;
+  const multiplier = n <= 1 ? 1 : n === 2 ? 1.5 : n <= 6 ? 2 : n <= 10 ? 2.5 : n <= 14 ? 3 : 4;
+  const adjustedXp = Math.round(totalXp * multiplier);
+  const avgLevel = Math.max(1, Math.min(20, Math.round(partyLevels.reduce((s, l) => s + l, 0) / Math.max(1, partyLevels.length))));
+  const perPlayer = XP_THRESHOLDS[avgLevel] ?? XP_THRESHOLDS[20];
+  const scale = Math.max(1, partyLevels.length);
+  const threshold = {
+    easy: perPlayer.easy * scale,
+    medium: perPlayer.medium * scale,
+    hard: perPlayer.hard * scale,
+    deadly: perPlayer.deadly * scale,
+  };
+  let level: 'easy' | 'medium' | 'hard' | 'deadly' | 'trivial' = 'trivial';
+  if (adjustedXp >= threshold.deadly) level = 'deadly';
+  else if (adjustedXp >= threshold.hard) level = 'hard';
+  else if (adjustedXp >= threshold.medium) level = 'medium';
+  else if (adjustedXp >= threshold.easy) level = 'easy';
+  return { totalXp, adjustedXp, threshold, level };
+}
