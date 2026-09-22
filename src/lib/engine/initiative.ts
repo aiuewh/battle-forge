@@ -47,9 +47,9 @@ export function rollInitiativeForUnits(
   return { rolls, initById };
 }
 
-/** 生成先攻顺序：先攻值降序 → 平局裁决 */
+/** 生成先攻顺序：先攻值降序 → 平局裁决；带巢穴动作的单位插入先攻20槽（输平局） */
 export function buildInitiativeOrder(units: BattleUnit[], rules: RulesConfig, seed = 0): string[] {
-  const alive = units.filter(u => !u.deathSaves?.dead && u.hp > 0 || u.hp > 0);
+  const alive = units.filter(u => u.hp > 0 && !(u.deathSaves?.dead ?? false));
   const sorted = [...alive].sort((a, b) => {
     if (b.init !== a.init) return b.init - a.init;
     // 平局裁决
@@ -64,7 +64,17 @@ export function buildInitiativeOrder(units: BattleUnit[], rules: RulesConfig, se
     const hb = hashStr(b.id + seed);
     return ha - hb;
   });
-  return sorted.map(u => u.id);
+  const order = sorted.map(u => u.id);
+  // 巢穴动作槽：先攻 20（输所有平局，2024 规则），仅在存活施术者存在时插入
+  const hasLairCaster = units.some(u => u.hp > 0 && !(u.deathSaves?.dead ?? false) && (u.lairActions?.length ?? 0) > 0);
+  if (hasLairCaster) {
+    let idx = order.length;
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].init < 20) { idx = i; break; }
+    }
+    order.splice(idx, 0, 'lair:primary');
+  }
+  return order;
 }
 
 function hashStr(s: string): number {
@@ -129,12 +139,13 @@ export function advanceTurn(
         s.ended = true;
         break;
       }
-      lairTrigger = checkLairSlot(s, units);
+      // 巢穴动作不再在回绕时触发：先攻序列中已有真实的巢穴槽（init 20），
+      // 回绕触发会造成同一轮执行两次；由槽位命中处统一触发
     }
     const id = s.order[s.turnIndex];
     if (!id) { s.ended = true; break; }
     if (id.startsWith('lair:')) {
-      // 巢穴槽：视为已处理，继续
+      // 巢穴槽：标记触发（由 nextTurn 调 executeLairAction），槽本身不占回合
       lairTrigger = true;
       continue;
     }
@@ -166,10 +177,9 @@ function aggregateNoActions(unit: BattleUnit): boolean {
   return unit.statuses.some(s => deep.includes(s));
 }
 
-/** 巢穴动作：先攻 20（平局后手）触发 */
+/** 巢穴动作：先攻 20（平局后手）触发；以单位上的巢穴动作列表为准 */
 export function checkLairSlot(state: TurnState, units: BattleUnit[]): boolean {
-  // 若场上有具备巢穴动作的单位（notes 标记或 legendary），且跨过 init 20 槽
-  return units.some(u => u.notes?.includes('巢穴动作')) && state.round > 1;
+  return units.some(u => (u.lairActions?.length ?? 0) > 0 && u.hp > 0) && state.round > 1;
 }
 
 /** 战斗结束判定：一方全灭/全倒 */

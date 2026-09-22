@@ -40,8 +40,9 @@ export function getSaveBonus(unit: BattleUnit, key: AbilityKey): number {
   return getAbilityMod(unit, key);
 }
 
-/** 单位有效速度（考虑条件） */
+/** 单位有效速度（考虑条件；slow_time=时光缓速锁速度为0） */
 export function effectiveSpeed(unit: BattleUnit): number {
+  if (unit.statuses.includes('slow_time')) return 0;
   const agg = aggregateEffects(unit.statuses);
   return Math.floor(unit.speed * agg.speedMultiplier);
 }

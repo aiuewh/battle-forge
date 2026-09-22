@@ -143,6 +143,47 @@ export interface SpellSlots {
   [level: number]: { current: number; max: number };
 }
 
+/** 反应能力定义（敌卡「反应」字段） */
+export interface ReactionDef {
+  name: string;
+  /** 触发时机：hit=被一次攻击命中后 / turn-end=一个可见生物结束回合时 / manual=手动 */
+  trigger: 'hit' | 'turn-end' | 'manual';
+  /** 效果执行：attack=执行指定武器攻击 / damage-halve-teleport=本次伤害减半并传送30尺 / speed-zero=目标速度降为0 / note=仅记录 */
+  effect: 'attack' | 'damage-halve-teleport' | 'speed-zero' | 'note';
+  /** effect=attack 时引用的武器名称（对应攻击数组） */
+  attackName?: string;
+  /** 规则原文 */
+  description?: string;
+  /** 每回合最多执行次数（默认1） */
+  perTurn?: number;
+}
+
+/** 传奇动作定义（敌卡「传奇动作」字段） */
+export interface LegendaryActionDef {
+  name: string;
+  /** 消耗传奇点数（默认1） */
+  cost: number;
+  /** attack=执行指定武器攻击 / move=移动指定尺数 / note=仅记录 */
+  kind: 'attack' | 'move' | 'note';
+  attackName?: string;
+  moveFeet?: number;
+  description?: string;
+}
+
+/** 巢穴动作定义（敌卡「巢穴动作」字段） */
+export interface LairActionDef {
+  name: string;
+  /** 豁免属性与 DC（英文键：str/dex/con/int/wis/cha） */
+  saveAbility?: AbilityKey;
+  saveDc?: number;
+  /** 伤害公式，如 2d6 */
+  damage?: string;
+  damageType?: DamageType;
+  /** 波及半径（尺），默认全场 */
+  rangeFeet?: number;
+  description?: string;
+}
+
 /** 每回合动作经济 */
 export interface ActionEconomy {
   action: boolean;
@@ -186,6 +227,18 @@ export interface BattleUnit {
   concentration?: string;
   spellSlots?: SpellSlots;
   legendary?: { points: number; max: number };
+  /** 传奇动作列表（敌卡「传奇动作」字段；在其他单位回合结束后消耗点数自动执行） */
+  legendaryActions?: LegendaryActionDef[];
+  /** 巢穴动作列表（敌卡「巢穴动作」字段；先攻20槽自动执行） */
+  lairActions?: LairActionDef[];
+  /** 反应能力列表（敌卡「反应」字段；无则该单位不使用反应） */
+  reactions?: ReactionDef[];
+  /** 每轮反应次数上限（默认1） */
+  reactionsPerRound?: number;
+  /** 本轮已用反应次数 */
+  reactionsUsedRound?: number;
+  /** 本回合是否已用过反应 */
+  reactionUsedTurn?: boolean;
   actionEconomy: ActionEconomy;
   notes?: string;
   color?: string;

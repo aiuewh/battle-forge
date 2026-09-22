@@ -222,6 +222,20 @@ export interface BattleStore {
 
   // ---- 攻击/豁免/骰子 ----
   performAttack: (attackerId: string, targetId: string, opts: AttackOptions) => void;
+  /** 反应【回合结束时】：其他单位的回合结束，带回合结束反应的敌方单位自动执行 */
+  fireTurnEndReactions: (endedUnitId: string) => void;
+  /** 反应【被命中后·伤害减半传送】：在伤害落账前拦截，减半并传送 */
+  applyHitReactionsPreDamage: (targetId: string, attackerId: string, incoming: number) => { halved: boolean; final: number };
+  /** 反应【被命中后·攻击类】：反应撕裂等，伤害结算完毕后反击 */
+  runPostHitReactions: (targetId: string, attackerId: string, opts: AttackOptions) => void;
+  /** 传送：半径 radiusCells 格内随机可站立格 */
+  randomTeleport: (id: string, radiusCells: number) => boolean;
+  /** 巢穴动作：先攻20槽自动执行（敌卡「巢穴动作」字段） */
+  executeLairAction: () => void;
+  /** 传奇动作：其他单位回合结束后，敌方传奇单位消耗点数自动执行 */
+  runLegendaryActions: (endedUnitId: string) => void;
+  /** 定向移动：向目标直线找 radiusCells 内最靠近目标的空格 */
+  moveToward: (id: string, targetId: string, radiusCells: number) => boolean;
   performSave: (targetId: string, opts: SaveOptions) => number;
   quickRoll: (formula: string, mode?: RollMode, note?: string) => void;
 
@@ -509,11 +523,26 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       get().logEvent({ type: 'move', actorId: id, text: `${unit.name} 移动 ${dist} 尺 → (${Math.round(pos.x / 5)},${Math.round(pos.y / 5)})`, level: 'info' });
     }
     // 借机攻击：主动离开敌人触及范围（战斗中 & 非脱离状态）
+    // 规则修正：所有具备反应的威胁者各自借机（每人消耗自己的反应），不再只取第一个
     if (get().battleActive && dist > 0) {
       const ctx = currentAiCtx(get());
-      const threats = opportunityAttackers(ctx, unit, fromCell, toCell);
-      for (const t of threats.slice(0, 1)) {
-        set({ units: get().units.map(u => (u.id === t.unit.id ? { ...u, actionEconomy: { ...u.actionEconomy, reaction: true } } : u)) });
+      const threats = opportunityAttackers(ctx, unit, fromCell, toCell).filter(t => {
+        // 带反应定义的单位改用每轮/每回合计数判定
+        if (t.unit.reactions?.length) {
+          return (t.unit.reactionsUsedRound ?? 0) < (t.unit.reactionsPerRound ?? 1) && !t.unit.reactionUsedTurn;
+        }
+        return true;
+      });
+      for (const t of threats) {
+        set({ units: get().units.map(u => (u.id === t.unit.id
+          ? {
+              ...u,
+              actionEconomy: { ...u.actionEconomy, reaction: true },
+              ...(u.reactions?.length
+                ? { reactionsUsedRound: (u.reactionsUsedRound ?? 0) + 1, reactionUsedTurn: true }
+                : {}),
+            }
+          : u)) });
         get().logEvent({
           type: 'attack', actorId: t.unit.id, targetId: unit.id,
           text: `⚡ 借机攻击 —— ${t.unit.name} 对脱离触及的 ${unit.name} 发动【${t.ability.name}】！`,
@@ -787,34 +816,49 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
 
   nextTurn: () => {
     const { turn, units, rules } = get();
+    // 反应【回合结束时】：其他单位的回合结束，带回合结束反应的敌方单位自动执行
+    if (turn.currentUnitId && get().battleActive) get().fireTurnEndReactions(turn.currentUnitId);
+    // 传奇动作：其他单位的回合结束后，敌方传奇单位消耗点数执行一次
+    if (turn.currentUnitId && get().battleActive) get().runLegendaryActions(turn.currentUnitId);
     const result = advanceTurn(turn, units, rules);
     // 标记当前已行动（清除脱离状态），重置下一单位动作经济
     set({
       turn: result.state,
       units: units.map(u => {
+        // 每个回合开始：所有单位的「本回合已用反应」标记刷新
+        const base = { ...u, reactionUsedTurn: false };
         if (u.id === turn.currentUnitId) {
-          return { ...u, hasActed: true, statuses: u.statuses.filter(s => s !== 'disengaging') };
+          return { ...base, hasActed: true, statuses: u.statuses.filter(s => s !== 'disengaging') };
         }
         if (u.id === result.state.currentUnitId) {
           return {
-            ...u,
+            ...base,
             actionEconomy: defaultActionEconomy(),
             // 0 HP 时自动死亡豁免提示
           };
         }
-        return u;
+        return base;
       }),
     });
+    // 时光缓速解除：反应拥有者回合开始时，移除其施加的速度锁
+    const newActor = get().units.find(u => u.id === result.state.currentUnitId);
+    if (newActor?.reactions?.some(r => r.effect === 'speed-zero')) {
+      set({ units: get().units.map(u => (u.statuses.includes('slow_time') ? { ...u, statuses: u.statuses.filter(st => st !== 'slow_time') } : u)) });
+    }
     const nu = get().units.find(u => u.id === result.newUnitId);
     if (result.newRound) {
       // 新一轮：传奇点重置
       set({
         units: get().units.map(u => (u.legendary ? { ...u, legendary: { ...u.legendary, points: u.legendary.max } } : u)),
       });
+      // 新一轮：每轮反应次数清零
+      set({
+        units: get().units.map(u => (u.reactions ? { ...u, reactionsUsedRound: 0 } : u)),
+      });
       get().logEvent({ type: 'round-start', text: `📍 第 ${result.state.round} 轮开始`, level: 'info' });
     }
     if (result.lairTrigger) {
-      get().logEvent({ type: 'lair', text: `🐉 巢穴动作触发（先攻 20）`, level: 'bad' });
+      get().executeLairAction();
     }
     const dying = nu && nu.hp <= 0;
     get().logEvent({
@@ -905,6 +949,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       data: { result },
     });
     if (result.hit && result.damage) {
+      // 反应【被命中后·伤害减半传送】（时轴穿梭类）：在伤害落账前拦截
+      const halved = get().applyHitReactionsPreDamage(targetId, attackerId, result.damage.final);
+      if (halved.halved) result.damage.final = halved.final;
       get().damageUnit(targetId, result.damage.final, {
         isCrit: result.critical,
         type: opts.weaponType,
@@ -923,8 +970,222 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           });
         }
       }
+      // 反应【被命中后·攻击类】（反应撕裂等）：伤害结算完毕后反击
+      get().runPostHitReactions(targetId, attackerId, opts);
     }
     persist(get());
+  },
+
+  fireTurnEndReactions: (endedUnitId) => {
+    const ended = get().units.find(u => u.id === endedUnitId);
+    if (!ended) return;
+    const reactors = get().units.filter(u =>
+      u.attitude === 2 && u.id !== endedUnitId && u.hp > 0 && !u.deathSaves?.dead &&
+      u.reactions?.some(r => r.trigger === 'turn-end' && r.effect === 'speed-zero'));
+    for (const reactor of reactors) {
+      if ((reactor.reactionsUsedRound ?? 0) >= (reactor.reactionsPerRound ?? 1) || reactor.reactionUsedTurn) continue;
+      const foes = get().units.filter(u =>
+        u.id !== reactor.id && u.attitude !== reactor.attitude && u.hp > 0 && !u.deathSaves?.dead);
+      const inRange = foes.filter(u => Math.hypot(u.pos.x - reactor.pos.x, u.pos.y - reactor.pos.y) * 5 <= 60);
+      const weakened = inRange.find(u => u.statuses.some(st => st.includes('削弱') || st.toLowerCase().includes('weaken') || st.includes('时光')));
+      const target = weakened ?? inRange.slice().sort((a, b) =>
+        ((a.pos.x - reactor.pos.x) ** 2 + (a.pos.y - reactor.pos.y) ** 2) - ((b.pos.x - reactor.pos.x) ** 2 + (b.pos.y - reactor.pos.y) ** 2))[0];
+      if (!target) continue;
+      set({ units: get().units.map(u => (u.id === reactor.id
+        ? { ...u, reactionsUsedRound: (u.reactionsUsedRound ?? 0) + 1, reactionUsedTurn: true, actionEconomy: { ...u.actionEconomy, reaction: true } }
+        : u.id === target.id ? { ...u, statuses: [...new Set([...u.statuses, 'slow_time'])] } : u)) });
+      get().logEvent({
+        type: 'note', actorId: reactor.id, targetId: target.id,
+        text: `⏳ 反应【时光缓速】：${reactor.name} 使 ${target.name} 速度降为0（持续到 ${reactor.name} 下个回合开始）`,
+        level: 'bad',
+      });
+    }
+  },
+
+  applyHitReactionsPreDamage: (targetId, attackerId, incoming) => {
+    const target = get().units.find(u => u.id === targetId);
+    if (!target || target.attitude !== 2 || !target.reactions?.length) return { halved: false, final: incoming };
+    const rx = target.reactions.find(r => r.trigger === 'hit' && r.effect === 'damage-halve-teleport'
+      && (target.reactionsUsedRound ?? 0) < (target.reactionsPerRound ?? 1) && !target.reactionUsedTurn);
+    if (!rx) return { halved: false, final: incoming };
+    const final = Math.max(1, Math.floor(incoming / 2));
+    set({
+      units: get().units.map(u => (u.id === targetId
+        ? { ...u, reactionsUsedRound: (u.reactionsUsedRound ?? 0) + 1, reactionUsedTurn: true, actionEconomy: { ...u.actionEconomy, reaction: true } }
+        : u)),
+    });
+    const moved = get().randomTeleport(targetId, 6);
+    get().logEvent({
+      type: 'note', actorId: targetId,
+      text: `⏳ 反应【${rx.name}】：${target.name} 将本次伤害减半（${incoming}→${final}）${moved ? '，并传送脱离' : ''}`,
+      level: 'info', data: { reaction: rx },
+    });
+    return { halved: true, final };
+  },
+
+  runPostHitReactions: (targetId, attackerId, opts) => {
+    const target = get().units.find(u => u.id === targetId);
+    const attacker = get().units.find(u => u.id === attackerId);
+    if (!target || !attacker || target.attitude !== 2 || !target.reactions?.length) return;
+    if ((target.reactionsUsedRound ?? 0) >= (target.reactionsPerRound ?? 1) || target.reactionUsedTurn) return;
+    const rx = target.reactions.find(r => r.trigger === 'hit' && r.effect === 'attack'
+      && (target.reactionsUsedRound ?? 0) < (target.reactionsPerRound ?? 1) && !target.reactionUsedTurn);
+    if (!rx) return;
+    const ability = target.aiAbilities?.find(a => a.name === rx.attackName)
+      ?? target.aiAbilities?.find(a => a.kind === 'melee');
+    if (!ability) return;
+    set({ units: get().units.map(u => (u.id === targetId
+      ? { ...u, reactionsUsedRound: (u.reactionsUsedRound ?? 0) + 1, reactionUsedTurn: true, actionEconomy: { ...u.actionEconomy, reaction: true } }
+      : u)) });
+    get().logEvent({
+      type: 'note', actorId: targetId, targetId: attackerId,
+      text: `⚡ 反应【${rx.name}】触发：${target.name} 对 ${attacker.name} 反击`,
+      level: 'bad',
+    });
+    get().performAttack(targetId, attackerId, {
+      attackBonus: ability.attackBonus ?? 0,
+      targetAc: attacker.ac,
+      weaponDamage: ability.dice,
+      weaponType: ability.damageType,
+    });
+  },
+
+  randomTeleport: (id, radiusCells) => {
+    const u = get().units.find(x => x.id === id);
+    if (!u) return false;
+    const blocked = new Set(buildBlockedCells(get().obstacles).map(c => `${c.cx},${c.cy}`));
+    const occ = new Set(get().units.filter(x => x.id !== id && x.hp > 0).map(x => `${x.pos.x},${x.pos.y}`));
+    const cands = [];
+    for (let dx = -radiusCells; dx <= radiusCells; dx++) {
+      for (let dy = -radiusCells; dy <= radiusCells; dy++) {
+        if (dx === 0 && dy === 0) continue;
+        const cx = u.pos.x + dx, cy = u.pos.y + dy;
+        if (cx < 0 || cy < 0) continue;
+        const key = `${cx},${cy}`;
+        if (!blocked.has(key) && !occ.has(key)) cands.push({ x: cx, y: cy });
+      }
+    }
+      if (!cands.length) return false;
+      const pick = cands[Math.floor(Math.random() * cands.length)];
+      set({ units: get().units.map(x => (x.id === id ? { ...x, pos: pick } : x)) });
+      return true;
+    },
+
+  executeLairAction: () => {
+    const casters = get().units.filter(u => u.attitude === 2 && u.hp > 0 && !u.deathSaves?.dead && (u.lairActions?.length ?? 0) > 0);
+    for (const caster of casters) {
+      const act = caster.lairActions![0];
+      const rangeFeet = act.rangeFeet ?? 9999;
+      const targets = get().units.filter(u =>
+        u.attitude !== caster.attitude && u.hp > 0 && !u.deathSaves?.dead &&
+        Math.hypot(u.pos.x - caster.pos.x, u.pos.y - caster.pos.y) * 5 <= rangeFeet);
+      get().logEvent({
+        type: 'lair', actorId: caster.id,
+        text: `🐉 巢穴动作 —— ${caster.name}：【${act.name}】${act.description ? `（${act.description}）` : ''}`,
+        level: 'bad',
+      });
+      if (!act.damage) continue;
+      for (const t of targets) {
+        const roll = rollFormula(act.damage);
+        let dmg = roll.total;
+        let saveText = '';
+        if (act.saveDc && act.saveAbility) {
+          const save = resolveSave(t, { ability: act.saveAbility, dc: act.saveDc });
+          const success = save.check.outcome.includes('success');
+          if (success) dmg = Math.floor(dmg / 2);
+          saveText = `（${save.check.label}：${save.check.total} vs DC${act.saveDc} ${success ? '成功，半伤' : '失败'}）`;
+        }
+        get().logEvent({
+          type: 'save', actorId: t.id,
+          text: `巢穴动作波及 ${t.name}：${act.damage} → ${dmg} 点${act.damageType ?? ''}伤害${saveText}`,
+          level: 'bad',
+        });
+        get().damageUnit(t.id, dmg, { type: act.damageType, source: caster.id });
+      }
+    }
+  },
+
+  runLegendaryActions: (endedUnitId) => {
+    const actors = get().units.filter(u =>
+      u.attitude === 2 && u.id !== endedUnitId && u.hp > 0 && !u.deathSaves?.dead &&
+      (u.legendary?.points ?? 0) > 0 && (u.legendaryActions?.length ?? 0) > 0);
+    for (const actor of actors) {
+      const affordable = actor.legendaryActions!.filter(a => a.cost <= (actor.legendary?.points ?? 0));
+      if (!affordable.length) continue;
+      const foes = get().units.filter(u =>
+        u.attitude !== actor.attitude && u.hp > 0 && !u.deathSaves?.dead);
+      if (!foes.length) continue;
+      const nearest = foes.slice().sort((a, b) =>
+        ((a.pos.x - actor.pos.x) ** 2 + (a.pos.y - actor.pos.y) ** 2) - ((b.pos.x - actor.pos.x) ** 2 + (b.pos.y - actor.pos.y) ** 2))[0];
+      const distFt = Math.hypot(nearest.pos.x - actor.pos.x, nearest.pos.y - actor.pos.y) * 5;
+      // 优先攻击型（有可达目标）；否则移动型（接近）；再否则记录型
+      const attackAct = affordable.find(a => a.kind === 'attack');
+      const ability = attackAct ? (actor.aiAbilities?.find(x => x.name === attackAct.attackName) ?? actor.aiAbilities?.find(x => x.kind === 'melee')) : undefined;
+      const inReach = ability && distFt <= (ability.range ?? 5) + 5;
+      const chosen = (attackAct && ability && inReach)
+        ? attackAct
+        : affordable.find(a => a.kind === 'move') ?? (attackAct && ability ? attackAct : affordable.find(a => a.kind === 'note'));
+      if (!chosen) continue;
+      const spend = () => set({ units: get().units.map(u => (u.id === actor.id && u.legendary
+        ? { ...u, legendary: { ...u.legendary, points: Math.max(0, u.legendary.points - chosen.cost) } }
+        : u)) });
+      if (chosen.kind === 'attack' && ability) {
+        const target = (ability.range ?? 5) > distFt ? nearest
+          : foes.find(u => Math.hypot(u.pos.x - actor.pos.x, u.pos.y - actor.pos.y) * 5 <= (ability.range ?? 5)) ?? nearest;
+        get().logEvent({
+          type: 'legendary', actorId: actor.id, targetId: target.id,
+          text: `🐉 传奇动作【${chosen.name}】（-${chosen.cost}点）—— ${actor.name} 对 ${target.name} 发动【${ability.name}】`,
+          level: 'bad',
+        });
+        spend();
+        get().performAttack(actor.id, target.id, {
+          attackBonus: ability.attackBonus ?? 0,
+          targetAc: target.ac,
+          weaponDamage: ability.dice,
+          weaponType: ability.damageType,
+        });
+      } else if (chosen.kind === 'move') {
+        const feet = chosen.moveFeet ?? actor.speed;
+        get().logEvent({
+          type: 'legendary', actorId: actor.id,
+          text: `🐉 传奇动作【${chosen.name}】（-${chosen.cost}点）—— ${actor.name} 移动 ${feet} 尺`,
+          level: 'bad',
+        });
+        spend();
+        get().moveToward(actor.id, nearest.id, Math.ceil(feet / 5));
+      } else {
+        get().logEvent({
+          type: 'legendary', actorId: actor.id,
+          text: `🐉 传奇动作【${chosen.name}】（-${chosen.cost}点）—— ${actor.name}${chosen.description ? `：${chosen.description}` : ''}`,
+          level: 'bad',
+        });
+        spend();
+      }
+    }
+  },
+
+  moveToward: (id, targetId, radiusCells) => {
+    const u = get().units.find(x => x.id === id);
+    const target = get().units.find(x => x.id === targetId);
+    if (!u || !target) return false;
+    const blocked = new Set(buildBlockedCells(get().obstacles).map(c => `${c.cx},${c.cy}`));
+    const occ = new Set(get().units.filter(x => x.id !== id && x.hp > 0).map(x => `${x.pos.x},${x.pos.y}`));
+    let best: { x: number; y: number } | null = null;
+    let bestDist = Infinity;
+    for (let dx = -radiusCells; dx <= radiusCells; dx++) {
+      for (let dy = -radiusCells; dy <= radiusCells; dy++) {
+        if (Math.hypot(dx, dy) > radiusCells) continue;
+        const cx = u.pos.x + dx, cy = u.pos.y + dy;
+        if (cx < 0 || cy < 0) continue;
+        const key = `${cx},${cy}`;
+        if ((dx !== 0 || dy !== 0) && (blocked.has(key) || occ.has(key))) continue;
+        const d = (cx - target.pos.x) ** 2 + (cy - target.pos.y) ** 2;
+        if (d < bestDist) { bestDist = d; best = { x: cx, y: cy }; }
+      }
+    }
+    if (!best || (best.x === u.pos.x && best.y === u.pos.y)) return false;
+    set({ units: get().units.map(x => (x.id === id ? { ...x, pos: best! } : x)) });
+    return true;
   },
 
   performSave: (targetId, opts) => {

@@ -8,7 +8,7 @@
  */
 import type {
   Abilities, AbilityKey, AIProfile, AiAbility, AiAbilityKind, AoeShapeKind,
-  BattleUnit, DamageType, Size,
+  BattleUnit, DamageType, LairActionDef, LegendaryActionDef, ReactionDef, Size,
 } from './types';
 import { AI_PROFILE_META, SIZE_META } from './types';
 import { resolveStatus, normalizeWidth } from './protocol';
@@ -101,6 +101,11 @@ export interface StatblockDef {
   vulnerabilities: DamageType[];
   aiProfile: AIProfile;
   note?: string;
+  reactions?: ReactionDef[];
+  reactionsPerRound?: number;
+  legendary?: { points: number; max: number };
+  legendaryActions?: LegendaryActionDef[];
+  lairActions?: LairActionDef[];
 }
 
 /** 预设 → 敌卡 */
@@ -183,6 +188,13 @@ export function unitFromStatblock(def: StatblockDef, idx = 0, hostile = true, po
     aiProfile: def.aiProfile,
     aiAbilities: def.attacks.map(a => ({ ...a })),
     notes: def.note ?? '',
+    reactions: def.reactions ? def.reactions.map(r => ({ ...r })) : undefined,
+    reactionsPerRound: def.reactionsPerRound,
+    reactionsUsedRound: 0,
+    reactionUsedTurn: false,
+    legendary: def.legendary ?? (def.legendaryActions?.length ? { points: 3, max: 3 } : undefined),
+    legendaryActions: def.legendaryActions ? def.legendaryActions.map(a => ({ ...a })) : undefined,
+    lairActions: def.lairActions ? def.lairActions.map(a => ({ ...a })) : undefined,
   };
 }
 
@@ -202,6 +214,13 @@ export function applyStatblockToUnit(unit: BattleUnit, def: StatblockDef): Battl
     speed: unit.speed === 30 ? def.speed : unit.speed,
     aiProfile: unit.aiProfile ?? def.aiProfile,
     aiAbilities: def.attacks.map(a => ({ ...a })),
+    reactions: def.reactions ? def.reactions.map(r => ({ ...r })) : unit.reactions,
+    reactionsPerRound: def.reactionsPerRound ?? unit.reactionsPerRound,
+    reactionsUsedRound: 0,
+    reactionUsedTurn: false,
+    legendary: def.legendary ?? (def.legendaryActions?.length ? { points: 3, max: 3 } : unit.legendary),
+    legendaryActions: def.legendaryActions ? def.legendaryActions.map(a => ({ ...a })) : unit.legendaryActions,
+    lairActions: def.lairActions ? def.lairActions.map(a => ({ ...a })) : unit.lairActions,
     notes: unit.notes || def.note || unit.notes,
     dataSource: 'statblock',
     reach: unit.reach ?? (def.size === 'large' ? 10 : 5),
@@ -469,6 +488,145 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
   const crRaw = o.cr ?? o['挑战等级'] ?? o.CR ?? 1;
   const cr = toNum(crRaw, 1);
 
+  // 反应（每轮反应上限 + 反应定义数组）
+  const reactionsPerRoundRaw = o.reactionsPerRound ?? o['每轮反应'];
+  const reactionsPerRound = reactionsPerRoundRaw !== undefined ? toNum(reactionsPerRoundRaw, 1) : undefined;
+  const reactionsRaw = o.reactions ?? o['反应'];
+  let reactions: ReactionDef[] | undefined;
+  if (Array.isArray(reactionsRaw) && reactionsRaw.length) {
+    const parsed: ReactionDef[] = [];
+    for (const rawR of reactionsRaw) {
+      if (!rawR || typeof rawR !== 'object') continue;
+      const ro = rawR as Record<string, unknown>;
+      const rName = String(ro.name ?? ro['名称'] ?? '').trim();
+      if (!rName) continue;
+      const trigRaw = String(ro.trigger ?? ro['触发'] ?? '').trim();
+      const trigger: ReactionDef['trigger'] = /回合结束|turn.?end/i.test(trigRaw) ? 'turn-end'
+        : /命中|传奇|抗性|hit/i.test(trigRaw) ? 'hit' : 'manual';
+      const effRaw = String(ro.effect ?? ro['效果'] ?? '').trim();
+      const attackName = String(ro.attackName ?? ro['武器'] ?? ro['攻击名'] ?? '').trim();
+      let effect: ReactionDef['effect'] = 'note';
+      if (/减半|一半/.test(effRaw) && /传送/.test(effRaw)) effect = 'damage-halve-teleport';
+      else if (attackName) effect = 'attack';
+      else if (/速度|缓速|speed/i.test(effRaw)) effect = 'speed-zero';
+      parsed.push({
+        name: rName,
+        trigger,
+        effect,
+        attackName: attackName || undefined,
+        description: String(ro.description ?? ro['描述'] ?? effRaw),
+        perTurn: toNum(ro.perTurn ?? ro['每回合'], 1),
+      });
+    }
+    if (parsed.length) reactions = parsed;
+  }
+
+  // 传奇动作（点数 + 动作列表）
+  let legendary: { points: number; max: number } | undefined;
+  let legendaryActions: LegendaryActionDef[] | undefined;
+  const parseLegendaryAction = (rawL: unknown): LegendaryActionDef | null => {
+    if (!rawL || typeof rawL !== 'object') return null;
+    const lo = rawL as Record<string, unknown>;
+    const lName = String(lo.name ?? lo['名称'] ?? '').trim();
+    if (!lName) return null;
+    const cost = toNum(lo.cost ?? lo['消耗'] ?? lo['成本'], 1);
+    const desc = String(lo.description ?? lo['效果'] ?? lo['描述'] ?? '').trim();
+    const attackName = String(lo.attackName ?? lo['武器'] ?? lo['攻击名'] ?? '').trim();
+    const kindRaw = String(lo.kind ?? lo['类型'] ?? '').trim();
+    let kind: LegendaryActionDef['kind'] = 'note';
+    if (attackName || /攻击|啮咬|爪/.test(kindRaw + desc)) kind = 'attack';
+    else if (/移动|移动/.test(kindRaw + desc) || /移动/.test(desc)) kind = 'move';
+    const moveM = desc.match(/移动\s*(\d+)\s*尺/);
+    return {
+      name: lName,
+      cost,
+      kind,
+      attackName: attackName || undefined,
+      moveFeet: moveM ? parseInt(moveM[1], 10) : undefined,
+      description: desc,
+    };
+  };
+  const legendaryRaw = o.legendary ?? o['传奇'];
+  if (typeof legendaryRaw === 'number') {
+    legendary = { points: legendaryRaw, max: legendaryRaw };
+  } else if (legendaryRaw && typeof legendaryRaw === 'object' && !Array.isArray(legendaryRaw)) {
+    const lg = legendaryRaw as Record<string, unknown>;
+    const pts = toNum(lg.points ?? lg['点数'], 3);
+    legendary = { points: pts, max: pts };
+    const actsRaw = lg.actions ?? lg['动作'];
+    if (Array.isArray(actsRaw)) {
+      const parsedL: LegendaryActionDef[] = [];
+      for (const rawL of actsRaw) {
+        const la = parseLegendaryAction(rawL);
+        if (la) parsedL.push(la);
+      }
+      if (parsedL.length) legendaryActions = parsedL;
+    }
+  } else if (Array.isArray(legendaryRaw)) {
+    const parsedL: LegendaryActionDef[] = [];
+    for (const rawL of legendaryRaw) {
+      const la = parseLegendaryAction(rawL);
+      if (la) parsedL.push(la);
+    }
+    if (parsedL.length) { legendaryActions = parsedL; if (!legendary) legendary = { points: 3, max: 3 }; }
+  }
+  if (!legendary) {
+    const ptsRaw = o.legendaryPoints ?? o['传奇点数'];
+    if (ptsRaw !== undefined) { const pts = toNum(ptsRaw, 3); legendary = { points: pts, max: pts }; }
+  }
+  if (!legendaryActions) {
+    const laRaw2 = o.legendaryActions ?? o['传奇动作'];
+    if (Array.isArray(laRaw2)) {
+      const parsedL: LegendaryActionDef[] = [];
+      for (const rawL of laRaw2) {
+        const la = parseLegendaryAction(rawL);
+        if (la) parsedL.push(la);
+      }
+      if (parsedL.length) { legendaryActions = parsedL; if (!legendary) legendary = { points: 3, max: 3 }; }
+    }
+  }
+
+  // 巢穴动作（字符串=描述 / 对象 / 数组）
+  let lairActions: LairActionDef[] | undefined;
+  const parseLairAction = (rawA: unknown): LairActionDef | null => {
+    if (typeof rawA === 'string') {
+      const s = rawA.trim();
+      if (!s) return null;
+      return { name: '巢穴动作', description: s };
+    }
+    if (!rawA || typeof rawA !== 'object') return null;
+    const ao = rawA as Record<string, unknown>;
+    const aName = String(ao.name ?? ao['名称'] ?? '巢穴动作').trim();
+    const desc = String(ao.description ?? ao['效果'] ?? ao['描述'] ?? '').trim();
+    const save = String(ao.save ?? ao['豁免'] ?? '').trim();
+    let saveAbility: LairActionDef['saveAbility'];
+    let saveDc: number | undefined;
+    const am = save.match(/(str|dex|con|int|wis|cha|力量|敏捷|体质|智力|感知|魅力)/i);
+    const dm = save.match(/DC\s*(\d+)/i);
+    if (am) saveAbility = ABILITY_CN[am[1].toLowerCase()] ?? ABILITY_CN[am[1]];
+    if (dm) saveDc = parseInt(dm[1], 10);
+    const rangeM = desc.match(/(\d+)\s*尺/);
+    return {
+      name: aName,
+      description: desc,
+      saveAbility,
+      saveDc,
+      damage: typeof (ao.damage ?? ao['伤害']) === 'string' ? String(ao.damage ?? ao['伤害']) : undefined,
+      damageType: toDamageType(ao.damageType ?? ao['伤害类型']),
+      rangeFeet: rangeM ? parseInt(rangeM[1], 10) : toNum(ao.range ?? ao['范围'], 9999),
+    };
+  };
+  const lairRaw = o.lairActions ?? o['巢穴动作'];
+  if (typeof lairRaw === 'string' || (lairRaw && typeof lairRaw === 'object')) {
+    const arr = Array.isArray(lairRaw) ? lairRaw : [lairRaw];
+    const parsedA: LairActionDef[] = [];
+    for (const rawA of arr) {
+      const la = parseLairAction(rawA);
+      if (la) parsedA.push(la);
+    }
+    if (parsedA.length) lairActions = parsedA;
+  }
+
   return {
     id: `sb-${name}`,
     name,
@@ -484,6 +642,11 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
     vulnerabilities: toDamageList(o.vulnerabilities ?? o['易伤']),
     aiProfile,
     note: typeof (o.note ?? o['备注'] ?? o['描述']) === 'string' ? String(o.note ?? o['备注'] ?? o['描述']) : undefined,
+    reactions,
+    reactionsPerRound: reactionsPerRound ?? (reactions && reactions.length ? 1 : undefined),
+    legendary,
+    legendaryActions,
+    lairActions,
   };
 }
 
