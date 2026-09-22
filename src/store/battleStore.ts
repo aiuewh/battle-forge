@@ -121,23 +121,25 @@ function applyMasteryEffects(store: BattleStore, unit: BattleUnit, target: Battl
     case 'Topple': {
       if (!result.hit) return;
       const r = resolveSave(target, { ability: 'con', dc: masteryDc });
+      const saved = r.check.outcome.includes('success');
       store.logEvent({
         type: 'save', actorId: unit.id, targetId: target.id,
-        text: `🗡️ 精通·失衡（Topple）：${target.name} 体质豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${masteryDc} —— ${r.check.total >= masteryDc ? '成功，保持站立' : '失败，倒地！'}`,
-        level: r.check.total >= masteryDc ? 'info' : 'bad',
+        text: `🗡️ 精通·失衡（Topple）：${target.name} 体质豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${masteryDc} —— ${saved ? '成功，保持站立' : '失败，倒地！'}`,
+        level: saved ? 'info' : 'bad',
       });
-      if (r.check.total < masteryDc) store.toggleStatus(target.id, 'prone');
+      if (!saved) store.toggleStatus(target.id, 'prone');
       return;
     }
     case 'Push': {
       if (!result.hit) return;
       const r = resolveSave(target, { ability: 'str', dc: masteryDc });
+      const saved = r.check.outcome.includes('success');
       store.logEvent({
         type: 'save', actorId: unit.id, targetId: target.id,
-        text: `🗡️ 精通·推离（Push）：${target.name} 力量豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${masteryDc} —— ${r.check.total >= masteryDc ? '成功，稳住脚步' : '失败，被推离 10 尺！'}`,
-        level: r.check.total >= masteryDc ? 'info' : 'bad',
+        text: `🗡️ 精通·推离（Push）：${target.name} 力量豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${masteryDc} —— ${saved ? '成功，稳住脚步' : '失败，被推离 10 尺！'}`,
+        level: saved ? 'info' : 'bad',
       });
-      if (r.check.total >= masteryDc) return;
+      if (saved) return;
       // 沿攻击方向直线推离 10 尺（钳制在地图边界内）
       const dx = target.pos.x - unit.pos.x;
       const dy = target.pos.y - unit.pos.y;
@@ -1054,7 +1056,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         } else {
           get().logEvent({
             type: 'concentration', actorId: targetId,
-            text: `${target.name} 专注豁免 ${conc.check.total} ≥ DC${conc.check.target} —— 维持专注`,
+            text: `${target.name} ${conc.check.label}：${conc.check.total} —— 维持专注`,
             level: 'info',
           });
         }
