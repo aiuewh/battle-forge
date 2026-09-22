@@ -6,11 +6,11 @@ import type {
   BattleUnit, DamageType, RollMode, CheckResult, DamageResult,
   AttackResult, DieRoll, DeathSaves,
 } from './types';
-import { rollFormula, judgeCheck } from './dice';
+import { rollFormula, judgeCheck, rollDie } from './dice';
 import {
-  abilityMod, getSaveBonus, attackRollModeAgainst, coverBonus, concentrationDc, proficiencyBonus, getAbilityMod,
+  abilityMod, getSaveBonus, attackRollModeAgainst, coverBonus, concentrationDc, proficiencyBonus, getAbilityMod, getRules,
 } from './rules';
-import { aggregateEffects } from './conditions';
+import { aggregateEffects, exhaustionPenalty } from './conditions';
 
 // ---------- 攻击 ----------
 
@@ -22,16 +22,30 @@ export interface AttackOptions {
   mode?: RollMode; // 不传则按条件自动判定
   /** 武器伤害公式，如 1d8+3 */
   weaponDamage: string;
-  /** 额外伤害骰（2024 重击不翻倍），如 神能 2d8 */
+  /** 额外伤害骰（神能/偷袭/猎人印记等），2024 重击时同样翻倍 */
   riderDamage?: string;
   riderType?: DamageType;
   weaponType?: DamageType;
-  /** 远程攻击在近战范围劣势提示（不强制） */
+  /** 远程攻击（贴身敌对生物造成劣势；用于倒地远近分支的近战判定） */
   isRanged?: boolean;
+  /** 攻击者与目标距离（尺）；倒地目标 5 尺内优势 / 5 尺外劣势 */
+  distanceFeet?: number;
+  /** 攻击者 5 尺内是否存在敌对生物（2024：远程攻击检定劣势） */
+  hostileWithin5Ft?: boolean;
+  /** 房规：重击仅翻倍武器骰（默认 false = 2024 正式规则：全部伤害骰翻倍） */
+  critWeaponDiceOnly?: boolean;
   /** 是否应用目标抗性 */
   applyResistances?: boolean;
   forcedAttackRoll?: number;
   forcedDamageRolls?: number[];
+}
+
+/** 祝福（blessed）：攻击检定与豁免检定 +1d4（不随优势/劣势双掷） */
+function blessDie(unit: BattleUnit, rolls: DieRoll[]): number {
+  if (!unit.statuses.includes('blessed')) return 0;
+  const v = rollDie(4);
+  rolls.push({ sides: 4, value: v, kept: true, tag: 'bless' });
+  return v;
 }
 
 export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: AttackOptions): AttackResult {
@@ -39,20 +53,31 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
   const safeBonus = Number.isFinite(opts.attackBonus) ? opts.attackBonus : 0;
   const safeAc = Number.isFinite(opts.targetAc) ? opts.targetAc : 15;
   opts = { ...opts, attackBonus: safeBonus, targetAc: safeAc };
-  // 攻击骰模式：显式指定 > 条件自动判定
+  // 2024 力竭：攻击检定 -2/级
+  const exPenalty = exhaustionPenalty(attacker.statuses);
+  const attackBonus = safeBonus - exPenalty;
+  // 攻击骰模式：显式指定 > 条件自动判定（含倒地远近、贴身远程劣势）
   let mode: RollMode = opts.mode ?? 'normal';
   let reason = '指定';
   if (!opts.mode) {
-    const auto = attackRollModeAgainst(attacker, target);
+    const auto = attackRollModeAgainst(attacker, target, {
+      distanceFeet: opts.distanceFeet,
+      isMeleeAttack: opts.isRanged === undefined ? undefined : !opts.isRanged,
+      hostileWithin5Ft: opts.hostileWithin5Ft,
+    });
     mode = auto.mode;
     reason = auto.reasons.join('、') || '常规';
   }
+  void reason;
 
   const attackDice = rollFormula('1d20', {
     mode,
-    bonus: opts.attackBonus,
+    bonus: attackBonus,
     forcedRolls: opts.forcedAttackRoll !== undefined ? [opts.forcedAttackRoll] : undefined,
   });
+  // 祝福 +1d4（攻击检定）
+  const bless = blessDie(attacker, attackDice.rolls);
+  attackDice.total += bless;
   const attack: CheckResult = {
     dice: attackDice,
     target: opts.targetAc,
@@ -73,7 +98,9 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
   let weaponTotal = 0;
   let riderTotal = 0;
 
-  // 武器骰：重击时仅骰子翻倍（掷两遍同数量），修正值（+3 等）不翻倍（2024 规则）
+  // 2024 正式规则：重击翻倍攻击的全部伤害骰（修正值不翻倍）；
+  // critWeaponDiceOnly=true 为房规（One D&D 试玩版提案：仅武器骰翻倍）
+  const weaponDiceOnly = opts.critWeaponDiceOnly ?? getRules().critWeaponDiceOnly;
   const critMultiplier = isCrit ? 2 : 1;
   let weaponDiceSum = 0;
   let weaponMod = 0;
@@ -86,11 +113,13 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
     weaponMod = w.modifier;
   }
   weaponTotal = weaponDiceSum + weaponMod;
-  // rider 骰：2024 重击不翻倍
+  // rider 骰（神能/偷袭等附加伤害骰）：2024 重击同样翻倍（房规仅武器骰翻倍时跳过）
   if (opts.riderDamage) {
-    const rd = rollFormula(opts.riderDamage);
-    for (const r of rd.rolls) rolls.push({ ...r, tag: 'rider' });
-    riderTotal += rd.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0) + rd.modifier;
+    for (let i = 0; i < (isCrit && !weaponDiceOnly ? 2 : 1); i++) {
+      const rd = rollFormula(opts.riderDamage);
+      for (const r of rd.rolls) rolls.push({ ...r, tag: 'rider' });
+      riderTotal += rd.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0) + rd.modifier;
+    }
   }
 
   const rawTotal = weaponTotal + riderTotal;
@@ -188,23 +217,24 @@ export function resolveSave(target: BattleUnit, opts: SaveOptions): SaveResult {
   if (mode === 'normal' && opts.ability === 'dex' && target.statuses.includes('restrained')) {
     mode = 'disadvantage';
   }
-  // 力竭3级：豁免劣势
-  if (mode === 'normal') {
-    const ex = target.statuses.find(s => s.startsWith('exhaustion:'));
-    if (ex) {
-      const lv = parseInt(ex.split(':')[1] || '0', 10);
-      if (lv >= 3) mode = 'disadvantage';
-    }
-  }
 
-  const bonus = getSaveBonus(target, opts.ability);
+  // 2024 力竭：豁免检定 -2/级（替代 2014 的 3 级劣势分级）
+  const exPenalty = exhaustionPenalty(target.statuses);
+  const bonus = getSaveBonus(target, opts.ability) - exPenalty;
   const dice = rollFormula('1d20', {
     mode, bonus,
     forcedRolls: opts.forcedRoll !== undefined ? [opts.forcedRoll] : undefined,
   });
+  // 祝福 +1d4（豁免检定）
+  const bless = blessDie(target, dice.rolls);
+  dice.total += bless;
   const judged = judgeCheck(dice, opts.dc);
-  const check: CheckResult = { dice, target: opts.dc, total: dice.total, outcome: judged.outcome, label: `${opts.ability.toUpperCase()} 豁免 DC${opts.dc}` };
-  const success = judged.outcome === 'success' || judged.outcome === 'critical-success';
+  // 普通豁免无大成功/大失败（2024：裸骰 20/1 无特殊效果，仅死亡豁免例外）
+  const outcome = judged.outcome === 'critical-success' ? 'success'
+    : judged.outcome === 'critical-failure' ? 'failure'
+      : judged.outcome;
+  const check: CheckResult = { dice, target: opts.dc, total: dice.total, outcome, label: `${opts.ability.toUpperCase()} 豁免 DC${opts.dc}${exPenalty ? `（力竭-${exPenalty}）` : ''}` };
+  const success = dice.total >= opts.dc;
   let damageTaken = opts.sourceDamage ?? 0;
   let halfApplied = false;
   if (success && opts.halfOnSuccess && opts.sourceDamage !== undefined) {
@@ -227,7 +257,14 @@ export function resolveDeathSave(unit: BattleUnit, forcedRoll?: number): DeathSa
   const ds: DeathSaves = unit.deathSaves
     ? { ...unit.deathSaves }
     : { successes: 0, failures: 0, stable: false, dead: false };
-  const dice = rollFormula('1d20', { forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined });
+  // 死亡豁免也是 d20 检定：2024 力竭 -2/级、祝福 +1d4 均适用
+  const exPenalty = exhaustionPenalty(unit.statuses);
+  const dice = rollFormula('1d20', {
+    bonus: -exPenalty,
+    forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined,
+  });
+  const bless = blessDie(unit, dice.rolls);
+  dice.total += bless;
   const raw = dice.rawD20 ?? 0;
   let event: DeathSaveResult['event'] = 'none';
 
@@ -276,8 +313,11 @@ export interface ConcentrationResult {
 
 export function resolveConcentration(unit: BattleUnit, damage: number, forcedRoll?: number): ConcentrationResult {
   const dc = concentrationDc(damage);
-  const bonus = getSaveBonus(unit, 'con');
+  // 体质豁免：2024 力竭 -2/级、祝福 +1d4
+  const bonus = getSaveBonus(unit, 'con') - exhaustionPenalty(unit.statuses);
   const dice = rollFormula('1d20', { bonus, forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined });
+  const bless = blessDie(unit, dice.rolls);
+  dice.total += bless;
   const success = dice.total >= dc;
   return {
     check: {
@@ -303,11 +343,14 @@ export function escapeDc(grappler: BattleUnit): number {
 }
 
 export function grappleAttack(grappler: BattleUnit, target: BattleUnit, bonus: number, forcedRoll?: number): UnarmedStrikeResult {
+  // 攻击检定：2024 力竭 -2/级、祝福 +1d4
   const dice = rollFormula('1d20', {
-    bonus,
+    bonus: bonus - exhaustionPenalty(grappler.statuses),
     mode: 'normal',
     forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined,
   });
+  const bless = blessDie(grappler, dice.rolls);
+  dice.total += bless;
   const success = (dice.rawD20 === 20) || (dice.rawD20 !== 1 && dice.total >= target.ac);
   return {
     check: {

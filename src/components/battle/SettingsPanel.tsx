@@ -9,6 +9,7 @@ import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RULES_2024_NOTES } from '@/lib/engine/rules';
+import { DEFAULT_RULES } from '@/lib/engine/types';
 import { BookOpen, Map } from 'lucide-react';
 
 export function SettingsPanel() {
@@ -18,18 +19,18 @@ export function SettingsPanel() {
   const toggles = [
     {
       key: 'critWeaponDiceOnly' as const,
-      label: '重击仅翻倍武器骰（2024）',
-      desc: '开启：重击只翻倍武器伤害骰；关闭：2014 规则全部伤害骰翻倍（含神能/偷袭等附加骰）',
+      label: '房规：重击仅翻倍武器骰',
+      desc: '关闭（默认，2024 正式规则）：攻击的全部伤害骰翻倍（含偷袭/神能等附加骰），修正值不翻倍；开启：仅武器伤害骰翻倍（One D&D 试玩版提案，未进入正式版）',
     },
     {
       key: 'failOnDropToZero' as const,
-      label: '跌至 0 HP 记 1 次死亡豁免失败',
-      desc: '2024 规则：倒地时立即记一次失败',
+      label: '房规：跌至 0 HP 记 1 次死亡豁免失败',
+      desc: '2024 规则：降到 0 HP 本身不记失败，仅在 0 HP 状态下受伤才记失败（由下一开关管理）；开启=更致命的濒死房规',
     },
     {
       key: 'failOnDamageAtZero' as const,
       label: '0 HP 受伤记失败（重击记 2 次）',
-      desc: '濒死时受任何伤害 +1 失败，重击 +2 失败',
+      desc: '濒死时受任何伤害 +1 失败，重击 +2 失败（2024 规则）',
     },
     {
       key: 'minDamageOne' as const,
@@ -51,6 +52,12 @@ export function SettingsPanel() {
             <Switch checked={rules[t.key]} onCheckedChange={v => store.setRules({ [t.key]: v })} />
           </div>
         ))}
+
+        <button
+          onClick={() => store.setRules({ ...DEFAULT_RULES })}
+          className="self-start rounded-md border border-border/50 px-2 py-1 text-[10px] text-muted-foreground hover:border-primary hover:text-primary">
+          ↺ 恢复 2024 官方默认（重击全部伤害骰翻倍 · 归零不记失败）
+        </button>
 
         <div className="flex items-start justify-between gap-3">
           <div>

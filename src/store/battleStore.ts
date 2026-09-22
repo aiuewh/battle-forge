@@ -10,7 +10,7 @@
 import { create } from 'zustand';
 import type {
   BattleUnit, BattleEvent, MapObstacle, AoeTemplate, MapConfig,
-  TurnState, RulesConfig, Attitude, DamageType, BattleSnapshot, SnapshotDiff,
+  TurnState, RulesConfig, Attitude, DamageType, BattleSnapshot, SnapshotDiff, AiAbility,
 } from '@/lib/engine/types';
 import { AI_PROFILE_META } from '@/lib/engine/types';
 import { DEFAULT_RULES } from '@/lib/engine/types';
@@ -18,6 +18,7 @@ import {
   resolveAttack, resolveSave, resolveDeathSave, resolveHeal, resolveConcentration,
   type AttackOptions, type SaveOptions,
 } from '@/lib/engine/combat';
+import type { AttackResult } from '@/lib/engine/types';
 import {
   startBattle, advanceTurn, checkBattleEnd, buildInitiativeOrder,
   rollInitiativeForUnits, rebuildOrderKeepActor, type InitiativeRollDetail,
@@ -51,7 +52,7 @@ import {
   inMeleeRange, posToCell, gridDistanceFeet, buildBlockedCells, estimateCover, cellToFeet,
   aoeCells, unitDistance, cellCenter,
 } from '@/lib/engine/geometry';
-import { coverBonus, effectiveSpeed, abilityMod } from '@/lib/engine/rules';
+import { coverBonus, effectiveSpeed, abilityMod, proficiencyBonus } from '@/lib/engine/rules';
 import {
   planTurn, validateStep, isAiControlled, unitAbilities, opportunityAttackers,
   type AiContext, type AiStep,
@@ -91,6 +92,66 @@ function logInitiativeRolls(rolls: InitiativeRollDetail[], units: BattleUnit[], 
       text: `🎲 ${u?.name ?? r.id}：${r.detail}${r.surprised ? '（惊讶·劣势）' : ''}`,
       level: 'info',
     });
+  }
+}
+
+/**
+ * 2024 武器精通：攻击结算后的自动处理（低成本接入）
+ * - Graze 擦掠：未命中仍造成攻击属性调整值伤害
+ * - Topple 失衡：命中后目标 CON 豁免 vs DC 8+属性调整+熟练，失败倒地
+ * - Push 推离：命中后目标 STR 豁免，失败被推离 10 尺
+ * - Vex/Sap/Slow/Nick/Cleave 依赖「下回合」等时序状态，留在叙事层/手动处理
+ */
+function applyMasteryEffects(store: BattleStore, unit: BattleUnit, target: BattleUnit, ability: AiAbility, result: AttackResult | undefined) {
+  if (!result || !ability.mastery) return;
+  const masteryDc = 8 + (ability.masteryMod ?? 0) + proficiencyBonus(unit.level ?? unit.cr);
+  switch (ability.mastery) {
+    case 'Graze': {
+      if (result.hit) return;
+      const graze = Math.max(0, ability.masteryMod ?? 0);
+      if (graze <= 0) return;
+      store.logEvent({
+        type: 'damage', actorId: unit.id, targetId: target.id,
+        text: `🗡️ 精通·擦掠（Graze）：${target.name} 仍受 ${graze} 点擦伤`,
+        level: 'bad',
+      });
+      store.damageUnit(target.id, graze, { type: ability.damageType, source: unit.id });
+      return;
+    }
+    case 'Topple': {
+      if (!result.hit) return;
+      const r = resolveSave(target, { ability: 'con', dc: masteryDc });
+      store.logEvent({
+        type: 'save', actorId: unit.id, targetId: target.id,
+        text: `🗡️ 精通·失衡（Topple）：${target.name} 体质豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${masteryDc} —— ${r.check.total >= masteryDc ? '成功，保持站立' : '失败，倒地！'}`,
+        level: r.check.total >= masteryDc ? 'info' : 'bad',
+      });
+      if (r.check.total < masteryDc) store.toggleStatus(target.id, 'prone');
+      return;
+    }
+    case 'Push': {
+      if (!result.hit) return;
+      const r = resolveSave(target, { ability: 'str', dc: masteryDc });
+      store.logEvent({
+        type: 'save', actorId: unit.id, targetId: target.id,
+        text: `🗡️ 精通·推离（Push）：${target.name} 力量豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${masteryDc} —— ${r.check.total >= masteryDc ? '成功，稳住脚步' : '失败，被推离 10 尺！'}`,
+        level: r.check.total >= masteryDc ? 'info' : 'bad',
+      });
+      if (r.check.total >= masteryDc) return;
+      // 沿攻击方向直线推离 10 尺（钳制在地图边界内）
+      const dx = target.pos.x - unit.pos.x;
+      const dy = target.pos.y - unit.pos.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const map = store.mapConfig;
+      const dest = {
+        x: Math.min(Math.max(0, Math.round(target.pos.x + (dx / len) * 10)), map.width * map.cellSize),
+        y: Math.min(Math.max(0, Math.round(target.pos.y + (dy / len) * 10)), map.height * map.cellSize),
+      };
+      store.moveUnit(target.id, dest, true);
+      return;
+    }
+    default:
+      return;
   }
 }
 
@@ -221,7 +282,7 @@ export interface BattleStore {
   setSurprised: (ids: string[]) => void;
 
   // ---- 攻击/豁免/骰子 ----
-  performAttack: (attackerId: string, targetId: string, opts: AttackOptions) => void;
+  performAttack: (attackerId: string, targetId: string, opts: AttackOptions) => AttackResult | undefined;
   /** 反应【回合结束时】：其他单位的回合结束，带回合结束反应的敌方单位自动执行 */
   fireTurnEndReactions: (endedUnitId: string) => void;
   /** 反应【被命中后·伤害减半传送】：在伤害落账前拦截，减半并传送 */
@@ -565,13 +626,26 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     if (!unit) return;
     const has = unit.statuses.includes(status);
     const statuses = has ? unit.statuses.filter(s => s !== status) : [...unit.statuses, status];
-    set({ units: get().units.map(u => (u.id === id ? { ...u, statuses } : u)) });
+    // 2024：力竭达到 6 级即死亡
+    let dead = false;
+    if (!has && /^exhaustion:(\d+)$/.test(status)) {
+      const lv = parseInt(status.split(':')[1], 10);
+      dead = lv >= 6;
+    }
+    set({
+      units: get().units.map(u => (u.id === id
+        ? { ...u, statuses, ...(dead ? { deathSaves: { successes: 0, failures: 3, stable: false, dead: true } } : {}) }
+        : u)),
+    });
     get().logEvent({
       type: has ? 'status-remove' : 'status-add',
       actorId: id,
-      text: `${unit.name} ${has ? '解除' : '获得'}状态：${status}`,
-      level: has ? 'good' : 'bad',
+      text: `${unit.name} ${has ? '解除' : '获得'}状态：${status}${dead ? ' —— 力竭 6 级，死亡' : ''}`,
+      level: dead ? 'crit' : has ? 'good' : 'bad',
     });
+    if (dead) {
+      get().logEvent({ type: 'death', actorId: id, text: `💀 ${unit.name} 力竭衰竭而死`, level: 'crit' });
+    }
     persist(get());
   },
 
@@ -589,8 +663,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     let deathSaves = unit.deathSaves;
     let killed = false;
     if (newHp <= 0 && unit.hp > 0) {
-      // 跌至 0：过量伤害即死；敌方小怪归零即死（2024 惯例，传奇单位除外）；友方进入死亡豁免
-      if (remaining >= unit.maxHp) {
+      // 跌至 0：巨额伤害即死（2024：剩余伤害 = 伤害 - 受伤前当前 HP ≥ 生命值上限才立即死亡）；
+      // 敌方小怪归零即死（2024 惯例，传奇单位除外）；友方进入死亡豁免
+      if (remaining - unit.hp >= unit.maxHp) {
         killed = true;
         deathSaves = { successes: 0, failures: 3, stable: false, dead: true };
       } else if (unit.attitude === 2 && !unit.legendary) {
@@ -778,10 +853,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       finalUnits = units.map(u => {
         const rolled = initById.get(u.id);
         return rolled !== undefined
-          ? { ...u, init: rolled, initMod: Math.floor(((u.abilities?.dex ?? 10) - 10) / 2), initRolled: true }
+          ? { ...u, init: rolled, initRolled: true }
           : { ...u, initRolled: true };
       });
-      logInitiativeRolls(rolls, units, '🎲 掷先攻（1d20 + 敏捷调整值）', () => get());
+      logInitiativeRolls(rolls, units, '🎲 掷先攻（1d20 + 先攻加值）', () => get());
     } else {
       finalUnits = units.map(u => ({ ...u, initRolled: true }));
       get().logEvent({ type: 'note', text: '📋 先攻采用 DM/AI 给定值（兼容模式）', level: 'info' });
@@ -901,11 +976,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       units: units.map(u => {
         const rolled = initById.get(u.id);
         return rolled !== undefined
-          ? { ...u, init: rolled, initMod: Math.floor(((u.abilities?.dex ?? 10) - 10) / 2), initRolled: true }
+          ? { ...u, init: rolled, initRolled: true }
           : u;
       }),
     });
-    logInitiativeRolls(rolls, units, '🎲 全员重掷先攻（1d20 + 敏捷调整值）', () => get());
+    logInitiativeRolls(rolls, units, '🎲 全员重掷先攻（1d20 + 先攻加值）', () => get());
     // 战斗进行中重掷：重建顺序但保持当前行动者（先攻值变化立即生效，不打断当前回合）
     if (battleActive) {
       set({ turn: rebuildOrderKeepActor(get().units, get().rules, get().turn, Date.now() % 100000) });
@@ -924,7 +999,19 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     const attacker = get().units.find(u => u.id === attackerId);
     const target = get().units.find(u => u.id === targetId);
     if (!attacker || !target) return;
-    const result = resolveAttack(attacker, target, opts);
+    // 2024 上下文：距离（倒地 5 尺内优/外劣）与贴身敌对生物（远程劣势）
+    const diag = get().mapConfig.diagonal;
+    const distanceFeet = unitDistance(attacker, target, diag);
+    const hostileWithin5Ft = get().units.some(u =>
+      u.id !== attackerId && u.hp > 0 && !u.deathSaves?.dead
+      && u.attitude !== attacker.attitude && u.attitude !== 1 && attacker.attitude !== 1
+      && unitDistance(attacker, u, diag) <= 5);
+    const result = resolveAttack(attacker, target, {
+      ...opts,
+      distanceFeet,
+      hostileWithin5Ft,
+      critWeaponDiceOnly: get().rules.critWeaponDiceOnly,
+    });
     set({ lastRoll: { id: uid(), formula: opts.weaponDamage, result: result.attack.dice, note: `攻击 ${target.name}` } });
     // 动作经济：当前行动者消耗动作；玩家侧攻击记录集火目标
     const isCurrentActor = attackerId === get().turn.currentUnitId && get().battleActive;
@@ -974,6 +1061,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       get().runPostHitReactions(targetId, attackerId, opts);
     }
     persist(get());
+    return result;
   },
 
   fireTurnEndReactions: (endedUnitId) => {
@@ -1053,9 +1141,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   randomTeleport: (id, radiusCells) => {
     const u = get().units.find(x => x.id === id);
     if (!u) return false;
-    const blocked = new Set(buildBlockedCells(get().obstacles).map(c => `${c.cx},${c.cy}`));
+    const blocked = new Set([...buildBlockedCells(get().obstacles).keys()]);
     const occ = new Set(get().units.filter(x => x.id !== id && x.hp > 0).map(x => `${x.pos.x},${x.pos.y}`));
-    const cands = [];
+    const cands: Array<{ x: number; y: number }> = [];
     for (let dx = -radiusCells; dx <= radiusCells; dx++) {
       for (let dy = -radiusCells; dy <= radiusCells; dy++) {
         if (dx === 0 && dy === 0) continue;
@@ -1168,7 +1256,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     const u = get().units.find(x => x.id === id);
     const target = get().units.find(x => x.id === targetId);
     if (!u || !target) return false;
-    const blocked = new Set(buildBlockedCells(get().obstacles).map(c => `${c.cx},${c.cy}`));
+    const blocked = new Set([...buildBlockedCells(get().obstacles).keys()]);
     const occ = new Set(get().units.filter(x => x.id !== id && x.hp > 0).map(x => `${x.pos.x},${x.pos.y}`));
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;
@@ -1298,13 +1386,14 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             text: `${unit.name} 发动【${ability.name}】→ ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
             level: 'info',
           });
-          get().performAttack(unit.id, target.id, {
+          const atkResult = get().performAttack(unit.id, target.id, {
             attackBonus: ability.attackBonus ?? 0,
             targetAc: target.ac + coverBonus(cover.cover),
             weaponDamage: ability.dice,
             weaponType: ability.damageType,
             isRanged: ability.kind === 'ranged',
           });
+          applyMasteryEffects(get(), unit, target, ability, atkResult);
         }
         return true;
       }
@@ -1518,7 +1607,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const { rolls, initById } = rollInitiativeForUnits(needsRoll, rules, []);
         finalUnits = finalUnits.map(u => {
           const rolled = initById.get(u.id);
-          return rolled !== undefined ? { ...u, init: rolled, initMod: Math.floor(((u.abilities?.dex ?? 10) - 10) / 2), initRolled: true } : u;
+          return rolled !== undefined ? { ...u, init: rolled, initRolled: true } : u;
         });
         for (const r of rolls) {
           const u = needsRoll.find(x => x.id === r.id);
@@ -1904,7 +1993,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
     if (needsTarget && target) {
       const dist = unitDistance(actor, target, s.mapConfig.diagonal);
-      if (dist > ability.range + 5) {
+      if (dist > ability.range) {
         get().logEvent({ type: 'note', text: `⛔ 超出射程：${target.name} 距离 ${dist} 尺 > ${ability.range} 尺`, level: 'bad' });
         return;
       }
@@ -1928,13 +2017,14 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           level: 'info',
         });
         for (let i = 0; i < times; i++) {
-          get().performAttack(actorId, target.id, {
+          const atkResult = get().performAttack(actorId, target.id, {
             attackBonus: ability.attackBonus ?? 0,
             targetAc: target.ac + coverBonus(cover.cover),
             weaponDamage: ability.dice,
             weaponType: ability.damageType,
             isRanged: ability.kind === 'ranged',
           });
+          applyMasteryEffects(get(), actor, target, ability, atkResult);
         }
         break;
       }

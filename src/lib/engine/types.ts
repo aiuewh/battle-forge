@@ -116,6 +116,10 @@ export interface AiAbility {
   bonusAction?: boolean;
   /** 攻击/豁免后的附加状态效果（如 麻痹/恐惧），豁免失败时施加 */
   applyStatus?: string;
+  /** 2024 武器精通词条（Graze/Topple/Push/Vex/Sap/Slow/Nick/Cleave；引擎自动结算前三者） */
+  mastery?: string;
+  /** 武器攻击属性调整值（Graze 伤害与 Topple/Push 的 DC 用） */
+  masteryMod?: number;
   note?: string;
 }
 
@@ -414,8 +418,10 @@ export interface RulesConfig {
 }
 
 export const DEFAULT_RULES: RulesConfig = {
-  critWeaponDiceOnly: true,
-  failOnDropToZero: true,
+  /** 2024 正式规则：重击翻倍攻击全部伤害骰（critWeaponDiceOnly=true 为 One D&D 试玩版房规） */
+  critWeaponDiceOnly: false,
+  /** 2024 RAW：降到 0 HP 本身不记死亡豁免失败（true 为更致命房规） */
+  failOnDropToZero: false,
   failOnDamageAtZero: true,
   surpriseMode: 'init-disadvantage',
   tieBreak: 'modifier-then-player',

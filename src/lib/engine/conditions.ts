@@ -122,7 +122,7 @@ export const CONDITIONS: Record<string, ConditionDef> = {
   // ---- 扩展条件（协议外，引擎内部） ----
   exhaustion: {
     key: 'exhaustion', name: '力竭', en: 'Exhaustion', icon: '🥀', color: '#8c6b5a',
-    brief: '2024 分级：1速减半 2属性检定劣势 3攻击与豁免劣势 4HP上限减半 5速度0 6死亡（长休恢复1级）。',
+    brief: '2024：每级力竭使所有 d20 检定（攻击/属性/豁免）-2、速度 -5 尺（均叠加）；6 级死亡。长休恢复 1 级。',
     effect: {},
   },
   concentration: {
@@ -191,12 +191,34 @@ export function conditionIcon(key: string): string {
   return CONDITIONS[key]?.icon ?? '❓';
 }
 
+/** 2024 力竭等级：所有 d20 检定 -2/级、速度 -5 尺/级；6 级死亡 */
+export function exhaustionLevels(statuses: string[]): number {
+  let max = 0;
+  for (const s of statuses) {
+    if (!s.startsWith('exhaustion:')) continue;
+    const lv = parseInt(s.split(':')[1] || '0', 10);
+    if (Number.isFinite(lv) && lv > max) max = lv;
+  }
+  return max;
+}
+
+/** 2024 力竭减值：d20 检定 -2/级（攻击检定、属性检定、豁免检定） */
+export function exhaustionPenalty(statuses: string[]): number {
+  return 2 * exhaustionLevels(statuses);
+}
+
+/** 2024 力竭降速：-5 尺/级 */
+export function exhaustionSpeedLoss(statuses: string[]): number {
+  return 5 * exhaustionLevels(statuses);
+}
+
 /** 汇总一个单位所有条件的效果（乘法速度、优势劣势等） */
 export function aggregateEffects(statuses: string[]): {
   speedMultiplier: number;
   ownAttackDisadvantage: boolean;
   ownAttackAdvantage: boolean;
   attacksAgainstAdvantage: boolean;
+  attacksAgainstMeleeAdvantage: boolean;
   attacksAgainstDisadvantage: boolean;
   noActions: boolean;
   noReactions: boolean;
@@ -207,6 +229,7 @@ export function aggregateEffects(statuses: string[]): {
   let ownAttackDisadvantage = false;
   let ownAttackAdvantage = false;
   let attacksAgainstAdvantage = false;
+  let attacksAgainstMeleeAdvantage = false;
   let attacksAgainstDisadvantage = false;
   let noActions = false;
   let noReactions = false;
@@ -216,9 +239,9 @@ export function aggregateEffects(statuses: string[]): {
   for (const s of statuses) {
     let key = s;
     if (key.startsWith('exhaustion:')) {
+      // 2024：每级 -2 全 d20 检定、-5 尺速度（见 exhaustionPenalty / exhaustionSpeedLoss）；
+      // 6 级死亡——以失去行动表达（死亡事件由 store 在状态写入时结算）
       const lv = parseInt(key.split(':')[1] || '0', 10);
-      if (lv >= 3) ownAttackDisadvantage = true;
-      if (lv >= 5) speedMultiplier = 0;
       if (lv >= 6) noActions = true;
       key = 'exhaustion';
     }
@@ -228,7 +251,8 @@ export function aggregateEffects(statuses: string[]): {
     if (e.speedMultiplier !== undefined) speedMultiplier = Math.min(speedMultiplier, e.speedMultiplier);
     if (e.ownAttacks === 'disadvantage') ownAttackDisadvantage = true;
     if (e.ownAttacks === 'advantage') ownAttackAdvantage = true;
-    if (e.attacksAgainst === 'advantage' || e.attacksAgainst === 'melee-advantage') attacksAgainstAdvantage = true;
+    if (e.attacksAgainst === 'advantage') attacksAgainstAdvantage = true;
+    if (e.attacksAgainst === 'melee-advantage') attacksAgainstMeleeAdvantage = true;
     if (e.attacksAgainst === 'disadvantage') attacksAgainstDisadvantage = true;
     if (e.noActions) noActions = true;
     if (e.noReactions) noReactions = true;
@@ -237,6 +261,6 @@ export function aggregateEffects(statuses: string[]): {
   }
   return {
     speedMultiplier, ownAttackDisadvantage, ownAttackAdvantage, attacksAgainstAdvantage,
-    attacksAgainstDisadvantage, noActions, noReactions, autoFailSaves, meleeCritOnHit,
+    attacksAgainstMeleeAdvantage, attacksAgainstDisadvantage, noActions, noReactions, autoFailSaves, meleeCritOnHit,
   };
 }

@@ -171,6 +171,8 @@ export interface WeaponDef {
   versatile?: string;       // "两用(1d10)"
   ranged: boolean;
   range: number;
+  /** 2024 武器精通词条（Graze/Topple/Push/Vex/Sap/Slow/Nick/Cleave） */
+  mastery?: string;
 }
 
 export interface SpellDef {
@@ -196,9 +198,44 @@ export interface CharSheet {
   spells: SpellDef[];
   statuses: string[];       // 映射为引擎状态 key
   stealthBonus?: number;
+  /** 豁免熟练属性（来自 熟练配置.豁免，装配时折算为 saveBonuses） */
+  saveProficiencies?: Set<AbilityKey>;
+  /** 伤害抗性/免疫/易伤（来自变量 抗性/免疫/易伤 字段） */
+  resistances: DamageType[];
+  immunities: DamageType[];
+  vulnerabilities: DamageType[];
   notes?: string;
   /** 首次同步时间 / 更新时间 */
   syncedAt: number;
+}
+
+/** 武器精通词条归一（中英文 → 标准 key；引擎自动结算 Graze/Topple/Push） */
+const MASTERY_CN: Record<string, string> = {
+  'graze': 'Graze', '擦掠': 'Graze', '擦伤': 'Graze',
+  'cleave': 'Cleave', '横扫': 'Cleave', '顺势斩': 'Cleave',
+  'topple': 'Topple', '失衡': 'Topple', '摔绊': 'Topple',
+  'vex': 'Vex', '侵扰': 'Vex', '扰乱': 'Vex',
+  'nick': 'Nick', '迅击': 'Nick',
+  'sap': 'Sap', '削弱': 'Sap',
+  'slow': 'Slow', '缓速': 'Slow',
+  'push': 'Push', '推离': 'Push',
+};
+
+/** 解析抗性/免疫/易伤字段值（数组或顿号/逗号分隔字符串，中英文伤害类型名） */
+function parseDamageTypes(raw: unknown): DamageType[] {
+  const items: string[] = [];
+  if (Array.isArray(raw)) items.push(...raw.map(String));
+  else if (typeof raw === 'string') items.push(...raw.split(/[、,，/]/));
+  const out: DamageType[] = [];
+  for (const item of items) {
+    const t = item.trim();
+    if (!t) continue;
+    const mapped = DAMAGE_TYPE_CN[t]
+      ?? DAMAGE_TYPE_CN[t.toLowerCase()]
+      ?? DAMAGE_TYPE_CN[t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()];
+    if (mapped && !out.includes(mapped)) out.push(mapped);
+  }
+  return out;
 }
 
 /** 变量树里的 状态.{名} → 引擎状态 key */
@@ -245,11 +282,11 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['治疗真言', 'healing word'], level: 1,
-    build: (mod) => ({ name: '治疗真言', kind: 'heal', dice: `1d4${formatMod(mod)}`, range: 60, spellLevel: 1, bonusAction: true }),
+    build: (mod) => ({ name: '治疗真言', kind: 'heal', dice: `2d4${formatMod(mod)}`, range: 60, spellLevel: 1, bonusAction: true }),
   },
   {
     keys: ['治疗术', 'cure wounds'], level: 1,
-    build: (mod) => ({ name: '治疗术', kind: 'heal', dice: `1d8${formatMod(mod)}`, range: 5, spellLevel: 1 }),
+    build: (mod) => ({ name: '治疗术', kind: 'heal', dice: `2d8${formatMod(mod)}`, range: 5, spellLevel: 1 }),
   },
   {
     keys: ['魔法飞弹', 'magic missile'], level: 1,
@@ -317,13 +354,22 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['群体治疗真言', 'mass healing word'], level: 3,
-    build: (mod) => ({ name: '群体治疗真言', kind: 'heal', dice: `1d4${formatMod(mod)}`, range: 60, spellLevel: 3, bonusAction: true }),
+    build: (mod) => ({ name: '群体治疗真言', kind: 'heal', dice: `2d4${formatMod(mod)}`, range: 60, spellLevel: 3, bonusAction: true }),
   },
 ];
 
 function matchSpell(name: string): SpellTemplate | undefined {
   const lower = name.toLowerCase();
-  return COMMON_SPELLS.find(s => s.keys.some(k => lower.includes(k)));
+  // 最长关键词优先：避免「治疗真言」劫持「群体治疗真言」这类子串匹配
+  let best: { tpl: SpellTemplate; keyLen: number } | null = null;
+  for (const tpl of COMMON_SPELLS) {
+    for (const k of tpl.keys) {
+      if (lower.includes(k) && (!best || k.length > best.keyLen)) {
+        best = { tpl, keyLen: k.length };
+      }
+    }
+  }
+  return best?.tpl;
 }
 
 // ============ 变量树 → 角色卡 ============
@@ -406,6 +452,12 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
           const wNameLower = wName.toLowerCase();
           const isRangedW = /弓|弩|镖|投石索|手雷|弓箭/.test(wName);
           const isThrown = /投掷|标枪|匕首|手斧/.test(getStr(w, '属性特征') ?? '') || /标枪/.test(wName);
+          // 射程：显式 射程 字段优先（尺），否则按名称推断（接近规则值：长弓150/重弩100/其他弓弩80/投掷30）
+          const rangeField = getNum(w, '射程', '射程(尺)', '射程（尺）');
+          const rangeFallback = isRangedW
+            ? (/长弓/.test(wName) ? 150 : /重弩/.test(wName) ? 100 : 80)
+            : (isThrown ? 30 : 5);
+          const masteryRaw = getStr(w, '精通', '精通词条', '专精特质')?.toLowerCase() ?? '';
           weapons.push({
             name: wName,
             formula: formula.replace(/\s/g, ''),
@@ -416,7 +468,8 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
             equipped: w['已装备'] === true,
             versatile: getStr(w, '属性特征'),
             ranged: isRangedW,
-            range: isRangedW ? (/长弓|重弩|弩/.test(wName) ? 80 : 60) : (isThrown ? 20 : 5),
+            range: rangeField !== undefined && rangeField > 0 ? rangeField : rangeFallback,
+            mastery: MASTERY_CN[masteryRaw],
           });
         }
       }
@@ -461,8 +514,9 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       }
     }
 
-    // 隐匿加值
+    // 隐匿加值 / 豁免熟练（熟练配置.豁免.属性 = "p"/true；与 技能 同风格）
     let stealthBonus: number | undefined;
+    const saveProficiencies = new Set<AbilityKey>();
     const profRaw = c['熟练配置'];
     if (profRaw && typeof profRaw === 'object') {
       const skillRaw = (profRaw as Record<string, unknown>)['技能'];
@@ -479,7 +533,21 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
           else stealthBonus = base;
         }
       }
+      const saveRaw = (profRaw as Record<string, unknown>)['豁免'] ?? (profRaw as Record<string, unknown>)['豁免熟练'];
+      if (saveRaw && typeof saveRaw === 'object') {
+        for (const [k, v] of Object.entries(saveRaw as Record<string, unknown>)) {
+          const key = ABILITY_CN_KEY[k] ?? ABILITY_CN_KEY[k.toLowerCase()] ?? (['str', 'dex', 'con', 'int', 'wis', 'cha'] as AbilityKey[]).find(a => a === k.toLowerCase());
+          if (!key) continue;
+          const s = String(v).toLowerCase();
+          if (v === true || s === 'true' || s.includes('p') || s.includes('e')) saveProficiencies.add(key);
+        }
+      }
     }
+
+    // 抗性/免疫/易伤（角色级字段，数组或顿号分隔字符串；野蛮人狂暴/种族抗性等）
+    const resistances = parseDamageTypes(c['抗性']);
+    const immunities = parseDamageTypes(c['免疫']);
+    const vulnerabilities = parseDamageTypes(c['易伤']);
 
     out.push({
       name,
@@ -492,6 +560,10 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       spells,
       statuses,
       stealthBonus,
+      saveProficiencies: saveProficiencies.size > 0 ? saveProficiencies : undefined,
+      resistances,
+      immunities,
+      vulnerabilities,
       syncedAt: Date.now(),
     });
   }
@@ -511,6 +583,12 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
   const pb = proficiencyBonus(sheet.level);
   const abilities: Abilities = { ...sheet.abilities };
 
+  // 豁免加值：熟练属性 = 属性调整值 + 熟练加值（2024：豁免检定计入熟练）
+  const saveBonuses: Partial<Record<AbilityKey, number>> = {};
+  for (const key of ['str', 'dex', 'con', 'int', 'wis', 'cha'] as AbilityKey[]) {
+    saveBonuses[key] = abilityMod(abilities[key]) + (sheet.saveProficiencies?.has(key) ? pb : 0);
+  }
+
   // 武器动作（已装备优先）
   const sorted = [...sheet.weapons].sort((a, b) => Number(b.equipped) - Number(a.equipped));
   const weaponAbilities: AiAbility[] = sorted.map((w, i) => {
@@ -524,9 +602,12 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
       damageType: w.damageType,
       range: w.range,
       multiAttack: 1,
+      mastery: w.mastery,
+      masteryMod: abMod + w.magicBonus,
       note: [
         w.versatile ? `两用：${w.versatile}` : '',
         w.equipped ? '已装备' : '',
+        w.mastery ? `精通：${w.mastery}${['Graze', 'Topple', 'Push'].includes(w.mastery) ? '（命中/失手自动结算）' : '（按词条手动/叙事结算）'}` : '',
       ].filter(Boolean).join(' · ') || undefined,
     };
   });
@@ -555,9 +636,11 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
     playerControlled: true,
     level: sheet.level,
     abilities,
-    resistances: [],
-    immunities: [],
-    vulnerabilities: [],
+    saveBonuses,
+    // 抗性/免疫/易伤：从角色变量透传（野蛮人狂暴、种族抗性、石肤术等）
+    resistances: [...sheet.resistances],
+    immunities: [...sheet.immunities],
+    vulnerabilities: [...sheet.vulnerabilities],
     spellSlots: sheet.spellSlots ? JSON.parse(JSON.stringify(sheet.spellSlots)) : undefined,
     concentration: undefined,
     actionEconomy: { action: false, bonus: false, reaction: false, movementUsed: 0 },

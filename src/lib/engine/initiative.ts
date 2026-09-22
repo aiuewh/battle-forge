@@ -3,12 +3,22 @@
  */
 import type { BattleUnit, TurnState, RulesConfig } from './types';
 import { rollFormula, formatDice } from './dice';
+import { exhaustionPenalty } from './conditions';
 
-/** 掷先攻（敏捷调整值），突袭单位劣势（2024） */
-export function rollInitiative(unit: BattleUnit, rules: RulesConfig, surprised: boolean): number {
+/**
+ * 先攻加值来源：单位自带 initMod（角色名单：先攻.加值，可含警觉专长等）
+ * 优先；未设置（0）时回退敏捷调整值。2024 力竭：先攻是 d20 检定，-2/级。
+ */
+export function initiativeBonus(unit: BattleUnit): number {
   const dexMod = Math.floor(((unit.abilities?.dex ?? 10) - 10) / 2);
+  const base = unit.initMod || dexMod;
+  return base - exhaustionPenalty(unit.statuses);
+}
+
+/** 掷先攻（1d20 + 先攻加值），突袭单位劣势（2024） */
+export function rollInitiative(unit: BattleUnit, rules: RulesConfig, surprised: boolean): number {
   const mode = surprised && rules.surpriseMode === 'init-disadvantage' ? 'disadvantage' : 'normal';
-  const r = rollFormula('1d20', { mode, bonus: dexMod });
+  const r = rollFormula('1d20', { mode, bonus: initiativeBonus(unit) });
   return r.total;
 }
 
@@ -24,8 +34,9 @@ export interface InitiativeRollDetail {
 }
 
 /**
- * 为一批单位掷先攻（PHB 战斗步骤③：战斗开始时全员敏捷检定 d20+敏捷调整值）
- * - 2024 规则：被惊讶者劣势（surpriseMode='init-disadvantage'）
+ * 为一批单位掷先攻（PHB 战斗步骤③：战斗开始时全员敏捷检定 d20+先攻加值）
+ * - 先攻加值 = 单位 initMod（角色名单的 先攻.加值）> 敏捷调整值回退
+ * - 2024 规则：被惊讶者劣势（surpriseMode='init-disadvantage'）；力竭 -2/级
  * - 倒地/死亡单位不掷（保留原值，排序时会被过滤）
  */
 export function rollInitiativeForUnits(
@@ -38,10 +49,11 @@ export function rollInitiativeForUnits(
   for (const u of units) {
     if (u.hp <= 0 || u.deathSaves?.dead) continue;
     const dexMod = Math.floor(((u.abilities?.dex ?? 10) - 10) / 2);
+    const bonus = initiativeBonus(u);
     const surprised = surprisedIds.includes(u.id) && rules.surpriseMode === 'init-disadvantage';
-    const r = rollFormula('1d20', { mode: surprised ? 'disadvantage' : 'normal', bonus: dexMod });
+    const r = rollFormula('1d20', { mode: surprised ? 'disadvantage' : 'normal', bonus });
     const d20 = r.rolls.find(x => x.kept && x.sides === 20)?.value ?? r.rolls[0]?.value ?? 0;
-    rolls.push({ id: u.id, d20, dexMod, total: r.total, surprised, detail: formatDice(r) });
+    rolls.push({ id: u.id, d20, dexMod: bonus, total: r.total, surprised, detail: formatDice(r) });
     initById.set(u.id, r.total);
   }
   return { rolls, initById };
