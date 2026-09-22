@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -65,6 +66,8 @@
   var TIMEOUT_MS = 6000;
   var LS_KEY = "bf_app_url";
 
+  function escHtml(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
   var dataEl = document.getElementById("bp-data");
   var raw = (dataEl ? dataEl.textContent : "") || "";
   var fallback = document.getElementById("bp-fallback");
@@ -157,11 +160,11 @@
       var ratio = u.max > 0 ? Math.max(0, u.hp) / u.max : 0;
       var barColor = ratio > 0.5 ? "#5aa84d" : ratio > 0.25 ? "#d8a23a" : "#d84a3f";
       var statusHtml = u.status.map(function (s) {
-        return '<span class="bfp-status" title="' + s + '">' + (STATUS_ICON[s] || "❓") + "</span>";
+        return '<span class="bfp-status" title="' + escHtml(s) + '">' + escHtml(STATUS_ICON[s] || "❓") + "</span>";
       }).join("");
       row.innerHTML =
         '<span class="bfp-init" style="color:' + color + '">' + u.init + "</span>" +
-        '<span class="bfp-name" style="color:' + color + '">' + u.id + (u.next ? " ▶" : "") + "</span>" +
+        '<span class="bfp-name" style="color:' + color + '">' + escHtml(u.id) + (u.next ? " ▶" : "") + "</span>" +
         '<span class="bfp-hpwrap"><span class="bfp-hptrack"><span class="bfp-hpfill" style="width:' + (ratio * 100).toFixed(0) + "%;background:" + barColor + '"></span></span>' +
         '<span class="bfp-hptext">' + u.hp + "/" + u.max + "</span></span>" + statusHtml;
       fallback.appendChild(row);
@@ -189,7 +192,7 @@
     badge.textContent = "敌情简报 · 轻量模式";
     fallback.innerHTML =
       '<div class="bfp-brief">📋 <b>战前敌情</b> —— 已捕获 ' + enemyNames.length + " 种敌卡：" +
-      (enemyNames.length > 0 ? "<b>" + enemyNames.slice(0, 8).join("、") + "</b>" : "（解析中）") +
+      (enemyNames.length > 0 ? "<b>" + escHtml(enemyNames.slice(0, 8).join("、")) + "</b>" : "（解析中）") +
       "。完整引擎将暂存这些敌卡，待 DM 输出 &lt;battle&gt; 时自动配装开战。</div>";
   } else if (hasEncounter) {
     badge.textContent = units.length + " 单位 · 轻量模式";
@@ -225,7 +228,37 @@
 
   var ready = false;
   var t = null;
-  try { t = window.setTimeout(onTimeout, TIMEOUT_MS); } catch (e) {}
+
+  // [流式守卫] 生成进行中不注入跨域 iframe：本正则在流式渲染中途匹配到战斗块时，
+  // 立即创建 iframe 会中断 ST 的生成流（9-18/9-19 实测战斗回复全部在 </encounter> 后 1-3 chunk 处断流）。
+  // 轮询等待生成结束后再加载完整引擎；流式期间保持下方轻量渲染，不受影响。
+  // 关键：本脚本运行在沙箱 iframe 内，document.getElementById 只能看到面板自身文档，
+  // 查不到主界面的 #mes_stop——必须穿透 window.parent 到酒馆主文档读真实生成状态。
+  function isGeneratingNow() {
+    var docs = [];
+    try { if (window.parent && window.parent.document) docs.push(window.parent.document); } catch (e) {}
+    try { if (window.top && window.top.document && docs.indexOf(window.top.document) === -1) docs.push(window.top.document); } catch (e) {}
+    docs.push(document);
+    for (var i = 0; i < docs.length; i++) {
+      try {
+        var stopBtn = docs[i].getElementById("mes_stop");
+        if (stopBtn && (stopBtn.offsetParent !== null || (stopBtn.getClientRects && stopBtn.getClientRects().length > 0))) return true;
+      } catch (e) {}
+    }
+    return false;
+  }
+  var engineLoadStarted = false;
+  var engineWaitStart = 0;
+  function tryLoadEngine() {
+    if (engineLoadStarted) return;
+    if (isGeneratingNow()) {
+      if (!engineWaitStart) engineWaitStart = Date.now();
+      if (Date.now() - engineWaitStart < 90000) { window.setTimeout(tryLoadEngine, 600); return; }
+    }
+    engineLoadStarted = true;
+    try { t = window.setTimeout(onTimeout, TIMEOUT_MS); } catch (e) {}
+    frame.src = APP_URL + (APP_URL.indexOf("?") === -1 ? "?" : "&") + "embed=1";
+  }
 
   function send() {
     try {
@@ -260,7 +293,7 @@
     }
   }
 
-  frame.src = APP_URL + (APP_URL.indexOf("?") === -1 ? "?" : "&") + "embed=1";
+  tryLoadEngine();
 })();
 </script>
 </body>
