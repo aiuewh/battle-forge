@@ -457,7 +457,9 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
           const rangeFallback = isRangedW
             ? (/长弓/.test(wName) ? 150 : /重弩/.test(wName) ? 100 : 80)
             : (isThrown ? 30 : 5);
+          // 武器精通：词条库判定优先级——先确认掌握（武器.已掌握），再按词条结算
           const masteryRaw = getStr(w, '精通', '精通词条', '专精特质')?.toLowerCase() ?? '';
+          const mastered = w['已掌握'] === true || w['已掌握'] === 'true';
           weapons.push({
             name: wName,
             formula: formula.replace(/\s/g, ''),
@@ -469,7 +471,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
             versatile: getStr(w, '属性特征'),
             ranged: isRangedW,
             range: rangeField !== undefined && rangeField > 0 ? rangeField : rangeFallback,
-            mastery: MASTERY_CN[masteryRaw],
+            mastery: mastered ? MASTERY_CN[masteryRaw] : undefined,
           });
         }
       }

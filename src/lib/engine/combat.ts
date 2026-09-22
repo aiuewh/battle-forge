@@ -229,12 +229,13 @@ export function resolveSave(target: BattleUnit, opts: SaveOptions): SaveResult {
   const bless = blessDie(target, dice.rolls);
   dice.total += bless;
   const judged = judgeCheck(dice, opts.dc);
-  // 普通豁免无大成功/大失败（2024：裸骰 20/1 无特殊效果，仅死亡豁免例外）
+  // 普通豁免文案无大成功/大失败；但 2024 D20 Test：保留裸骰 20 自动成功、裸骰 1 自动失败（与 DC/加值无关）
   const outcome = judged.outcome === 'critical-success' ? 'success'
     : judged.outcome === 'critical-failure' ? 'failure'
       : judged.outcome;
-  const check: CheckResult = { dice, target: opts.dc, total: dice.total, outcome, label: `${opts.ability.toUpperCase()} 豁免 DC${opts.dc}${exPenalty ? `（力竭-${exPenalty}）` : ''}` };
-  const success = dice.total >= opts.dc;
+  const natNote = dice.rawD20 === 20 ? '（裸20自动成功）' : dice.rawD20 === 1 ? '（裸1自动失败）' : '';
+  const check: CheckResult = { dice, target: opts.dc, total: dice.total, outcome, label: `${opts.ability.toUpperCase()} 豁免 DC${opts.dc}${exPenalty ? `（力竭-${exPenalty}）` : ''}${natNote}` };
+  const success = judged.outcome === 'success' || judged.outcome === 'critical-success';
   let damageTaken = opts.sourceDamage ?? 0;
   let halfApplied = false;
   if (success && opts.halfOnSuccess && opts.sourceDamage !== undefined) {
@@ -313,17 +314,18 @@ export interface ConcentrationResult {
 
 export function resolveConcentration(unit: BattleUnit, damage: number, forcedRoll?: number): ConcentrationResult {
   const dc = concentrationDc(damage);
-  // 体质豁免：2024 力竭 -2/级、祝福 +1d4
+  // 体质豁免：2024 力竭 -2/级、祝福 +1d4；D20 Test：裸骰 20 自动成功、裸骰 1 自动失败
   const bonus = getSaveBonus(unit, 'con') - exhaustionPenalty(unit.statuses);
   const dice = rollFormula('1d20', { bonus, forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined });
   const bless = blessDie(unit, dice.rolls);
   dice.total += bless;
-  const success = dice.total >= dc;
+  const raw = dice.rawD20 ?? 0;
+  const success = raw === 20 || (raw !== 1 && dice.total >= dc);
   return {
     check: {
       dice, target: dc, total: dice.total,
       outcome: success ? 'success' : 'failure',
-      label: `专注豁免 DC${dc}（伤害${damage}）`,
+      label: `专注豁免 DC${dc}（伤害${damage}）${raw === 20 ? '（裸20自动成功）' : raw === 1 ? '（裸1自动失败）' : ''}`,
     },
     broken: !success,
   };

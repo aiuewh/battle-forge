@@ -40,12 +40,12 @@ import { generateBattleResultBlock } from '@/lib/engine/report';
 import {
   fnv1a, shouldApplyImport, appendChain, emptyChain, type HashChainState,
 } from '@/lib/engine/embedSync';
-import { aggregateEffects } from '@/lib/engine/conditions';
+import { aggregateEffects, exhaustionPenalty } from '@/lib/engine/conditions';
 import {
   snapshotFromParsed, snapshotFromUnits, diffSnapshots, appendHistory, loadHistory,
   findPrevSnapshot,
 } from '@/lib/engine/snapshot';
-import { rollFormula } from '@/lib/engine/dice';
+import { rollFormula, judgeCheck } from '@/lib/engine/dice';
 import type { RollMode } from '@/lib/engine/types';
 import { unitFromPreset, buildDemoBattle, MONSTER_PRESETS, type MonsterPreset } from '@/lib/engine/presets';
 import {
@@ -677,11 +677,13 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           : { successes: 0, failures: 0, stable: false, dead: false };
       }
     } else if (unit.hp <= 0 && remaining > 0) {
-      // 已在 0 HP 再受伤
-      const fails = opts.isCrit ? 2 : 1;
-      const ds = unit.deathSaves ?? { successes: 0, failures: 0, stable: false, dead: false };
-      killed = ds.failures + fails >= 3;
-      deathSaves = { ...ds, failures: ds.failures + fails, dead: killed };
+      // 已在 0 HP 再受伤：受「0 HP 受伤记失败」开关管理（默认开启 = 2024 规则：+1 失败 / 重击 +2）
+      if (get().rules.failOnDamageAtZero) {
+        const fails = opts.isCrit ? 2 : 1;
+        const ds = unit.deathSaves ?? { successes: 0, failures: 0, stable: false, dead: false };
+        killed = ds.failures + fails >= 3;
+        deathSaves = { ...ds, failures: ds.failures + fails, dead: killed };
+      }
     }
     set({
       units: get().units.map(u => (u.id === id
@@ -2212,18 +2214,24 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       }
       case 'hide': {
         if (!needAction()) return;
-        const bonus = unit.stealthBonus ?? abilityMod(unit.abilities?.dex ?? 10);
+        // 隐匿是敏捷检定（D20 Test）：2024 力竭 -2/级；保留裸骰 20 自动成功、裸骰 1 自动失败
+        const exPenalty = exhaustionPenalty(unit.statuses);
+        const bonus = (unit.stealthBonus ?? abilityMod(unit.abilities?.dex ?? 10)) - exPenalty;
         const enemies = s.units.filter(u => u.attitude === 2 && u.hp > 0 && !u.deathSaves?.dead);
         const dc = enemies.length > 0
           ? Math.max(...enemies.map(e => 10 + abilityMod(e.abilities?.wis ?? 10)))
           : 10;
         const r = rollFormula('1d20', { bonus });
+        const judged = judgeCheck(r, dc);
+        const ok = judged.outcome === 'success' || judged.outcome === 'critical-success';
+        const exNote = exPenalty ? `（力竭-${exPenalty}）` : '';
+        const critNote = judged.outcome === 'critical-success' ? '（裸20自动成功）' : judged.outcome === 'critical-failure' ? '（裸1自动失败）' : '';
         set({ lastRoll: { id: uid(), formula: `1d20${bonus >= 0 ? '+' + bonus : bonus}`, result: r, note: '隐匿检定' } });
-        if (r.total >= dc) {
+        if (ok) {
           addSelfStatus('hiding');
-          get().logEvent({ type: 'check', actorId: unitId, text: `🕳️ ${unit.name} 隐匿 [${r.rawD20}]+${bonus}=${r.total} ≥ DC${dc} —— 成功隐藏！下次攻击有优势`, level: 'good' });
+          get().logEvent({ type: 'check', actorId: unitId, text: `🕳️ ${unit.name} 隐匿 [${r.rawD20}]+${bonus}=${r.total}${exNote} ≥ DC${dc}${critNote} —— 成功隐藏！下次攻击有优势`, level: 'good' });
         } else {
-          get().logEvent({ type: 'check', actorId: unitId, text: `${unit.name} 隐匿 [${r.rawD20}]+${bonus}=${r.total} < DC${dc} —— 失败，未能隐藏`, level: 'bad' });
+          get().logEvent({ type: 'check', actorId: unitId, text: `${unit.name} 隐匿 [${r.rawD20}]+${bonus}=${r.total}${exNote} < DC${dc}${critNote} —— 失败，未能隐藏`, level: 'bad' });
         }
         if (isCurrent) consume('action');
         break;

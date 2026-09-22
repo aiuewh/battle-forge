@@ -5,7 +5,7 @@
  *   node scripts/regression-test.js
  */
 // require 目标全部为字面量相对路径（仓库内 .engtest 编译产物），不接受任何外部路径输入
-let combat, rules, conditions, initiative, sheetbridge, types;
+let combat, rules, conditions, initiative, sheetbridge, types, dice;
 try {
   combat = require('../.engtest/combat.js');
   rules = require('../.engtest/rules.js');
@@ -13,16 +13,18 @@ try {
   initiative = require('../.engtest/initiative.js');
   sheetbridge = require('../.engtest/sheetbridge.js');
   types = require('../.engtest/types.js');
+  dice = require('../.engtest/dice.js');
 } catch {
   console.error('缺少 .engtest/ 编译产物 —— 请先运行本文件头注释中的 npx tsc 命令');
   process.exit(1);
 }
-const { resolveAttack, resolveSave, resolveDeathSave } = combat;
+const { resolveAttack, resolveSave, resolveDeathSave, resolveConcentration } = combat;
 const { attackRollModeAgainst, effectiveSpeed } = rules;
 const { aggregateEffects, exhaustionPenalty } = conditions;
 const { rollInitiative, rollInitiativeForUnits } = initiative;
 const { charSheetsFromTree, unitFromCharSheet } = sheetbridge;
 const { DEFAULT_RULES } = types;
+const { judgeCheck } = dice;
 
 let pass = 0, fail = 0;
 function check(name, cond, detail = '') {
@@ -87,6 +89,7 @@ const rDice2 = critWeaponOnly.damage.rawRolls.filter(r => r.tag === 'rider' && r
 check('房规开关：仅武器骰翻倍，附加骰不翻', rDice2 === 2, `rider d6 count=${rDice2}`);
 check('出厂默认 critWeaponDiceOnly=false', DEFAULT_RULES.critWeaponDiceOnly === false);
 check('出厂默认 failOnDropToZero=false', DEFAULT_RULES.failOnDropToZero === false);
+check('出厂默认 failOnDamageAtZero=true（0 HP 受伤记失败，可关）', DEFAULT_RULES.failOnDamageAtZero === true);
 
 console.log('== P1-5 巨额伤害即死基数（代码审查）==');
 // battleStore: remaining - unit.hp >= unit.maxHp（剩余伤害口径）
@@ -124,6 +127,31 @@ check('裸骰1普通豁免 → failure（非 critical-failure）', cs1.check.out
 const ds = resolveDeathSave(mkUnit(), 20);
 check('死亡豁免保留裸20大成功语义', ds.check.outcome === 'critical-success' && ds.event === 'revive-1hp');
 
+console.log('== R2 复审修复：豁免 D20 Test 裸20/裸1 自动成败 ==');
+// 裸20 vs 高 DC：自动成功（旧回归：只看总数≥DC 会判失败吃满伤）
+const hi20 = resolveSave(mkUnit(), { ability: 'dex', dc: 25, forcedRoll: 20, halfOnSuccess: true, sourceDamage: 30 });
+check('裸20 vs DC25 → outcome success', hi20.check.outcome === 'success', hi20.check.outcome);
+check('裸20 vs DC25 → 自动成功半伤 15', hi20.damageTaken === 15 && hi20.halfApplied === true, `damage=${hi20.damageTaken}`);
+check('豁免标签含裸20自动成功注记', hi20.check.label.includes('裸20自动成功'), hi20.check.label);
+// 裸1 vs 低 DC：自动失败（加值救不回来）
+const lo1 = resolveSave(mkUnit({ saveBonuses: { dex: 9 } }), { ability: 'dex', dc: 2, forcedRoll: 1, halfOnSuccess: true, sourceDamage: 30 });
+check('裸1 vs DC2（总值10≥2）→ 自动失败吃满伤', lo1.check.outcome === 'failure' && lo1.damageTaken === 30 && !lo1.halfApplied, `outcome=${lo1.check.outcome} dmg=${lo1.damageTaken}`);
+// 优势 [20,15]：保留骰 20 即裸20（2024 取保留骰，不要求两骰皆 20）
+const advSave = resolveSave(mkUnit(), { ability: 'dex', dc: 25, mode: 'advantage', forcedRoll: 20, halfOnSuccess: true, sourceDamage: 20 });
+// forcedRolls=[20] 只注入第一颗；第二颗随机——用 judgeCheck 直测双骰语义
+const advDice = dice.rollFormula('1d20', { mode: 'advantage', bonus: 0, forcedRolls: [20, 15] });
+check('优势 [20,15]：保留 20 → 大成功', judgeCheck(advDice, 25).outcome === 'critical-success');
+const advKept = advDice.rolls.filter(r => r.kept).map(r => r.value);
+check('优势 [20,15]：保留骰为 20', advKept.length === 1 && advKept[0] === 20, JSON.stringify(advDice.rolls));
+const disDice = dice.rollFormula('1d20', { mode: 'disadvantage', bonus: 0, forcedRolls: [20, 1] });
+check('劣势 [20,1]：保留 1 → 大失败', judgeCheck(disDice, 5).outcome === 'critical-failure');
+check('裸20豁免半伤结算路径可用', advSave.halfApplied === true, `dmg=${advSave.damageTaken}`);
+// 专注豁免同为 D20 Test：裸20自动维持 / 裸1自动破誓
+const con20 = resolveConcentration(mkUnit(), 60, 20);
+check('专注：裸20 vs DC30 自动维持', con20.broken === false && con20.check.label.includes('裸20自动成功'), con20.check.label);
+const con1 = resolveConcentration(mkUnit({ saveBonuses: { con: 9 } }), 5, 1);
+check('专注：裸1 vs DC10（总值10）自动破坏', con1.broken === true, `broken=${con1.broken}`);
+
 console.log('== P0-4 / P1-6 / P1-8 / P2-15：sheetbridge 装配 ==');
 const tree = {
   角色列表: {
@@ -140,7 +168,7 @@ const tree = {
       抗性: ['火焰'],
       免疫: '毒素、火焰',
       施法: { 法术位: { '1环': { 当前: 4, 最大: 4 } }, 法术书: { 治疗真言: { 准备中: true }, 治疗术: { 准备中: true }, 群体治疗真言: {} } },
-      物品: { 武器: { 长剑: { 伤害公式: '1d8', 伤害类型: '挥砍', 映射属性: '力量', 熟练: true, 已装备: true, 精通: 'Topple' }, 长弓: { 伤害公式: '1d8', 伤害类型: '穿刺', 映射属性: '敏捷', 熟练: true, 射程: 150 } } },
+      物品: { 武器: { 长剑: { 伤害公式: '1d8', 伤害类型: '挥砍', 映射属性: '力量', 熟练: true, 已装备: true, 精通: 'Topple', 已掌握: true }, 长弓: { 伤害公式: '1d8', 伤害类型: '穿刺', 映射属性: '敏捷', 熟练: true, 射程: 150 }, 匕首: { 伤害公式: '1d4', 伤害类型: '穿刺', 映射属性: '敏捷', 熟练: true, 专精特质: 'Graze' } } },
     },
   },
 };
@@ -160,7 +188,9 @@ check('治疗真言 2d4（2024）', hw && hw.dice.startsWith('2d4'), hw && hw.di
 check('治疗术 2d8（2024）', cw && cw.dice.startsWith('2d8'), cw && cw.dice);
 check('群体治疗真言 2d4（2024）', mhw && mhw.dice.startsWith('2d4'), mhw && mhw.dice);
 const ls = unit.aiAbilities.find(a => a.name === '长剑');
-check('武器精通读取：长剑 Topple + 自动结算标记', ls && ls.mastery === 'Topple' && !!ls.masteryMod);
+check('武器精通读取：长剑 Topple + 自动结算标记（已掌握）', ls && ls.mastery === 'Topple' && !!ls.masteryMod);
+const dag = unit.aiAbilities.find(a => a.name === '匕首');
+check('未掌握不结算精通：匕首 专精特质 Graze 但无 已掌握 → mastery 空', dag && !dag.mastery, dag && String(dag.mastery));
 const lb = unit.aiAbilities.find(a => a.name === '长弓');
 check('射程字段优先：长弓 150', lb && lb.range === 150, lb && String(lb.range));
 check('先攻加值透传 initMod=3', unit.initMod === 3);

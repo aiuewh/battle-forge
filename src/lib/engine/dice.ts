@@ -188,10 +188,9 @@ export function judgeCheck(d20: DiceResult, target: number | null): {
   outcome: 'critical-success' | 'success' | 'failure' | 'critical-failure';
 } {
   const raw = d20.rawD20 ?? d20.rolls.find(r => r.sides === 20 && r.kept)?.value;
-  const allD20 = d20.rolls.filter(r => r.sides === 20);
-  // 2024 规则：优势下需两骰皆 20 才是大成功；劣势下需两骰皆 1 才是大失败
-  const critSuccess = raw === 20 && (d20.mode !== 'advantage' || allD20.length <= 1 || allD20.every(r => r.value === 20));
-  const critFailure = raw === 1 && (d20.mode !== 'disadvantage' || allD20.length <= 1 || allD20.every(r => r.value === 1));
+  // 2024 规则：优劣势取保留骰判定——优势 [20,15] 保留 20 即裸20（自动成功/重击），劣势 [20,1] 保留 1 即裸1
+  const critSuccess = raw === 20;
+  const critFailure = raw === 1;
   if (critSuccess) return { outcome: 'critical-success' };
   if (critFailure) return { outcome: 'critical-failure' };
   if (target === null) return { outcome: 'success' };
