@@ -162,3 +162,18 @@ export function isEmbedded(): boolean {
   const params = new URLSearchParams(window.location.search);
   return params.get('embed') === '1' || (window.self !== window.top && window.location.hostname !== window.parent?.location?.hostname);
 }
+
+/**
+ * 把 <battleresult> 战报回传给酒馆侧的 bootstrap 壳（壳负责 /send + /trigger）。
+ * 仅在嵌入模式（iframe 内）可用；独立打开页面时返回 false，调用方降级为复制到剪贴板。
+ */
+export function sendReportToHost(text: string): boolean {
+  if (typeof window === 'undefined' || !text) return false;
+  if (!isEmbedded()) return false;
+  try {
+    window.parent.postMessage({ type: 'bp:report', text, ts: Date.now() }, '*');
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -16,6 +16,7 @@ import { isAiControlled } from '@/lib/engine/ai';
 import { AI_PROFILE_META } from '@/lib/engine/types';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { sendReportToHost } from '@/components/battle/EmbedBridge';
 import { cn } from '@/lib/utils';
 import { Bot, User, ChevronRight, Gauge, Pause, Play, ClipboardList, Check } from 'lucide-react';
 
@@ -66,6 +67,7 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
   const current = units.find(u => u.id === turn.currentUnitId);
   const playerTurn = !!current && !isAiControlled(current);
   const [copied, setCopied] = useState(false);
+  const [sent, setSent] = useState(false);
 
   const copyReport = async () => {
     const text = store.generateBattleResult();
@@ -80,6 +82,17 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
         w.document.write(`<title>战报 - 手动复制</title><pre style="white-space:pre-wrap;font:12px/1.6 monospace;padding:12px">${text.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] as string))}</pre>`);
         w.document.close();
       }
+    }
+  };
+
+  /** 战报送回酒馆对话：嵌入模式经 postMessage 交给壳（/send + /trigger）；独立页面降级为复制 */
+  const sendReport = () => {
+    const text = store.generateBattleResult();
+    if (sendReportToHost(text)) {
+      setSent(true);
+      setTimeout(() => setSent(false), 1800);
+    } else {
+      copyReport();
     }
   };
 
@@ -160,12 +173,23 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
         <Button
           size="sm"
           className="h-7 gap-1 bg-amber-600/90 text-[11px] text-white hover:bg-amber-600"
+          onClick={sendReport}
+          disabled={units.length === 0}
+          title="一键把 <battleresult> 战报送回酒馆对话并触发 DM 战后叙述（无法回传时自动降级为复制）"
+        >
+          {sent ? <Check className="h-3.5 w-3.5" /> : <ClipboardList className="h-3.5 w-3.5" />}
+          {sent ? '已送回对话' : '战报送回对话'}
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="h-7 gap-1 text-[11px]"
           onClick={copyReport}
           disabled={units.length === 0}
-          title="生成 <battleresult> 战报：粘贴回酒馆，AI 据此叙述战后并同步变量（战斗中/结束均可复制）"
+          title="仅复制 <battleresult> 文本到剪贴板（手动粘贴的备选方式）"
         >
           {copied ? <Check className="h-3.5 w-3.5" /> : <ClipboardList className="h-3.5 w-3.5" />}
-          {copied ? '已复制战报' : '复制战报给 DM'}
+          {copied ? '已复制' : '复制战报'}
         </Button>
         {!compact && (
           <span className="text-[11px] text-muted-foreground">
