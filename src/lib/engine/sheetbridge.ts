@@ -374,9 +374,9 @@ function matchSpell(name: string): SpellTemplate | undefined {
 
 // ============ 变量树 → 角色卡 ============
 
-/** 施法属性推导：显式字段 > 智/感/魅最高者 */
+/** 施法属性推导：显式字段（关键属性/施法属性） > 智/感/魅最高者 */
 function castingAbility(sheetAbilities: Abilities, casting: unknown): AbilityKey {
-  const explicit = getStr(casting, '施法属性', '属性');
+  const explicit = getStr(casting, '关键属性', '施法属性', '属性');
   if (explicit && ABILITY_CN_KEY[explicit]) return ABILITY_CN_KEY[explicit];
   const cands: Array<[AbilityKey, number]> = [
     ['int', sheetAbilities.int], ['wis', sheetAbilities.wis], ['cha', sheetAbilities.cha],
@@ -416,7 +416,8 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
     const acRaw = c['护甲等级'];
     const ac = getNum(acRaw, '总值', '值') ?? (typeof acRaw === 'number' ? acRaw : 13);
     const initMod = getNum(c['先攻'], '加值', '总值') ?? abilityMod(abilities.dex);
-    const speed = getNum(c, '速度') ?? 30;
+    // 速度：卡内为对象 {步行,飞行,攀爬,游泳}，取步行；兼容纯数字旧形态
+    const speed = getNum(c['速度'], '步行') ?? getNum(c, '速度') ?? 30;
 
     // 法术位
     const casting = c['施法'];
@@ -457,9 +458,18 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
           const rangeFallback = isRangedW
             ? (/长弓/.test(wName) ? 150 : /重弩/.test(wName) ? 100 : 80)
             : (isThrown ? 30 : 5);
-          // 武器精通：词条库判定优先级——先确认掌握（武器.已掌握），再按词条结算
-          const masteryRaw = getStr(w, '精通', '精通词条', '专精特质')?.toLowerCase() ?? '';
+          // 武器精通：词条库判定优先级——先确认掌握（武器.已掌握），再按词条结算。
+          // 卡内协议存复合形态如 "摔绊(Topple)" / "推离(Push)"：剥离括号查中文别名，
+          // 再提取括号内英文键兜底（条目28《新角色变量登记规则》规定的书写格式）
+          const masteryRaw = (getStr(w, '精通', '精通词条', '专精特质') ?? '').trim();
           const mastered = w['已掌握'] === true || w['已掌握'] === 'true';
+          const masteryKey = (() => {
+            const bare = masteryRaw.toLowerCase().replace(/\s+/g, '');
+            if (MASTERY_CN[bare]) return MASTERY_CN[bare];
+            const en = masteryRaw.match(/\(([A-Za-z]+)\)/)?.[1]?.toLowerCase();
+            if (en && MASTERY_CN[en]) return MASTERY_CN[en];
+            return MASTERY_CN[masteryRaw.toLowerCase()];
+          })();
           weapons.push({
             name: wName,
             formula: formula.replace(/\s/g, ''),
@@ -471,7 +481,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
             versatile: getStr(w, '属性特征'),
             ranged: isRangedW,
             range: rangeField !== undefined && rangeField > 0 ? rangeField : rangeFallback,
-            mastery: mastered ? MASTERY_CN[masteryRaw] : undefined,
+            mastery: mastered ? masteryKey : undefined,
           });
         }
       }

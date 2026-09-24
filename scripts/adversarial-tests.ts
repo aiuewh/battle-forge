@@ -20,6 +20,7 @@ import { resolveAttack, applyDamageModifiers, resolveSave, encounterDifficulty }
 import { rollInitiative, buildInitiativeOrder } from '../src/lib/engine/initiative';
 import type { BattleUnit } from '../src/lib/engine/types';
 import * as fs from 'fs';
+import * as path from 'path';
 
 // ===== 框架 =====
 let pass = 0, fail = 0;
@@ -291,8 +292,9 @@ console.log('━━━━━━ G. 正则性能（ReDoS） ━━━━━━');
 if (process.env.SKIP_G) {
   console.log('  （SKIP_G=1 跳过）');
 } else {
-  // 从交付包读取真实 findRegex
-  const pkg = JSON.parse(fs.readFileSync('/home/z/my-project/download/battle-forge-st-pack/battle-forge-panel.json', 'utf8'))[0];
+  // 从交付包读取真实 findRegex（相对仓库根，跨机器可运行）
+  const pkgPath = path.resolve(__dirname, '..', 'download', 'battle-forge-st-pack', 'battle-forge-panel.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))[0];
   const body = pkg.findRegex.replace(/^\/|\/[a-z]*$/g, '');
   const flags = (pkg.findRegex.match(/\/([a-z]*)$/) || [])[1] || '';
   const re = new RegExp(body, flags);

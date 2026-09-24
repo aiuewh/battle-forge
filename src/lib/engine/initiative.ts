@@ -106,6 +106,8 @@ export interface TurnAdvanceResult {
   newRound: boolean;
   /** 巢穴动作触发（先攻20槽） */
   lairTrigger: boolean;
+  /** 本回合位置经过的濒死单位（hp≤0 且未稳定/未死亡）——回合开始应掷死亡豁免 */
+  needsDeathSave: string[];
 }
 
 /** 起始战斗状态 */
@@ -130,6 +132,7 @@ export function advanceTurn(
 ): TurnAdvanceResult {
   const skip = opts.skipIncapacitated ?? true;
   const skipped: string[] = [];
+  const needsDeathSave: string[] = [];
   let lairTrigger = false;
   let s: TurnState = { ...state, order: [...state.order] };
 
@@ -168,6 +171,10 @@ export function advanceTurn(
     // 2014 惊讶：被惊讶者在第 1 轮自己的回合不能行动（2024 默认改为先攻劣势，不丢回合）
     const isSurprisedR1 = rules.surpriseMode === 'skip-turn' && s.round === 1 && s.surprisedIds.includes(id);
     if (isDown || isIncap || isSurprisedR1) {
+      // 濒死（未稳定未死亡）单位的回合位置经过了：RAW 其死亡豁免在自己回合开始时掷
+      if (unit.hp <= 0 && !unit.deathSaves?.stable && !unit.deathSaves?.dead) {
+        needsDeathSave.push(id);
+      }
       skipped.push(id);
       continue;
     }
@@ -178,8 +185,9 @@ export function advanceTurn(
     state: s,
     skipped,
     newUnitId: s.currentUnitId,
-    newRound: s.turnIndex === 0,
+    newRound: s.round > state.round,
     lairTrigger,
+    needsDeathSave,
   };
 }
 

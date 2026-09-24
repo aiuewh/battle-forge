@@ -145,14 +145,14 @@ const rj = rollFormula('1d20', { bonus: 5, forcedRolls: [10] });
 check('judgeCheck 15+5 vs DC15', judgeCheck(rj, 15).outcome === 'success');
 const rj2 = rollFormula('1d20', { bonus: 4, forcedRolls: [10] });
 check('judgeCheck 14 vs DC15', judgeCheck(rj2, 15).outcome === 'failure');
-// 2024: 优势下双20才大成功
+// 2024: 判定看保留骰——优势 [20,5] 保留 20 = 大成功；劣势 [1,12] 保留 1 = 大失败
 setRng(() => 0.999);
 const advNotCrit = rollFormula('1d20', { mode: 'advantage', forcedRolls: [20, 5] });
-check('优势单20非大成功(2024)', judgeCheck(advNotCrit, 15).outcome === 'success', judgeCheck(advNotCrit, 15).outcome);
+check('优势保留骰20即大成功(2024)', judgeCheck(advNotCrit, 15).outcome === 'critical-success', judgeCheck(advNotCrit, 15).outcome);
 const advCrit = rollFormula('1d20', { mode: 'advantage', forcedRolls: [20, 20] });
 check('优势双20大成功(2024)', judgeCheck(advCrit, 15).outcome === 'critical-success');
 const disNotCrit = rollFormula('1d20', { mode: 'disadvantage', forcedRolls: [1, 12] });
-check('劣势单1非大失败(2024)', judgeCheck(disNotCrit, 15).outcome === 'failure', judgeCheck(disNotCrit, 15).outcome);
+check('劣势保留骰1即大失败(2024)', judgeCheck(disNotCrit, 15).outcome === 'critical-failure', judgeCheck(disNotCrit, 15).outcome);
 
 // formatDice
 const fd = rollFormula('1d20+5', { forcedRolls: [17] });
@@ -430,14 +430,14 @@ const crit = resolveAttack(attacker, target, {
 // 第一遍 forced=5，第二遍 RNG 全最大=8；骰 5+8 + 修正 3 = 16（修复前为 (5+3)+(8+3)=19）
 check('重击骰翻倍修正不翻倍(修复#4)', crit.damage?.final === 5 + 8 + 3, `final=${crit.damage?.final} 期望 16`);
 
-// 重击 rider 不翻倍（2024 规则）
+// 2024 正式规则：重击时全部伤害骰翻倍（含 rider），修正值不翻倍
 setRng(() => 0.999);
 const critRider = resolveAttack(attacker, target, {
   attackBonus: 5, targetAc: 13, weaponDamage: '1d8+3', riderDamage: '2d6', forcedAttackRoll: 20, forcedDamageRolls: [4],
 });
-// 武器双骰 4+8 + 修正3 + rider 6+6 = 27（修复前武器修正翻倍 = 30）
-const riderExpect = 4 + 8 + 3 + 6 + 6;
-check('2024 重击 rider 不翻倍', critRider.damage?.final === riderExpect, `final=${critRider.damage?.final} 期望 ${riderExpect}`);
+// 武器双骰 4+8 + 修正3 + rider 翻倍两遍各 6+6 = 39（修正值不翻倍）
+const riderExpect = 4 + 8 + 3 + (6 + 6) * 2;
+check('2024 重击 rider 翻倍（修正不翻倍）', critRider.damage?.final === riderExpect, `final=${critRider.damage?.final} 期望 ${riderExpect}`);
 
 // 伤害管线
 const resist = applyDamageModifiers(mkUnit({ resistances: ['fire'] }), 15, 'fire');
@@ -514,9 +514,9 @@ check('擒抱速度0', ag1.speedMultiplier === 0);
 const ag2 = aggregateEffects(['paralyzed']);
 check('麻痹自动失败str/dex', ag2.autoFailSaves.has('str') && ag2.autoFailSaves.has('dex') && ag2.noActions && ag2.speedMultiplier === 0);
 const ag3 = aggregateEffects(['exhaustion:3']);
-check('力竭3级攻击劣势', ag3.ownAttackDisadvantage === true);
+check('力竭3级无攻击劣势（2024 分级废除，-2/级数值化）', ag3.ownAttackDisadvantage === false);
 const ag4 = aggregateEffects(['exhaustion:6']);
-check('力竭6级死亡级', ag4.noActions === true && ag4.speedMultiplier === 0);
+check('力竭6级非死亡级（2024 死亡在 10 级）', ag4.noActions === false && ag4.speedMultiplier === 1);
 
 // 攻击模式互斥
 const blindAtk = mkUnit({ statuses: ['blinded'] });
@@ -538,9 +538,9 @@ check('优势劣势抵消=正常', mode4.mode === 'normal', mode4.mode);
 
 // 有效速度
 check('束缚速度0', effectiveSpeed(mkUnit({ speed: 30, statuses: ['restrained'] })) === 0);
-check('力竭1级速减半', effectiveSpeed(mkUnit({ speed: 30, statuses: ['exhaustion:1'] })) === 30); // 2024: 1级不减速（brief 说明），确认实现
+check('力竭1级速度 -5 尺（2024：-5/级）', effectiveSpeed(mkUnit({ speed: 30, statuses: ['exhaustion:1'] })) === 25);
 const ex1 = aggregateEffects(['exhaustion:1']);
-check('力竭1级引擎层不减速(2024规则)', ex1.speedMultiplier === 1);
+check('力竭1级引擎层不按倍率减速(2024规则)', ex1.speedMultiplier === 1);
 
 // 状态注册表完整性
 check('13种官方状态', ['blinded', 'charmed', 'deafened', 'frightened', 'grappled', 'incapacitated', 'invisible', 'paralyzed', 'petrified', 'poisoned', 'prone', 'restrained', 'stunned', 'unconscious'].every(k => CONDITIONS[k] !== undefined));

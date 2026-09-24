@@ -70,7 +70,7 @@ export const CONDITIONS: Record<string, ConditionDef> = {
   invisible: {
     key: 'invisible', name: '隐形', en: 'Invisible', icon: '👻', color: '#9ab8d8',
     brief: '攻击它有劣势；它的攻击有优势；可以尝试躲藏。仍会留下痕迹。',
-    effect: { attacksAgainst: 'disadvantage' },
+    effect: { attacksAgainst: 'disadvantage', ownAttacks: 'advantage' },
   },
   paralyzed: {
     key: 'paralyzed', name: '麻痹', en: 'Paralyzed', icon: '⚡', color: '#e0d44e',
@@ -82,10 +82,10 @@ export const CONDITIONS: Record<string, ConditionDef> = {
   },
   petrified: {
     key: 'petrified', name: '石化', en: 'Petrified', icon: '🗿', color: '#a0a0a0',
-    brief: '失能+不能移动或说话。攻击它有优势；力量/敏捷豁免自动失败；对毒素伤害免疫（2024）。抗性：所有伤害。',
+    brief: '失能+不能移动或说话。攻击它有优势；力量/敏捷豁免自动失败；对所有伤害具抗性（伤害管线自动减半）。',
     effect: {
       attacksAgainst: 'advantage', autoFailSaves: ['str', 'dex'],
-      noActions: true, noReactions: true, speedMultiplier: 0, meleeCritOnHit: true,
+      noActions: true, noReactions: true, speedMultiplier: 0,
     },
   },
   poisoned: {
@@ -122,7 +122,7 @@ export const CONDITIONS: Record<string, ConditionDef> = {
   // ---- 扩展条件（协议外，引擎内部） ----
   exhaustion: {
     key: 'exhaustion', name: '力竭', en: 'Exhaustion', icon: '🥀', color: '#8c6b5a',
-    brief: '2024：每级力竭使所有 d20 检定（攻击/属性/豁免）-2、速度 -5 尺（均叠加）；6 级死亡。长休恢复 1 级。',
+    brief: '2024：每级力竭使所有 d20 检定（攻击/属性/豁免）-2、速度 -5 尺（均叠加）；10 级死亡。长休恢复 1 级。',
     effect: {},
   },
   concentration: {
@@ -191,7 +191,7 @@ export function conditionIcon(key: string): string {
   return CONDITIONS[key]?.icon ?? '❓';
 }
 
-/** 2024 力竭等级：所有 d20 检定 -2/级、速度 -5 尺/级；6 级死亡 */
+/** 2024 力竭等级：所有 d20 检定 -2/级、速度 -5 尺/级；10 级死亡 */
 export function exhaustionLevels(statuses: string[]): number {
   let max = 0;
   for (const s of statuses) {
@@ -240,9 +240,7 @@ export function aggregateEffects(statuses: string[]): {
     let key = s;
     if (key.startsWith('exhaustion:')) {
       // 2024：每级 -2 全 d20 检定、-5 尺速度（见 exhaustionPenalty / exhaustionSpeedLoss）；
-      // 6 级死亡——以失去行动表达（死亡事件由 store 在状态写入时结算）
-      const lv = parseInt(key.split(':')[1] || '0', 10);
-      if (lv >= 6) noActions = true;
+      // 10 级死亡——死亡事件由 store 在状态写入/等级提升时结算，此处只表达数值减值
       key = 'exhaustion';
     }
     const def = CONDITIONS[key];

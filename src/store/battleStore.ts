@@ -16,6 +16,7 @@ import { AI_PROFILE_META } from '@/lib/engine/types';
 import { DEFAULT_RULES } from '@/lib/engine/types';
 import {
   resolveAttack, resolveSave, resolveDeathSave, resolveHeal, resolveConcentration,
+  applyTypeModifiers,
   type AttackOptions, type SaveOptions,
 } from '@/lib/engine/combat';
 import type { AttackResult } from '@/lib/engine/types';
@@ -261,7 +262,9 @@ export interface BattleStore {
   removeUnit: (id: string) => void;
   moveUnit: (id: string, pos: { x: number; y: number }, recordEvent?: boolean) => void;
   toggleStatus: (id: string, status: string) => void;
-  damageUnit: (id: string, amount: number, opts?: { isCrit?: boolean; type?: DamageType; source?: string }) => void;
+  damageUnit: (id: string, amount: number, opts?: { isCrit?: boolean; type?: DamageType; source?: string; skipTypeMods?: boolean }) => void;
+  /** 伤害落账后检查专注（法术/AoE/巢穴等非攻击路径统一调用；攻击路径在 performAttack 内处理） */
+  concentrationAfterDamage: (targetId: string, damage: number) => void;
   healUnit: (id: string, amount: number) => void;
   tempHpUnit: (id: string, amount: number) => void;
   spendSpellSlot: (id: string, level: number) => void;
@@ -292,13 +295,13 @@ export interface BattleStore {
   /** 反应【被命中后·攻击类】：反应撕裂等，伤害结算完毕后反击 */
   runPostHitReactions: (targetId: string, attackerId: string, opts: AttackOptions) => void;
   /** 传送：半径 radiusCells 格内随机可站立格 */
-  randomTeleport: (id: string, radiusCells: number) => boolean;
+  randomTeleport: (id: string, radiusFeet: number) => boolean;
   /** 巢穴动作：先攻20槽自动执行（敌卡「巢穴动作」字段） */
   executeLairAction: () => void;
   /** 传奇动作：其他单位回合结束后，敌方传奇单位消耗点数自动执行 */
   runLegendaryActions: (endedUnitId: string) => void;
   /** 定向移动：向目标直线找 radiusCells 内最靠近目标的空格 */
-  moveToward: (id: string, targetId: string, radiusCells: number) => boolean;
+  moveToward: (id: string, targetId: string, radiusFeet: number) => boolean;
   performSave: (targetId: string, opts: SaveOptions) => number;
   quickRoll: (formula: string, mode?: RollMode, note?: string) => void;
 
@@ -628,11 +631,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     if (!unit) return;
     const has = unit.statuses.includes(status);
     const statuses = has ? unit.statuses.filter(s => s !== status) : [...unit.statuses, status];
-    // 2024：力竭达到 6 级即死亡
+    // 2024：力竭达到 10 级即死亡
     let dead = false;
     if (!has && /^exhaustion:(\d+)$/.test(status)) {
       const lv = parseInt(status.split(':')[1], 10);
-      dead = lv >= 6;
+      dead = lv >= 10;
     }
     set({
       units: get().units.map(u => (u.id === id
@@ -642,7 +645,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     get().logEvent({
       type: has ? 'status-remove' : 'status-add',
       actorId: id,
-      text: `${unit.name} ${has ? '解除' : '获得'}状态：${status}${dead ? ' —— 力竭 6 级，死亡' : ''}`,
+      text: `${unit.name} ${has ? '解除' : '获得'}状态：${status}${dead ? ' —— 力竭 10 级，死亡' : ''}`,
       level: dead ? 'crit' : has ? 'good' : 'bad',
     });
     if (dead) {
@@ -654,12 +657,27 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   damageUnit: (id, amount, opts = {}) => {
     const unit = get().units.find(u => u.id === id);
     if (!unit) return;
+    // 伤害类型管线（2024：易伤→抗性→免疫依次应用；石化全抗性）。
+    // 攻击路径（performAttack→resolveAttack）已应用过，传 skipTypeMods 防止二次结算；
+    // 法术/AoE/巢穴/精通等路径在此统一应用——修复火球无视免疫/抗性的 P0 缺陷
+    let typed = amount;
+    if (opts.type && !opts.skipTypeMods) {
+      const r = applyTypeModifiers(unit, amount, opts.type);
+      typed = r.final;
+      if (r.note) {
+        get().logEvent({
+          type: 'damage', actorId: id,
+          text: `🛡️ ${unit.name} ${r.note}：${amount} → ${typed}`,
+          level: 'info',
+        });
+      }
+    }
     // 临时 HP 吸收
     let absorbed = 0;
-    let remaining = amount;
+    let remaining = typed;
     if (unit.tempHp > 0) {
-      absorbed = Math.min(unit.tempHp, amount);
-      remaining = amount - absorbed;
+      absorbed = Math.min(unit.tempHp, typed);
+      remaining = typed - absorbed;
     }
     const newHp = unit.hp - remaining;
     let deathSaves = unit.deathSaves;
@@ -693,10 +711,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         : u)),
     });
     const hpNote = absorbed > 0 ? `（临时HP吸收${absorbed}）` : '';
+    const typedNote = typed !== amount ? `（类型修正后 ${typed}）` : '';
     get().logEvent({
       type: 'damage',
       actorId: id,
-      text: `${unit.name} 受到 ${amount}${opts.type ? ' [' + opts.type + ']' : ''} 伤害${hpNote} → HP ${Math.max(0, newHp)}/${unit.maxHp}${killed ? ' ☠️死亡' : newHp <= 0 ? ' 濒死！' : ''}`,
+      text: `${unit.name} 受到 ${amount}${opts.type ? ' [' + opts.type + ']' : ''}${typedNote} 伤害${hpNote} → HP ${Math.max(0, newHp)}/${unit.maxHp}${killed ? ' ☠️死亡' : newHp <= 0 ? ' 濒死！' : ''}`,
       level: killed ? 'crit' : 'bad',
       data: { amount, type: opts.type, killed },
     });
@@ -709,6 +728,15 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   healUnit: (id, amount) => {
     const unit = get().units.find(u => u.id === id);
     if (!unit) return;
+    // 2024：死亡不是 0 HP——治疗无法作用于尸体（需复活类法术走 reviveUnit）
+    if (unit.deathSaves?.dead) {
+      get().logEvent({
+        type: 'heal', actorId: id,
+        text: `⛔ ${unit.name} 已死亡——治疗无法生效（需要复活法术）`,
+        level: 'bad',
+      });
+      return;
+    }
     const newHp = Math.min(unit.maxHp, Math.max(0, unit.hp) + amount);
     const fromZero = unit.hp <= 0;
     set({
@@ -772,6 +800,21 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       get().logEvent({ type: 'concentration', actorId: id, text: `${unit.name} 的专注【${unit.concentration}】被打断！`, level: 'bad' });
     }
     persist(get());
+  },
+
+  concentrationAfterDamage: (targetId, damage) => {
+    const t = get().units.find(u => u.id === targetId);
+    if (!t || !t.concentration || damage <= 0) return;
+    const conc = resolveConcentration(t, damage);
+    if (conc.broken) {
+      get().setConcentration(targetId, null);
+    } else {
+      get().logEvent({
+        type: 'concentration', actorId: targetId,
+        text: `${t.name} ${conc.check.label}：${conc.check.total} —— 维持专注`,
+        level: 'info',
+      });
+    }
   },
 
   // ---------------- 死亡豁免 ----------------
@@ -913,7 +956,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           return {
             ...base,
             actionEconomy: defaultActionEconomy(),
-            // 0 HP 时自动死亡豁免提示
+            // 闪避持续到自身下回合开始（2024）：轮到闪避者行动时解除
+            statuses: u.statuses.filter(st => st !== 'dodging'),
           };
         }
         return base;
@@ -923,6 +967,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     const newActor = get().units.find(u => u.id === result.state.currentUnitId);
     if (newActor?.reactions?.some(r => r.effect === 'speed-zero')) {
       set({ units: get().units.map(u => (u.statuses.includes('slow_time') ? { ...u, statuses: u.statuses.filter(st => st !== 'slow_time') } : u)) });
+    }
+    // 濒死单位的回合位置经过了：自动掷死亡豁免（2024：死亡豁免在自己回合开始时掷）
+    for (const dsId of result.needsDeathSave) {
+      get().rollDeathSave(dsId);
     }
     const nu = get().units.find(u => u.id === result.newUnitId);
     if (result.newRound) {
@@ -939,11 +987,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     if (result.lairTrigger) {
       get().executeLairAction();
     }
-    const dying = nu && nu.hp <= 0;
     get().logEvent({
       type: 'turn-start',
       actorId: result.newUnitId ?? undefined,
-      text: `▶️ 轮到 ${nu?.name ?? '?'} 行动${dying ? '（濒死：需死亡豁免）' : ''}`,
+      text: `▶️ 轮到 ${nu?.name ?? '?'} 行动`,
       level: 'info',
     });
     // 战斗结束检查
@@ -1047,6 +1094,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         isCrit: result.critical,
         type: opts.weaponType,
         source: attackerId,
+        skipTypeMods: true, // resolveAttack 内已应用类型修正，避免二次结算
       });
       // 专注豁免
       if (result.damage.concentrationDc) {
@@ -1078,7 +1126,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       if ((reactor.reactionsUsedRound ?? 0) >= (reactor.reactionsPerRound ?? 1) || reactor.reactionUsedTurn) continue;
       const foes = get().units.filter(u =>
         u.id !== reactor.id && u.attitude !== reactor.attitude && u.hp > 0 && !u.deathSaves?.dead);
-      const inRange = foes.filter(u => Math.hypot(u.pos.x - reactor.pos.x, u.pos.y - reactor.pos.y) * 5 <= 60);
+      const inRange = foes.filter(u => Math.hypot(u.pos.x - reactor.pos.x, u.pos.y - reactor.pos.y) <= 60);
       const weakened = inRange.find(u => u.statuses.some(st => st.includes('削弱') || st.toLowerCase().includes('weaken') || st.includes('时光')));
       const target = weakened ?? inRange.slice().sort((a, b) =>
         ((a.pos.x - reactor.pos.x) ** 2 + (a.pos.y - reactor.pos.y) ** 2) - ((b.pos.x - reactor.pos.x) ** 2 + (b.pos.y - reactor.pos.y) ** 2))[0];
@@ -1106,7 +1154,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         ? { ...u, reactionsUsedRound: (u.reactionsUsedRound ?? 0) + 1, reactionUsedTurn: true, actionEconomy: { ...u.actionEconomy, reaction: true } }
         : u)),
     });
-    const moved = get().randomTeleport(targetId, 6);
+    const moved = get().randomTeleport(targetId, 30);
     get().logEvent({
       type: 'note', actorId: targetId,
       text: `⏳ 反应【${rx.name}】：${target.name} 将本次伤害减半（${incoming}→${final}）${moved ? '，并传送脱离' : ''}`,
@@ -1142,14 +1190,15 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     });
   },
 
-  randomTeleport: (id, radiusCells) => {
+  randomTeleport: (id, radiusFeet) => {
     const u = get().units.find(x => x.id === id);
     if (!u) return false;
     const blocked = new Set([...buildBlockedCells(get().obstacles).keys()]);
     const occ = new Set(get().units.filter(x => x.id !== id && x.hp > 0).map(x => `${x.pos.x},${x.pos.y}`));
     const cands: Array<{ x: number; y: number }> = [];
-    for (let dx = -radiusCells; dx <= radiusCells; dx++) {
-      for (let dy = -radiusCells; dy <= radiusCells; dy++) {
+    // pos 坐标为英尺：半径按英尺遍历，步长 5 尺（1 格）
+    for (let dx = -radiusFeet; dx <= radiusFeet; dx += 5) {
+      for (let dy = -radiusFeet; dy <= radiusFeet; dy += 5) {
         if (dx === 0 && dy === 0) continue;
         const cx = u.pos.x + dx, cy = u.pos.y + dy;
         if (cx < 0 || cy < 0) continue;
@@ -1170,7 +1219,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       const rangeFeet = act.rangeFeet ?? 9999;
       const targets = get().units.filter(u =>
         u.attitude !== caster.attitude && u.hp > 0 && !u.deathSaves?.dead &&
-        Math.hypot(u.pos.x - caster.pos.x, u.pos.y - caster.pos.y) * 5 <= rangeFeet);
+        Math.hypot(u.pos.x - caster.pos.x, u.pos.y - caster.pos.y) <= rangeFeet);
       get().logEvent({
         type: 'lair', actorId: caster.id,
         text: `🐉 巢穴动作 —— ${caster.name}：【${act.name}】${act.description ? `（${act.description}）` : ''}`,
@@ -1193,6 +1242,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           level: 'bad',
         });
         get().damageUnit(t.id, dmg, { type: act.damageType, source: caster.id });
+        get().concentrationAfterDamage(t.id, dmg);
       }
     }
   },
@@ -1209,7 +1259,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       if (!foes.length) continue;
       const nearest = foes.slice().sort((a, b) =>
         ((a.pos.x - actor.pos.x) ** 2 + (a.pos.y - actor.pos.y) ** 2) - ((b.pos.x - actor.pos.x) ** 2 + (b.pos.y - actor.pos.y) ** 2))[0];
-      const distFt = Math.hypot(nearest.pos.x - actor.pos.x, nearest.pos.y - actor.pos.y) * 5;
+      const distFt = Math.hypot(nearest.pos.x - actor.pos.x, nearest.pos.y - actor.pos.y);
       // 优先攻击型（有可达目标）；否则移动型（接近）；再否则记录型
       const attackAct = affordable.find(a => a.kind === 'attack');
       const ability = attackAct ? (actor.aiAbilities?.find(x => x.name === attackAct.attackName) ?? actor.aiAbilities?.find(x => x.kind === 'melee')) : undefined;
@@ -1223,7 +1273,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         : u)) });
       if (chosen.kind === 'attack' && ability) {
         const target = (ability.range ?? 5) > distFt ? nearest
-          : foes.find(u => Math.hypot(u.pos.x - actor.pos.x, u.pos.y - actor.pos.y) * 5 <= (ability.range ?? 5)) ?? nearest;
+          : foes.find(u => Math.hypot(u.pos.x - actor.pos.x, u.pos.y - actor.pos.y) <= (ability.range ?? 5)) ?? nearest;
         get().logEvent({
           type: 'legendary', actorId: actor.id, targetId: target.id,
           text: `🐉 传奇动作【${chosen.name}】（-${chosen.cost}点）—— ${actor.name} 对 ${target.name} 发动【${ability.name}】`,
@@ -1244,7 +1294,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           level: 'bad',
         });
         spend();
-        get().moveToward(actor.id, nearest.id, Math.ceil(feet / 5));
+        get().moveToward(actor.id, nearest.id, feet);
       } else {
         get().logEvent({
           type: 'legendary', actorId: actor.id,
@@ -1256,7 +1306,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
   },
 
-  moveToward: (id, targetId, radiusCells) => {
+  moveToward: (id, targetId, radiusFeet) => {
     const u = get().units.find(x => x.id === id);
     const target = get().units.find(x => x.id === targetId);
     if (!u || !target) return false;
@@ -1264,9 +1314,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     const occ = new Set(get().units.filter(x => x.id !== id && x.hp > 0).map(x => `${x.pos.x},${x.pos.y}`));
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;
-    for (let dx = -radiusCells; dx <= radiusCells; dx++) {
-      for (let dy = -radiusCells; dy <= radiusCells; dy++) {
-        if (Math.hypot(dx, dy) > radiusCells) continue;
+    // pos 坐标为英尺：移动半径按英尺，步长 5 尺（1 格）
+    for (let dx = -radiusFeet; dx <= radiusFeet; dx += 5) {
+      for (let dy = -radiusFeet; dy <= radiusFeet; dy += 5) {
+        if (Math.hypot(dx, dy) > radiusFeet) continue;
         const cx = u.pos.x + dx, cy = u.pos.y + dy;
         if (cx < 0 || cy < 0) continue;
         const key = `${cx},${cy}`;
@@ -1405,6 +1456,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         if (ability && ability.aoe) {
           set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
+          // AI 施法同样消耗法术位（此前绕过 castAbility 导致无限火球）
+          if (ability.spellLevel) get().spendSpellSlot(unit.id, ability.spellLevel);
           get().addAoeTemplate({
             kind: ability.aoe.kind, size: ability.aoe.size,
             origin: step.origin, angle: step.angle,
@@ -1432,6 +1485,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
               level: r.check.outcome.includes('success') ? 'good' : 'bad',
             });
             get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: unit.id });
+            get().concentrationAfterDamage(tid, r.damageTaken);
           }
         }
         return true;
@@ -1440,6 +1494,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         const t = get().units.find(u => u.id === step.targetId);
         if (ability && t) {
+          // AI 治疗法术同样消耗法术位
+          if (ability.spellLevel) get().spendSpellSlot(unit.id, ability.spellLevel);
           const r = rollFormula(ability.dice);
           set({
             lastRoll: { id: uid(), formula: ability.dice, result: r, note: `${ability.name} 治疗` },
@@ -2056,6 +2112,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             level: 'crit',
           });
           get().damageUnit(target.id, dmgRoll.total, { type: ability.damageType, source: actorId });
+          // 受伤专注检定（法术伤害同样打断专注）
+          get().concentrationAfterDamage(target.id, dmgRoll.total);
         } else {
           const r = resolveSave(target, {
             ability: ability.saveAbility,
@@ -2071,6 +2129,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             level: passed ? 'info' : 'bad',
           });
           if (r.damageTaken > 0) get().damageUnit(target.id, r.damageTaken, { type: ability.damageType, source: actorId });
+          get().concentrationAfterDamage(target.id, r.damageTaken);
           if (!passed && ability.applyStatus) {
             set({ units: get().units.map(u => (u.id === target.id ? { ...u, statuses: [...new Set([...u.statuses, ability.applyStatus!])] } : u)) });
           }
@@ -2110,11 +2169,13 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
               level: r.check.outcome.includes('success') ? 'good' : 'bad',
             });
             if (r.damageTaken > 0) get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: actorId });
+            get().concentrationAfterDamage(tid, r.damageTaken);
             if (!r.check.outcome.includes('success') && ability.applyStatus) {
               set({ units: get().units.map(u => (u.id === tid ? { ...u, statuses: [...new Set([...u.statuses, ability.applyStatus!])] } : u)) });
             }
           } else if (dmgRoll.total > 0) {
             get().damageUnit(tid, dmgRoll.total, { type: ability.damageType, source: actorId });
+            get().concentrationAfterDamage(tid, dmgRoll.total);
           }
         }
         break;

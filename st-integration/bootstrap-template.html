@@ -60,6 +60,7 @@
 <script type="text/plain" id="bp-data">$1</script>
 
 <script>
+try {
 (function () {
   "use strict";
   var APP_URL_DEFAULT = "{{APP_URL}}"; // ← 部署后亦可在上方 ⚙ 中配置（localStorage 持久，优先级更高）
@@ -128,7 +129,7 @@
         if (key === "init") u.init = parseInt(val, 10) || 0;
         else if (key === "hp") {
           var m = val.match(/^(\d+)\s*\/\s*(\d+)$/);
-          if (m) { u.hp = +m[1]; u.max = +m[2]; } else { u.hp = u.max = parseInt(val, 10) || 0; }
+          if (m) { u.hp = +m[1]; u.max = +m[2]; } else { var rm = String(val).match(/^(\d+)\s*[-—~]\s*(\d+)$/); if (rm) { u.hp = u.max = Math.round((+rm[1] + (+rm[2])) / 2); } else { u.hp = u.max = parseInt(val, 10) || 0; } }
         }
         else if (key === "att" || key === "attitude") u.att = val === "0" ? 0 : val === "2" ? 2 : 1;
         else if (key === "status") u.status = val.split(/[,，\s]+/).filter(Boolean);
@@ -234,10 +235,12 @@
   // 轮询等待生成结束后再加载完整引擎；流式期间保持下方轻量渲染，不受影响。
   // 关键：本脚本运行在沙箱 iframe 内，document.getElementById 只能看到面板自身文档，
   // 查不到主界面的 #mes_stop——必须穿透 window.parent 到酒馆主文档读真实生成状态。
+  var PROBE_OK = false; // whether the host document is reachable
   function isGeneratingNow() {
     var docs = [];
-    try { if (window.parent && window.parent.document) docs.push(window.parent.document); } catch (e) {}
-    try { if (window.top && window.top.document && docs.indexOf(window.top.document) === -1) docs.push(window.top.document); } catch (e) {}
+    try { if (window.parent && window.parent.document) { docs.push(window.parent.document); PROBE_OK = true; } } catch (e) {}
+    try { if (window.top && window.top.document && docs.indexOf(window.top.document) === -1) { docs.push(window.top.document); PROBE_OK = true; } } catch (e) {}
+    if (!PROBE_OK) return true; // 洞3：探测不可达时保守视为生成中，走短兜底
     docs.push(document);
     for (var i = 0; i < docs.length; i++) {
       try {
@@ -249,11 +252,24 @@
   }
   var engineLoadStarted = false;
   var engineWaitStart = 0;
+  var forceLoad = false; // 用户手动放行：点击立即加载后跳过守卫
+  function noteWaiting() {
+    try {
+      var secs = Math.round((Date.now() - engineWaitStart) / 1000);
+      badge.textContent = "生成中 · 暂缓加载 " + secs + "s";
+      if (Date.now() - engineWaitStart >= 8000) {
+        hint.innerHTML = '⏳ 检测到酒馆仍在生成，引擎暂缓注入（已等待 ' + secs + ' 秒）。若回复其实已完成，<a href="javascript:void(0)" id="bp-force">点此立即加载引擎</a>';
+        var fl = document.getElementById("bp-force");
+        if (fl && !fl._bfpBound) { fl._bfpBound = true; fl.addEventListener("click", function () { forceLoad = true; engineLoadStarted = false; tryLoadEngine(); }); }
+      }
+    } catch (e) {}
+  }
   function tryLoadEngine() {
     if (engineLoadStarted) return;
-    if (isGeneratingNow()) {
+    if (isGeneratingNow() && !forceLoad) {
       if (!engineWaitStart) engineWaitStart = Date.now();
-      if (Date.now() - engineWaitStart < 90000) { window.setTimeout(tryLoadEngine, 600); return; }
+      noteWaiting();
+      if (Date.now() - engineWaitStart < (PROBE_OK ? 300000 : 20000)) { window.setTimeout(tryLoadEngine, 600); return; }
     }
     engineLoadStarted = true;
     try { t = window.setTimeout(onTimeout, TIMEOUT_MS); } catch (e) {}
@@ -285,7 +301,31 @@
       frame.style.height = h + "px";
       document.body.style.height = h + "px";
     }
+    if (msg.type === "bp:report" && typeof msg.text === "string") {
+      deliverReport(msg.text);
+    }
   });
+
+  // ---- 战报自动回注：把面板生成的 <battleresult> 作为玩家消息送回对话，替代手动粘贴 ----
+  function escSlash(s) {
+    return String(s == null ? "" : s)
+      .replace(/\\/g, "\\\\").replace(/\r?\n/g, " ").replace(/\|/g, "｜").replace(/"/g, '\\"');
+  }
+  function deliverReport(text) {
+    var body = String(text || "").trim();
+    if (!body) return;
+    if (typeof triggerSlash === "function") {
+      try {
+        triggerSlash("/send " + escSlash(body) + "|/trigger");
+        badge.textContent = "战报已送回对话";
+        return;
+      } catch (e) { /* 落到下方提示 */ }
+    }
+    if (warnEl) {
+      warnEl.style.display = "block";
+      warnEl.innerHTML = "⚠ 没能自动把战报送回对话（未检测到酒馆命令接口）。请在面板内点「复制战报给 DM」手动粘贴。";
+    }
+  }
 
   function onTimeout() {
     if (!ready) {
@@ -294,7 +334,8 @@
   }
 
   tryLoadEngine();
-})();
+  })();
+} catch (e) { try { document.getElementById("bp-badge").textContent = "⚠ 面板脚本异常: " + e.message; } catch (_e) {} }
 </script>
 </body>
 </html>

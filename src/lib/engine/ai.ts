@@ -408,8 +408,9 @@ export function planTurn(ctx: AiContext, unit: BattleUnit): AiStep[] {
     if (urgent) return [...steps, ...urgent, { type: 'end-turn' }];
   }
 
-  // 4) AoE 评估（爆发/远程施法档案优先）
-  const aoeAbility = abilities.find(a => a.kind === 'save-aoe');
+  // 4) AoE 评估（爆发/远程施法档案优先）；无法术位余量的法术不进入评估
+  const aoeAbility = abilities.find(a => a.kind === 'save-aoe'
+    && (!a.spellLevel || (unit.spellSlots?.[a.spellLevel]?.current ?? 0) > 0));
   if (aoeAbility && hasAction && (profile === 'blaster' || profile === 'ranged' || (unit.cr ?? 0) >= 5)) {
     const plan = bestAoePlacement(ctx, unit, aoeAbility);
     if (plan && plan.net >= (profile === 'blaster' ? 2 : 2)) {
@@ -555,7 +556,9 @@ function bestDamage(list: AiAbility[]): AiAbility | null {
 
 /** 队友紧急治疗：倒地队友 > 重伤队友（<40%）。返回 null 表示无需治疗 */
 function planUrgentHeal(ctx: AiContext, unit: BattleUnit, abilities: AiAbility[], remainingCells: number): AiStep[] | null {
-  const heals = abilities.filter(a => a.kind === 'heal');
+  // 无法术位余量的治疗法术不进入规划
+  const heals = abilities.filter(a => a.kind === 'heal'
+    && (!a.spellLevel || (unit.spellSlots?.[a.spellLevel]?.current ?? 0) > 0));
   if (heals.length === 0) return null;
   const allies = [...livingAllies(unit, ctx.units), unit];
   // 排序：倒地 > 血量比例

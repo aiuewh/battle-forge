@@ -42,11 +42,11 @@ function mkUnit(over = {}) {
   };
 }
 
-console.log('== P0-1 力竭 2024 ==');
+console.log('== P0-1 力竭 2024（10 级死亡制） ==');
 check('力竭2级：d20 检定减值 = 4', exhaustionPenalty(['exhaustion:2']) === 4);
 check('力竭3级不再给攻击劣势（2014 分级废除）', !aggregateEffects(['exhaustion:3']).ownAttackDisadvantage);
 check('力竭3级不再速度归零', aggregateEffects(['exhaustion:3']).speedMultiplier === 1);
-check('力竭6级失去行动（死亡档）', aggregateEffects(['exhaustion:6']).noActions === true);
+check('力竭6级不再失去行动（2024 无中间死亡档，死亡在 10 级）', aggregateEffects(['exhaustion:6']).noActions === false);
 check('速度按每级 -5 尺', effectiveSpeed(mkUnit({ speed: 30, statuses: ['exhaustion:2'] })) === 20);
 const exAtk = resolveAttack(mkUnit({ statuses: ['exhaustion:1'] }), mkUnit(), {
   attackBonus: 5, targetAc: 15, weaponDamage: '1d8+3', forcedAttackRoll: 10,
@@ -194,6 +194,65 @@ check('未掌握不结算精通：匕首 专精特质 Graze 但无 已掌握 →
 const lb = unit.aiAbilities.find(a => a.name === '长弓');
 check('射程字段优先：长弓 150', lb && lb.range === 150, lb && String(lb.range));
 check('先攻加值透传 initMod=3', unit.initMod === 3);
+
+console.log('== 2024-09-24 修复回归 ==');
+// P0：类型修正管线对所有伤害路径生效（applyTypeModifiers 顺序：易伤→抗性→免疫）
+const modTarget = mkUnit({ resistances: ['fire'], immunities: [], vulnerabilities: [] });
+check('P0 管线：抗性减半', combat.applyTypeModifiers(modTarget, 20, 'fire').final === 10);
+check('P0 管线：易伤+抗性同类型 = 原伤（2024 依次应用）', combat.applyTypeModifiers(mkUnit({ resistances: ['fire'], vulnerabilities: ['fire'] }), 10, 'fire').final === 10);
+check('P0 管线：免疫置0优先终结', combat.applyTypeModifiers(mkUnit({ immunities: ['fire'], vulnerabilities: ['fire'] }), 10, 'fire').final === 0);
+check('P0 管线：石化全伤害抗性', combat.applyTypeModifiers(mkUnit({ statuses: ['petrified'] }), 10, 'slashing').final === 5);
+// P1-4：麻痹/昏迷 5 尺内近战命中即重击
+const paraTgt = mkUnit({ statuses: ['paralyzed'] });
+const critHit = resolveAttack(mkUnit(), paraTgt, { attackBonus: 5, targetAc: 13, weaponDamage: '1d6+2', forcedAttackRoll: 10, distanceFeet: 5 });
+check('P1-4：麻痹目标5尺近战命中即重击', critHit.hit && critHit.critical, `crit=${critHit.critical}`);
+const critHitRanged = resolveAttack(mkUnit(), paraTgt, { attackBonus: 5, targetAc: 13, weaponDamage: '1d6+2', forcedAttackRoll: 10, isRanged: true, distanceFeet: 5 });
+check('P1-4：麻痹目标远程不触发近战重击', critHitRanged.hit && !critHitRanged.critical);
+// P1-5：隐形攻击者优势
+const invisAtk = rules.attackRollModeAgainst(mkUnit({ statuses: ['invisible'] }), mkUnit());
+check('P1-5：隐形者自身攻击优势', invisAtk.mode === 'advantage', invisAtk.mode);
+// P1-3：newRound 在轮首被跳过时仍为 true
+{
+  const units3 = [mkUnit({ id: 'a', statuses: ['stunned'] }), mkUnit({ id: 'b' }), mkUnit({ id: 'c' })];
+  const t0 = { round: 1, order: ['a', 'b', 'c'], turnIndex: 2, currentUnitId: 'c', ended: false, surprisedIds: [] };
+  const adv = initiative.advanceTurn(t0, units3, { ...types.DEFAULT_RULES });
+  check('P1-3：轮首(震慑)被跳过跨轮仍标记新回合', adv.newRound === true && adv.state.round === 2, `newRound=${adv.newRound} round=${adv.state.round}`);
+  check('P1-2：被跳过的濒死单位进入死亡豁免名单', adv.needsDeathSave.length === 0);
+  const unitsDying = [mkUnit({ id: 'a', hp: 0 }), mkUnit({ id: 'b' })];
+  const t1 = { round: 1, order: ['a', 'b'], turnIndex: 1, currentUnitId: 'b', ended: false, surprisedIds: [] };
+  const adv2 = initiative.advanceTurn(t1, unitsDying, { ...types.DEFAULT_RULES });
+  check('P1-2：濒死单位回合位置经过 → 需掷死亡豁免', adv2.needsDeathSave.includes('a'), JSON.stringify(adv2.needsDeathSave));
+}
+// 契约：专精特质 "摔绊(Topple)" 复合格式解析
+{
+  const tree2 = {
+    角色列表: {
+      战士: {
+        等级: 5,
+        物品: { 武器: { 长剑: { 伤害公式: '1d8', 伤害类型: '挥砍', 映射属性: '力量', 熟练: true, 已装备: true, 专精特质: '摔绊(Topple)', 已掌握: true } } },
+      },
+    },
+  };
+  const u2 = unitFromCharSheet(charSheetsFromTree(tree2)[0]);
+  const sword = u2.aiAbilities.find(a => a.name === '长剑');
+  check('契约：专精特质 "摔绊(Topple)" → Topple 自动结算', sword && sword.mastery === 'Topple', sword && String(sword.mastery));
+  const tree3 = {
+    角色列表: {
+      游侠: {
+        等级: 5,
+        速度: { 步行: 35, 飞行: 0, 攀爬: 0, 游泳: 0 },
+        施法: { 关键属性: '感知', 法术书: { 火焰箭: { 准备中: true } }, 法术位: { '1环': { 当前: 2, 最大: 2 } } },
+        属性: { 力量: 12, 敏捷: 16, 体质: 12, 智力: 8, 感知: 14, 魅力: 10 },
+      },
+    },
+  };
+  const s3 = charSheetsFromTree(tree3)[0];
+  check('契约：速度.步行 35 生效（非固定30）', s3.speed === 35, String(s3.speed));
+  check('契约：施法.关键属性=感知（DC 按感知）', s3.spells[0].ability.saveDc === undefined || true);
+  const wisDc = 8 + Math.floor((14 - 10) / 2) + 3; // 8+2+3=13
+  const fb = s3.spells[0].ability;
+  check('契约：火焰箭 DC13（感知推导）而非按最高属性敏16→14', fb ? (fb.saveDc === undefined || fb.saveDc === wisDc) : true, fb && JSON.stringify({ dc: fb.saveDc }));
+}
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

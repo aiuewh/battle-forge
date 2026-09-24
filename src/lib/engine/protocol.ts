@@ -144,8 +144,15 @@ export function parseBattleBlock(raw: string): ParsedBattleUnit[] {
             const max = parseInt(m[2], 10);
             unit.hp = { current: parseInt(m[1], 10), max: max > 0 ? max : Math.abs(parseInt(m[1], 10)) || 1 };
           } else {
-            const n = parseInt(value, 10);
-            if (!Number.isNaN(n)) unit.hp = { current: n, max: Math.max(1, Math.abs(n)) };
+            // 区间字符串 "18-24"：取均值（与卡内协议承诺及敌卡侧解析一致）
+            const rm = value.match(/^(\d+)\s*[-—~]\s*(\d+)$/);
+            if (rm) {
+              const avg = Math.round((parseInt(rm[1], 10) + parseInt(rm[2], 10)) / 2);
+              unit.hp = { current: avg, max: Math.max(1, avg) };
+            } else {
+              const n = parseInt(value, 10);
+              if (!Number.isNaN(n)) unit.hp = { current: n, max: Math.max(1, Math.abs(n)) };
+            }
           }
           break;
         }

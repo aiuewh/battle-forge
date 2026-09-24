@@ -86,8 +86,13 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
     label: '攻击检定',
   };
   const raw = attackDice.rawD20 ?? 0;
-  const isCrit = raw === 20;
+  let isCrit = raw === 20;
   const isCritMiss = raw === 1;
+  // 2024：麻痹/昏迷目标被 5 尺内近战命中即重击（meleeCritOnHit）
+  if (!isCrit && !opts.isRanged) {
+    const inMelee = opts.distanceFeet === undefined || opts.distanceFeet <= 5;
+    if (inMelee && aggregateEffects(target.statuses).meleeCritOnHit) isCrit = true;
+  }
   const hit = isCrit || (!isCritMiss && attackDice.total >= opts.targetAc);
   attack.outcome = isCrit ? 'critical-success' : isCritMiss ? 'critical-failure' : hit ? 'success' : 'failure';
 
@@ -132,7 +137,39 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
   };
 }
 
-// ---------- 伤害管线：免疫 > 抗性 > 易伤 ----------
+// ---------- 伤害管线：2024 顺序 易伤×2 → 抗性×½ → 免疫（依次应用） ----------
+
+/**
+ * 伤害类型修正管线（纯计算，不含临时HP/专注）。
+ * 2024 PHB：多种修正依次应用——先乘易伤，再减抗性，最后免疫置 0；
+ * 同类易伤+抗性并存时净效果为原伤（10 → 20 → 10）。
+ * 石化：对所有伤害具抗性（补充在类型修正之后）。
+ */
+export function applyTypeModifiers(
+  target: Pick<BattleUnit, 'resistances' | 'immunities' | 'vulnerabilities' | 'statuses'>,
+  raw: number,
+  type: DamageType,
+): { final: number; note: string } {
+  let final = raw;
+  const notes: string[] = [];
+  if (target.vulnerabilities.includes(type)) {
+    final = final * 2;
+    notes.push(`${type} 易伤 ×2`);
+  }
+  if (target.resistances.includes(type)) {
+    final = Math.floor(final / 2);
+    notes.push(`${type} 抗性 ×½`);
+  }
+  if (target.immunities.includes(type)) {
+    final = 0;
+    notes.push(`${type} 免疫`);
+  }
+  if (final > 0 && target.statuses?.includes('petrified')) {
+    final = Math.floor(final / 2);
+    notes.push('石化·全伤害抗性 ×½');
+  }
+  return { final, note: notes.join(' · ') };
+}
 
 export function applyDamageModifiers(
   target: BattleUnit,
@@ -144,16 +181,9 @@ export function applyDamageModifiers(
   let final = raw;
   let note = '';
   if (applyMods) {
-    if (target.immunities.includes(type)) {
-      final = 0;
-      note = `${type} 免疫`;
-    } else if (target.vulnerabilities.includes(type)) {
-      final = raw * 2;
-      note = `${type} 易伤 ×2`;
-    } else if (target.resistances.includes(type)) {
-      final = Math.floor(raw / 2);
-      note = `${type} 抗性 ×½`;
-    }
+    const r = applyTypeModifiers(target, raw, type);
+    final = r.final;
+    note = r.note;
   }
   // 临时 HP 先扣
   let appliedToHp = final;
