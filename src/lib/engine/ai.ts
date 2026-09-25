@@ -408,9 +408,11 @@ export function planTurn(ctx: AiContext, unit: BattleUnit): AiStep[] {
     if (urgent) return [...steps, ...urgent, { type: 'end-turn' }];
   }
 
-  // 4) AoE 评估（爆发/远程施法档案优先）；无法术位余量的法术不进入评估
-  const aoeAbility = abilities.find(a => a.kind === 'save-aoe'
-    && (!a.spellLevel || (unit.spellSlots?.[a.spellLevel]?.current ?? 0) > 0));
+  // 4) AoE 评估（爆发/远程施法档案优先）；法术位只对有 spellSlots 模型的单位结算
+  //    （角色名单装配的施法者有 spellSlots；怪物敌卡的天生施法无 spellSlots 模型，不受环阶限制）
+  const hasSlotFor = (a: AiAbility) =>
+    !a.spellLevel || !unit.spellSlots || (unit.spellSlots[a.spellLevel]?.current ?? 0) > 0;
+  const aoeAbility = abilities.find(a => a.kind === 'save-aoe' && hasSlotFor(a));
   if (aoeAbility && hasAction && (profile === 'blaster' || profile === 'ranged' || (unit.cr ?? 0) >= 5)) {
     const plan = bestAoePlacement(ctx, unit, aoeAbility);
     if (plan && plan.net >= (profile === 'blaster' ? 2 : 2)) {
@@ -426,9 +428,9 @@ export function planTurn(ctx: AiContext, unit: BattleUnit): AiStep[] {
     }
   }
 
-  // 5) 选择攻击动作与移动
-  const meleeAbilities = abilities.filter(a => a.kind === 'melee');
-  const rangedAbilities = abilities.filter(a => a.kind === 'ranged');
+  // 5) 选择攻击动作与移动（攻击法术同样受法术位约束，见 hasSlotFor）
+  const meleeAbilities = abilities.filter(a => a.kind === 'melee' && hasSlotFor(a));
+  const rangedAbilities = abilities.filter(a => a.kind === 'ranged' && hasSlotFor(a));
   const inMeleeNow = enemies.some(e => gridDistanceCells(posToCell(unit.pos), posToCell(e.pos), ctx.diagonal) <= 1);
 
   // 游击单位被黏住 → 先脱离（免疫借机）再攻击

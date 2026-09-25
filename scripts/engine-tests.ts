@@ -450,7 +450,7 @@ const temp = applyDamageModifiers(mkUnit({ tempHp: 5 }), 12, 'slashing');
 check('临时HP吸收', temp.appliedToHp === 7 && temp.final === 12, JSON.stringify(temp));
 const conc = applyDamageModifiers(mkUnit({ concentration: '测试专注法术' }), 20, 'slashing');
 check('专注DC=max(10,伤/2)', conc.concentrationDc === 10 || conc.concentrationDc === 10, `dc=${conc.concentrationDc}`);
-check('专注DC 21伤=11', concentrationDc(21) === 11 && concentrationDc(12) === 10);
+check('专注DC 21伤=10（向下取整）', concentrationDc(21) === 10 && concentrationDc(12) === 10 && concentrationDc(25) === 12);
 
 // 豁免
 const paraTarget = mkUnit({ statuses: ['paralyzed'] });

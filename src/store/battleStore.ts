@@ -262,7 +262,8 @@ export interface BattleStore {
   removeUnit: (id: string) => void;
   moveUnit: (id: string, pos: { x: number; y: number }, recordEvent?: boolean) => void;
   toggleStatus: (id: string, status: string) => void;
-  damageUnit: (id: string, amount: number, opts?: { isCrit?: boolean; type?: DamageType; source?: string; skipTypeMods?: boolean }) => void;
+  /** 应用伤害并落账，返回类型修正+临时HP吸收后实际扣除的 HP（无此单位返回 0）；攻击路径传 skipTypeMods 防二次结算 */
+  damageUnit: (id: string, amount: number, opts?: { isCrit?: boolean; type?: DamageType; source?: string; skipTypeMods?: boolean }) => number;
   /** 伤害落账后检查专注（法术/AoE/巢穴等非攻击路径统一调用；攻击路径在 performAttack 内处理） */
   concentrationAfterDamage: (targetId: string, damage: number) => void;
   healUnit: (id: string, amount: number) => void;
@@ -615,6 +616,14 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           level: 'bad',
         });
         const cover = estimateCover(t.unit, unit, get().obstacles, buildBlockedCells(get().obstacles));
+        if (cover.cover === 'full') {
+          get().logEvent({
+            type: 'attack', actorId: t.unit.id, targetId: unit.id,
+            text: `⛔ 借机攻击取消 —— ${unit.name} 处于全掩护，无法被直接指定（2024 规则）`,
+            level: 'info',
+          });
+          continue;
+        }
         get().performAttack(t.unit.id, unit.id, {
           attackBonus: t.ability.attackBonus ?? 0,
           targetAc: unit.ac + coverBonus(cover.cover),
@@ -656,8 +665,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
 
   damageUnit: (id, amount, opts = {}) => {
     const unit = get().units.find(u => u.id === id);
-    if (!unit) return;
-    // 伤害类型管线（2024：易伤→抗性→免疫依次应用；石化全抗性）。
+    if (!unit) return 0;
+    // 伤害类型管线（2024：抗性→易伤→免疫依次应用；石化全抗性）。
     // 攻击路径（performAttack→resolveAttack）已应用过，传 skipTypeMods 防止二次结算；
     // 法术/AoE/巢穴/精通等路径在此统一应用——修复火球无视免疫/抗性的 P0 缺陷
     let typed = amount;
@@ -723,6 +732,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       get().logEvent({ type: 'death', actorId: id, text: `💀 ${unit.name} 死亡`, level: 'crit' });
     }
     persist(get());
+    return remaining;
   },
 
   healUnit: (id, amount) => {
@@ -1241,8 +1251,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           text: `巢穴动作波及 ${t.name}：${act.damage} → ${dmg} 点${act.damageType ?? ''}伤害${saveText}`,
           level: 'bad',
         });
-        get().damageUnit(t.id, dmg, { type: act.damageType, source: caster.id });
-        get().concentrationAfterDamage(t.id, dmg);
+        const appliedLair = get().damageUnit(t.id, dmg, { type: act.damageType, source: caster.id });
+        // 专注检定用类型修正后的实际扣血（抗性减免不应抬高专注 DC）
+        get().concentrationAfterDamage(t.id, appliedLair);
       }
     }
   },
@@ -1274,18 +1285,28 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       if (chosen.kind === 'attack' && ability) {
         const target = (ability.range ?? 5) > distFt ? nearest
           : foes.find(u => Math.hypot(u.pos.x - actor.pos.x, u.pos.y - actor.pos.y) <= (ability.range ?? 5)) ?? nearest;
-        get().logEvent({
-          type: 'legendary', actorId: actor.id, targetId: target.id,
-          text: `🐉 传奇动作【${chosen.name}】（-${chosen.cost}点）—— ${actor.name} 对 ${target.name} 发动【${ability.name}】`,
-          level: 'bad',
-        });
-        spend();
-        get().performAttack(actor.id, target.id, {
-          attackBonus: ability.attackBonus ?? 0,
-          targetAc: target.ac,
-          weaponDamage: ability.dice,
-          weaponType: ability.damageType,
-        });
+        const cover = estimateCover(actor, target, get().obstacles, buildBlockedCells(get().obstacles));
+        if (cover.cover === 'full') {
+          get().logEvent({
+            type: 'legendary', actorId: actor.id, targetId: target.id,
+            text: `🐉 传奇动作【${chosen.name}】取消 —— ${target.name} 处于全掩护，无法被直接指定（不消耗传奇点）`,
+            level: 'info',
+          });
+        } else {
+          get().logEvent({
+            type: 'legendary', actorId: actor.id, targetId: target.id,
+            text: `🐉 传奇动作【${chosen.name}】（-${chosen.cost}点）—— ${actor.name} 对 ${target.name} 发动【${ability.name}】`,
+            level: 'bad',
+          });
+          spend();
+          get().performAttack(actor.id, target.id, {
+            attackBonus: ability.attackBonus ?? 0,
+            targetAc: target.ac + coverBonus(cover.cover),
+            weaponDamage: ability.dice,
+            weaponType: ability.damageType,
+            coverKind: cover.cover,
+          });
+        }
       } else if (chosen.kind === 'move') {
         const feet = chosen.moveFeet ?? actor.speed;
         get().logEvent({
@@ -1435,7 +1456,20 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         const target = get().units.find(u => u.id === step.targetId);
         if (ability && target) {
+          // 攻击法术结算法术位（此前仅 AoE/治疗结算；无 spellSlots 模型的天生施法者不设限）
+          if (ability.spellLevel && unit.spellSlots) {
+            const slot = unit.spellSlots[ability.spellLevel];
+            if (!slot || slot.current <= 0) {
+              get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${ability.spellLevel} 环法术位不足——【${ability.name}】无法施放`, level: 'info' });
+              return true;
+            }
+            get().spendSpellSlot(unit.id, ability.spellLevel);
+          }
           const cover = estimateCover(unit, target, s.obstacles, buildBlockedCells(s.obstacles));
+          if (cover.cover === 'full') {
+            get().logEvent({ type: 'attack', actorId: unit.id, targetId: target.id, text: `⛔ ${unit.name} 放弃攻击——${target.name} 处于全掩护，无法直接指定`, level: 'info' });
+            return true;
+          }
           get().logEvent({
             type: 'attack', actorId: unit.id, targetId: target.id,
             text: `${unit.name} 发动【${ability.name}】→ ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
@@ -1447,6 +1481,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             weaponDamage: ability.dice,
             weaponType: ability.damageType,
             isRanged: ability.kind === 'ranged',
+            coverKind: cover.cover,
           });
           applyMasteryEffects(get(), unit, target, ability, atkResult);
         }
@@ -1484,8 +1519,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
               text: `${t.name} ${ability.saveAbility?.toUpperCase() ?? 'DEX'} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${ability.saveDc ?? 13} —— ${r.check.outcome.includes('success') ? '成功（半伤）' : '失败（全额伤害）'}`,
               level: r.check.outcome.includes('success') ? 'good' : 'bad',
             });
-            get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: unit.id });
-            get().concentrationAfterDamage(tid, r.damageTaken);
+            const applied = get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: unit.id });
+            // 专注检定用类型修正后的实际扣血（抗性减免不应抬高专注 DC）
+            get().concentrationAfterDamage(tid, applied);
           }
         }
         return true;
@@ -2062,6 +2098,14 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       get().logEvent({ type: 'note', text: `⛔【${ability.name}】需要选择 AoE 落点目标`, level: 'bad' });
       return;
     }
+    // 2024 全掩护：目标不能被攻击或伤害法术直接指定（借机/传奇/AI 攻击路径有同款守卫）
+    if (target && (ability.kind === 'melee' || ability.kind === 'ranged')) {
+      const coverPre = estimateCover(actor, target, s.obstacles, buildBlockedCells(s.obstacles));
+      if (coverPre.cover === 'full') {
+        get().logEvent({ type: 'note', text: `⛔ ${target.name} 处于全掩护——无法被直接指定为攻击目标（2024 规则）`, level: 'bad' });
+        return;
+      }
+    }
 
     const prevActionUsed = actor.actionEconomy.action;
 
@@ -2083,6 +2127,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             weaponDamage: ability.dice,
             weaponType: ability.damageType,
             isRanged: ability.kind === 'ranged',
+            coverKind: cover.cover,
           });
           applyMasteryEffects(get(), actor, target, ability, atkResult);
         }
@@ -2111,9 +2156,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             text: `🔮 ${actor.name} 施放【${ability.name}】—— 自动命中 ${target.name}，伤害 ${dmgRoll.total}`,
             level: 'crit',
           });
-          get().damageUnit(target.id, dmgRoll.total, { type: ability.damageType, source: actorId });
-          // 受伤专注检定（法术伤害同样打断专注）
-          get().concentrationAfterDamage(target.id, dmgRoll.total);
+          const appliedAuto = get().damageUnit(target.id, dmgRoll.total, { type: ability.damageType, source: actorId });
+          // 受伤专注检定（法术伤害同样打断专注；用类型修正后的实际扣血）
+          get().concentrationAfterDamage(target.id, appliedAuto);
         } else {
           const r = resolveSave(target, {
             ability: ability.saveAbility,
@@ -2128,8 +2173,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             text: `${actor.name} 施放【${ability.name}】→ ${target.name} ${ability.saveAbility.toUpperCase()} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${ability.saveDc ?? 13} —— ${passed ? (r.halfApplied ? `成功（半伤 ${r.damageTaken}）` : '成功（完全抵抗）') : `失败！${r.damageTaken > 0 ? `受到 ${r.damageTaken} 伤害` : ''}${ability.applyStatus ? `，获得【${ability.applyStatus}】` : ''}`}`,
             level: passed ? 'info' : 'bad',
           });
-          if (r.damageTaken > 0) get().damageUnit(target.id, r.damageTaken, { type: ability.damageType, source: actorId });
-          get().concentrationAfterDamage(target.id, r.damageTaken);
+          const appliedSave = r.damageTaken > 0
+            ? get().damageUnit(target.id, r.damageTaken, { type: ability.damageType, source: actorId })
+            : 0;
+          get().concentrationAfterDamage(target.id, appliedSave);
           if (!passed && ability.applyStatus) {
             set({ units: get().units.map(u => (u.id === target.id ? { ...u, statuses: [...new Set([...u.statuses, ability.applyStatus!])] } : u)) });
           }
@@ -2168,14 +2215,16 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
               text: `${t.name} ${ability.saveAbility.toUpperCase()} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${ability.saveDc ?? 13} —— ${r.check.outcome.includes('success') ? (r.halfApplied ? `成功（半伤 ${r.damageTaken}）` : '成功') : `失败（受到 ${r.damageTaken} 伤害）`}`,
               level: r.check.outcome.includes('success') ? 'good' : 'bad',
             });
-            if (r.damageTaken > 0) get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: actorId });
-            get().concentrationAfterDamage(tid, r.damageTaken);
+            const appliedAoeSave = r.damageTaken > 0
+              ? get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: actorId })
+              : 0;
+            get().concentrationAfterDamage(tid, appliedAoeSave);
             if (!r.check.outcome.includes('success') && ability.applyStatus) {
               set({ units: get().units.map(u => (u.id === tid ? { ...u, statuses: [...new Set([...u.statuses, ability.applyStatus!])] } : u)) });
             }
           } else if (dmgRoll.total > 0) {
-            get().damageUnit(tid, dmgRoll.total, { type: ability.damageType, source: actorId });
-            get().concentrationAfterDamage(tid, dmgRoll.total);
+            const appliedAoeAuto = get().damageUnit(tid, dmgRoll.total, { type: ability.damageType, source: actorId });
+            get().concentrationAfterDamage(tid, appliedAoeAuto);
           }
         }
         break;

@@ -1,11 +1,11 @@
 /* 修复回归用例：对应审查报告 P0/P1/P2 各项
  * 运行方式（在仓库根目录 battle-forge/ 下）：
- *   npx tsc src/lib/engine/{dice,conditions,rules,combat,initiative,types,sheetbridge,statblocks,geometry}.ts \
+ *   npx tsc src/lib/engine/{dice,conditions,rules,combat,initiative,types,sheetbridge,statblocks,geometry,embedSync}.ts \
  *     --outDir .engtest --module commonjs --target es2020 --skipLibCheck --esModuleInterop
  *   node scripts/regression-test.js
  */
 // require 目标全部为字面量相对路径（仓库内 .engtest 编译产物），不接受任何外部路径输入
-let combat, rules, conditions, initiative, sheetbridge, types, dice;
+let combat, rules, conditions, initiative, sheetbridge, types, dice, embedSync;
 try {
   combat = require('../.engtest/combat.js');
   rules = require('../.engtest/rules.js');
@@ -14,6 +14,7 @@ try {
   sheetbridge = require('../.engtest/sheetbridge.js');
   types = require('../.engtest/types.js');
   dice = require('../.engtest/dice.js');
+  embedSync = require('../.engtest/embedSync.js');
 } catch {
   console.error('缺少 .engtest/ 编译产物 —— 请先运行本文件头注释中的 npx tsc 命令');
   process.exit(1);
@@ -196,7 +197,7 @@ check('射程字段优先：长弓 150', lb && lb.range === 150, lb && String(lb
 check('先攻加值透传 initMod=3', unit.initMod === 3);
 
 console.log('== 2024-09-24 修复回归 ==');
-// P0：类型修正管线对所有伤害路径生效（applyTypeModifiers 顺序：易伤→抗性→免疫）
+// P0：类型修正管线对所有伤害路径生效（applyTypeModifiers 顺序：抗性→易伤→免疫）
 const modTarget = mkUnit({ resistances: ['fire'], immunities: [], vulnerabilities: [] });
 check('P0 管线：抗性减半', combat.applyTypeModifiers(modTarget, 20, 'fire').final === 10);
 check('P0 管线：易伤+抗性同类型 = 原伤（2024 依次应用）', combat.applyTypeModifiers(mkUnit({ resistances: ['fire'], vulnerabilities: ['fire'] }), 10, 'fire').final === 10);
@@ -252,6 +253,80 @@ check('P1-5：隐形者自身攻击优势', invisAtk.mode === 'advantage', invis
   const wisDc = 8 + Math.floor((14 - 10) / 2) + 3; // 8+2+3=13
   const fb = s3.spells[0].ability;
   check('契约：火焰箭 DC13（感知推导）而非按最高属性敏16→14', fb ? (fb.saveDc === undefined || fb.saveDc === wisDc) : true, fb && JSON.stringify({ dc: fb.saveDc }));
+}
+
+console.log('== 2024-09-25 修复回归 ==');
+// 修复1：伤害修正顺序改官方序（抗性→易伤），奇数伤害可区分
+{
+  const both = mkUnit({ resistances: ['fire'], vulnerabilities: ['fire'] });
+  check('顺序：抗性→易伤，5点 = 2→4', combat.applyTypeModifiers(both, 5, 'fire').final === 4, String(combat.applyTypeModifiers(both, 5, 'fire').final));
+  check('顺序：抗性 5→2', combat.applyTypeModifiers(mkUnit({ resistances: ['fire'] }), 5, 'fire').final === 2);
+  check('顺序：易伤 5→10', combat.applyTypeModifiers(mkUnit({ vulnerabilities: ['fire'] }), 5, 'fire').final === 10);
+  check('免疫仍置0（不受房规影响）', combat.applyTypeModifiers(mkUnit({ immunities: ['fire'] }), 5, 'fire').final === 0);
+}
+// 修复2：专注 DC 向下取整
+check('专注DC floor：21→10 / 25→12 / 9→10', rules.concentrationDc(21) === 10 && rules.concentrationDc(25) === 12 && rules.concentrationDc(9) === 10);
+// 修复3：全掩护拦截攻击（不掷骰直接 blocked）
+{
+  const blocked = resolveAttack(mkUnit(), mkUnit({ hp: 50, maxHp: 100 }), {
+    attackBonus: 5, targetAc: 15, weaponDamage: '1d8+3', coverKind: 'full',
+  });
+  check('全掩护：攻击被拦截 blockedByCover=true', blocked.blockedByCover === true && blocked.hit === false);
+  const halfCover = resolveAttack(mkUnit(), mkUnit(), {
+    attackBonus: 5, targetAc: 15 + 2, weaponDamage: '1d8+3', coverKind: 'half', forcedAttackRoll: 20,
+  });
+  check('半掩护：正常结算（不受拦截）', halfCover.hit === true && halfCover.blockedByCover === undefined);
+}
+// 修复4：minDamageOne 房规接线（抗性减到 0 → 至少 1；免疫仍为 0）
+{
+  rules.setRules({ minDamageOne: true });
+  const r1 = combat.applyTypeModifiers(mkUnit({ resistances: ['fire'] }), 1, 'fire');
+  check('房规·最小伤害1：抗性后 0 → 1', r1.final === 1, String(r1.final));
+  const r2 = combat.applyTypeModifiers(mkUnit({ immunities: ['fire'] }), 5, 'fire');
+  check('房规·最小伤害1：免疫仍为 0', r2.final === 0);
+  rules.setRules({ minDamageOne: false });
+  const r3 = combat.applyTypeModifiers(mkUnit({ resistances: ['fire'] }), 1, 'fire');
+  check('房规关闭：抗性 1→0', r3.final === 0);
+}
+// 修复5：角色变量 力竭等级 装配（exhaustion:N 才有 -2/级 减值）
+{
+  const tree5 = {
+    角色列表: {
+      野蛮人: {
+        等级: 5,
+        生命值: { 当前: 40, 最大: 60 },
+        状态: { 力竭: { 存在: true, 等级: 2 }, 中毒: { 存在: true } },
+      },
+    },
+  };
+  const u5 = unitFromCharSheet(sheetbridge.charSheetsFromTree(tree5)[0]);
+  check('力竭等级装配：exhaustion:2 入状态', u5.statuses.includes('exhaustion:2'), u5.statuses.join(','));
+  check('力竭等级装配：-2/级 减值生效', exhaustionPenalty(u5.statuses) === 4, String(exhaustionPenalty(u5.statuses)));
+  check('其他状态不受影响：poisoned 保留', u5.statuses.includes('poisoned'));
+}
+// 修复6：登记模板 生命值 0/0 → 默认 10/10（不再出现 0/0 濒死单位）
+{
+  const tree6 = {
+    角色列表: {
+      新角色: {
+        等级: 1,
+        生命值: { 当前: 0, 最大: 0 },
+      },
+    },
+  };
+  const u6 = unitFromCharSheet(sheetbridge.charSheetsFromTree(tree6)[0]);
+  check('0/0 生命值 → 默认 10/10', u6.hp === 10 && u6.maxHp === 10, `${u6.hp}/${u6.maxHp}`);
+}
+// 修复7：embedSync 深度门控无条件生效（旧楼过期 payload 永不覆写领导者）
+{
+  let chain = embedSync.emptyChain();
+  chain = embedSync.appendChain(chain, 'hash-a', 0);
+  const stale = embedSync.shouldApplyImport(chain, 'hash-b', 3);
+  check('深度门控：旧楼(深度3)新哈希被拒', stale.apply === false && stale.reason === 'stale-depth');
+  const fresh = embedSync.shouldApplyImport(chain, 'hash-c', 0);
+  check('深度门控：新楼(深度0)正常应用', fresh.apply === true);
+  const dup = embedSync.shouldApplyImport(chain, 'hash-a', 0);
+  check('深度门控：重复哈希仍被拒', dup.apply === false && dup.reason === 'duplicate');
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

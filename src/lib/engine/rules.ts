@@ -99,7 +99,7 @@ export function attackRollModeAgainst(attacker: BattleUnit, target: BattleUnit, 
   return { mode: 'normal', reasons };
 }
 
-/** 掩护加值 */
+/** 掩护加值（AC）；full（全掩护）不提供 AC 加值——2024 规则下全掩护目标无法被攻击/伤害法术直接指定（拦截见 resolveAttack 的 coverKind） */
 export function coverBonus(kind: 'none' | 'half' | 'threeQuarters' | 'full'): number {
   switch (kind) {
     case 'half': return 2;
@@ -108,9 +108,9 @@ export function coverBonus(kind: 'none' | 'half' | 'threeQuarters' | 'full'): nu
   }
 }
 
-/** 专注豁免 DC：10 或 伤害一半，取高 */
+/** 专注豁免 DC：10 或 伤害一半（向下取整），取高 */
 export function concentrationDc(damage: number): number {
-  return Math.max(10, Math.ceil(damage / 2));
+  return Math.max(10, Math.floor(damage / 2));
 }
 
 /** 坠落伤害：每 10 尺 1d6 */

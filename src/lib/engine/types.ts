@@ -340,6 +340,8 @@ export interface AttackResult {
   hit: boolean;
   critical: boolean;
   damage?: DamageResult;
+  /** 2024 全掩护：目标无法被直接指定，攻击未掷骰即被拦截 */
+  blockedByCover?: boolean;
 }
 
 export interface DamageResult {

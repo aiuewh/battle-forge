@@ -36,6 +36,8 @@ export interface AttackOptions {
   critWeaponDiceOnly?: boolean;
   /** 是否应用目标抗性 */
   applyResistances?: boolean;
+  /** 目标掩护类型：full（全掩护）→ 2024 规则禁止直接指定，攻击被拦截（不掷骰） */
+  coverKind?: 'none' | 'half' | 'threeQuarters' | 'full';
   forcedAttackRoll?: number;
   forcedDamageRolls?: number[];
 }
@@ -49,6 +51,21 @@ function blessDie(unit: BattleUnit, rolls: DieRoll[]): number {
 }
 
 export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: AttackOptions): AttackResult {
+  // 2024 全掩护：目标不能被攻击或伤害法术直接指定——不掷骰直接拦截
+  if (opts.coverKind === 'full') {
+    return {
+      attack: {
+        dice: { formula: 'blocked', rolls: [], modifier: 0, total: 0, mode: 'normal' },
+        target: Number.isFinite(opts.targetAc) ? opts.targetAc : 15,
+        total: 0,
+        outcome: 'failure',
+        label: '总掩护拦截',
+      },
+      hit: false,
+      critical: false,
+      blockedByCover: true,
+    };
+  }
   // 反 DoS/反 NaN：非法数值入口钳制（NaN 加值/AC 会泄漏 NaN 到检定结果与 UI）
   const safeBonus = Number.isFinite(opts.attackBonus) ? opts.attackBonus : 0;
   const safeAc = Number.isFinite(opts.targetAc) ? opts.targetAc : 15;
@@ -137,13 +154,14 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
   };
 }
 
-// ---------- 伤害管线：2024 顺序 易伤×2 → 抗性×½ → 免疫（依次应用） ----------
+// ---------- 伤害管线：2024 顺序 抗性×½ → 易伤×2 → 免疫（依次应用） ----------
 
 /**
  * 伤害类型修正管线（纯计算，不含临时HP/专注）。
- * 2024 PHB：多种修正依次应用——先乘易伤，再减抗性，最后免疫置 0；
- * 同类易伤+抗性并存时净效果为原伤（10 → 20 → 10）。
+ * 2024 PHB 术语表 Order of Application：修正 → 抗性（减半向下取整）→ 易伤（翻倍）→ 免疫置 0；
+ * 同类抗性+易伤并存且伤害为奇数时结果不同（5 → 抗性2 → 易伤4）。
  * 石化：对所有伤害具抗性（补充在类型修正之后）。
+ * minDamageOne 房规（SettingsPanel 可切换）：免疫之外，伤害经抗性/石化减至 0 时至少结算 1 点。
  */
 export function applyTypeModifiers(
   target: Pick<BattleUnit, 'resistances' | 'immunities' | 'vulnerabilities' | 'statuses'>,
@@ -152,21 +170,27 @@ export function applyTypeModifiers(
 ): { final: number; note: string } {
   let final = raw;
   const notes: string[] = [];
-  if (target.vulnerabilities.includes(type)) {
-    final = final * 2;
-    notes.push(`${type} 易伤 ×2`);
-  }
+  let immune = false;
   if (target.resistances.includes(type)) {
     final = Math.floor(final / 2);
     notes.push(`${type} 抗性 ×½`);
   }
+  if (target.vulnerabilities.includes(type)) {
+    final = final * 2;
+    notes.push(`${type} 易伤 ×2`);
+  }
   if (target.immunities.includes(type)) {
     final = 0;
+    immune = true;
     notes.push(`${type} 免疫`);
   }
   if (final > 0 && target.statuses?.includes('petrified')) {
     final = Math.floor(final / 2);
     notes.push('石化·全伤害抗性 ×½');
+  }
+  if (!immune && raw > 0 && final < 1 && getRules().minDamageOne) {
+    final = 1;
+    notes.push('房规·最小伤害1');
   }
   return { final, note: notes.join(' · ') };
 }

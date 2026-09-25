@@ -58,12 +58,14 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
 
   const doAttack = () => {
     if (!attacker || !target) return;
+    if (autoInfo?.cover.cover === 'full') return; // 2024 全掩护：无法直接指定（按钮已禁用，此处兜底）
     store.performAttack(attacker.id, target.id, {
       attackBonus,
       targetAc: effectiveAc,
       weaponDamage: damageFormula,
       riderDamage: rider || undefined,
       weaponType: damageType,
+      coverKind: autoInfo?.cover.cover,
     });
   };
 
@@ -174,7 +176,7 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
 
       {/* 执行按钮 */}
       <div className="flex flex-wrap gap-1.5">
-        <Button size="sm" className="h-9 flex-1 gap-1.5 bg-red-800 hover:bg-red-700" onClick={doAttack} disabled={!attacker || !target}>
+        <Button size="sm" className="h-9 flex-1 gap-1.5 bg-red-800 hover:bg-red-700" onClick={doAttack} disabled={!attacker || !target || autoInfo?.cover.cover === 'full'}>
           <Zap className="h-4 w-4" />结算攻击
         </Button>
         <Button size="sm" variant="secondary" className="h-9 gap-1 text-xs" onClick={fillFromPreset} disabled={!attacker}>

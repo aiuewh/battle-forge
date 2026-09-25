@@ -244,7 +244,9 @@ const STATUS_CN: Record<string, string> = {
   '恐慌': 'frightened', '恐惧': 'frightened', '倒地': 'prone', '昏迷': 'unconscious',
   '隐形': 'invisible', '隐身': 'invisible', '擒抱': 'grappled', '束缚': 'restrained',
   '震慑': 'stunned', '石化': 'petrified', '魅惑': 'charmed', '失聪': 'deafened',
-  '失能': 'incapacitated', '力竭': 'exhaustion',
+  '失能': 'incapacitated',
+  // 注意：'力竭' 不入此表——它必须走下方带 等级 的分支拼出 exhaustion:N，
+  // 引擎只认 exhaustion:N（conditions.ts 的 -2检定/-5尺速度 都按等级结算），纯 'exhaustion' 无减值
 };
 
 const ABILITY_CN_KEY: Record<string, AbilityKey> = {
@@ -408,8 +410,10 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
 
     // 生命值
     const hpRaw = c['生命值'];
-    const maxHp = getNum(hpRaw, '最大', '最大值') ?? getNum(c, '生命值') ?? 10;
-    const hp = Math.min(maxHp, getNum(hpRaw, '当前', '当前值') ?? maxHp);
+    let maxHp = getNum(hpRaw, '最大', '最大值') ?? getNum(c, '生命值') ?? 10;
+    let hp = Math.min(maxHp, getNum(hpRaw, '当前', '当前值') ?? maxHp);
+    // 登记模板占位 0/0（未填实际值）：按默认 10/10 装配，避免面板出现 0/0 的濒死单位
+    if (maxHp <= 0 && hp <= 0) { maxHp = 10; hp = 10; }
     const tempHp = getNum(hpRaw, '临时') ?? 0;
 
     // 护甲 / 先攻 / 速度

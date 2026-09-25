@@ -152,9 +152,9 @@ export function appendChain(chain: HashChainState, hash: string, depth: number |
 /**
  * 是否应当应用一次嵌入导入（幂等 + 竞态安全）
  * - 哈希已在链中 → 跳过（刷新/重挂载的重复导入）
- * - 链为空（首次安装后的初始竞态窗口）→ 仅当深度比上次应用更小（楼层更新）时应用；
- *   深度未知（null，沙箱探测失败环境）按 0 参与排序，避免新消息被饿死
- * - 链非空（正常运行）→ 新哈希且深度 ≤ 上次深度时应用（新消息总在深度 0 到达）
+ * - 深度门控无条件生效：新哈希仅当深度 ≤ 上次深度（新消息总在深度 0 到达）时应用；
+ *   深度未知（null，沙箱探测失败环境）按 0 参与排序，避免新消息被饿死。
+ *   旧楼层 iframe 持有的过期 payload（深度更深）永不覆写领导者状态。
  */
 export function shouldApplyImport(
   chain: HashChainState,
@@ -167,9 +167,7 @@ export function shouldApplyImport(
     if (last.hash === '') return { apply: true, reason: 'ok' };
     const dNew = depth ?? 0; // 未知深度视为最新候选（探测降级环境不被饿死）
     const dOld = last.depth ?? 0;
-    // 初始竞态窗口（链很短且都在同一分钟内）→ 深度小者胜
-    const raceWindow = chain.appliedHashes.length <= 4;
-    if (raceWindow && dNew > dOld) return { apply: false, reason: 'stale-depth' };
+    if (dNew > dOld) return { apply: false, reason: 'stale-depth' };
     return { apply: true, reason: 'ok' };
   }
   return { apply: true, reason: 'ok' };
