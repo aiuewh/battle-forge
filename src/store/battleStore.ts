@@ -158,6 +158,48 @@ function applyMasteryEffects(store: BattleStore, unit: BattleUnit, target: Battl
   }
 }
 
+/**
+ * 玩家多重攻击逐刀结算：每刀前重读目标存活状态，击杀立即停手；
+ * 有剩余攻击且场上还有其他敌人时挂 multiAttackQueue，由 ActionBar 重弹目标选择
+ * 续打（2024 Extra Attack：击杀后剩余攻击可改选目标）。不含尸体攻击。
+ */
+function runMultiAttackSequence(
+  get: () => BattleStore,
+  set: (partial: Partial<BattleStore>) => void,
+  actorId: string,
+  ability: AiAbility,
+  targetId: string,
+  times: number,
+) {
+  let remaining = times;
+  for (; remaining > 0; remaining--) {
+    const target = get().units.find(u => u.id === targetId);
+    if (!target || target.hp <= 0 || target.deathSaves?.dead) break;
+    const actor = get().units.find(u => u.id === actorId);
+    if (!actor) return;
+    const cover = estimateCover(actor, target, get().obstacles, buildBlockedCells(get().obstacles));
+    const atkResult = get().performAttack(actorId, target.id, {
+      attackBonus: ability.attackBonus ?? 0,
+      targetAc: target.ac + coverBonus(cover.cover),
+      weaponDamage: ability.dice,
+      weaponType: ability.damageType,
+      isRanged: ability.kind === 'ranged',
+      coverKind: cover.cover,
+    });
+    applyMasteryEffects(get(), actor, target, ability, atkResult);
+  }
+  if (remaining <= 0) return;
+  const actor = get().units.find(u => u.id === actorId);
+  if (!actor || actor.hp <= 0 || actor.deathSaves?.dead) return;
+  const hasOtherTargets = get().units.some(u => u.attitude === 2 && u.hp > 0 && !u.deathSaves?.dead && u.id !== targetId);
+  if (!hasOtherTargets) {
+    get().logEvent({ type: 'note', text: `🎯 目标已被击杀——场上无其他敌人，剩余 ${remaining} 次攻击放弃`, level: 'info' });
+    return;
+  }
+  set({ multiAttackQueue: { actorId, abilityId: ability.id, remaining } });
+  get().logEvent({ type: 'note', text: `🎯 目标已被击杀——【${ability.name}】剩余 ${remaining} 次攻击：请在行动栏选择新目标续打，或放弃`, level: 'info' });
+}
+
 /** 为新入库的瘦单位（dataSource='ai-parsed'）自动配装完整数据：暂存敌卡 > 角色名单 > 图鉴 > 内置预设 */
 function attachLibraryData(
   units: BattleUnit[],
@@ -362,6 +404,12 @@ export interface BattleStore {
   // ---- 统一行动结算（玩家行动栏核心） ----
   /** 执行一个动作（武器攻击/法术/治疗/AoE/单体豁免）：自动动作经济 + 法术位 + 专注 + 掩护 + 优劣势 */
   castAbility: (actorId: string, abilityId: string, targetId: string | null, opts?: CastOpts) => void;
+  /** 玩家多重攻击余量：目标被击杀后等待重选目标续打（换回合/重置/放弃即作废） */
+  multiAttackQueue: { actorId: string; abilityId: string; remaining: number } | null;
+  /** 用新目标续打多重攻击余量（动作/法术位已在首发时消耗，不重复扣） */
+  continueMultiAttack: (actorId: string, abilityId: string, targetId: string | null) => void;
+  /** 放弃多重攻击余量 */
+  clearMultiAttackQueue: () => void;
   /** 通用动作：冲刺/闪避/脱离/隐藏/协助/预备/治疗药水 */
   playerAction: (kind: PlayerActionKind, unitId: string, targetId?: string | null) => void;
 
@@ -418,6 +466,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   aiAutoPlay: true,
   aiSpeed: 450,
   playerTargetId: null,
+  multiAttackQueue: null,
   varTree: {},
   rosterSheets: [],
   bestiary: [],
@@ -470,6 +519,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         aiAutoPlay: data.aiAutoPlay ?? true,
         aiSpeed: data.aiSpeed ?? 450,
         playerTargetId: data.playerTargetId ?? null,
+        multiAttackQueue: null,
         varTree: data.varTree ?? savedRoster.tree,
         rosterSheets: data.rosterSheets ?? savedRoster.sheets,
         bestiary: loadBestiary(),
@@ -488,7 +538,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     set({
       units: [], obstacles: [], aoeTemplates: [], events: [],
       turn: { round: 0, currentUnitId: null, order: [], turnIndex: -1, ended: false, surprisedIds: [] },
-      battleActive: false, lastDiff: null, lastRoll: null, playerTargetId: null, history: loadHistory(),
+      battleActive: false, lastDiff: null, lastRoll: null, playerTargetId: null, multiAttackQueue: null, history: loadHistory(),
     });
     persist(get());
   },
@@ -957,8 +1007,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     // 传奇动作：其他单位的回合结束后，敌方传奇单位消耗点数执行一次
     if (turn.currentUnitId && get().battleActive) get().runLegendaryActions(turn.currentUnitId);
     const result = advanceTurn(turn, units, rules);
-    // 标记当前已行动（清除脱离状态），重置下一单位动作经济
+    // 标记当前已行动（清除脱离状态），重置下一单位动作经济；多重攻击余量不跨回合
     set({
+      multiAttackQueue: null,
       turn: result.state,
       units: units.map(u => {
         // 每个回合开始：所有单位的「本回合已用反应」标记刷新
@@ -1576,6 +1627,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       events: [],
       battleActive: false,
       playerTargetId: null,
+      multiAttackQueue: null,
       battleName: demo.battleName,
       mapConfig: { ...get().mapConfig, width: 22, height: 9, cellSize: 5, diagonal: 'equal' },
       turn: { round: 0, currentUnitId: null, order: [], turnIndex: -1, ended: false, surprisedIds: [] },
@@ -2031,6 +2083,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         battleActive: data.battleActive ?? false,
         battleName: data.battleName ?? get().battleName,
         playerTargetId: data.playerTargetId ?? null,
+        multiAttackQueue: null,
         varTree: data.varTree ?? get().varTree,
         rosterSheets: data.rosterSheets ?? get().rosterSheets,
         stagedStatblocks: data.stagedStatblocks ?? [],
@@ -2044,6 +2097,40 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   },
 
   // ---------------- 统一行动结算 ----------------
+
+  /** 多重攻击击杀后续打：不重复消耗动作经济/法术位；射程/全掩护守卫与 castAbility 同款 */
+  continueMultiAttack: (actorId, abilityId, targetId) => {
+    const s = get();
+    const queue = s.multiAttackQueue;
+    if (!queue || queue.actorId !== actorId || queue.abilityId !== abilityId) return;
+    const actor = s.units.find(u => u.id === actorId);
+    const ability = actor?.aiAbilities?.find(a => a.id === abilityId);
+    const target = targetId ? s.units.find(u => u.id === targetId) : undefined;
+    if (!actor || !ability || !target) { set({ multiAttackQueue: null }); return; }
+    if (target.hp <= 0 || target.deathSaves?.dead) {
+      get().logEvent({ type: 'note', text: `⛔ ${target.name} 已倒下——请选择存活目标`, level: 'bad' });
+      return; // 保留队列，等待重选
+    }
+    const dist = unitDistance(actor, target, s.mapConfig.diagonal);
+    if (dist > ability.range + 5) {
+      get().logEvent({ type: 'note', text: `⛔ 超出射程：${target.name} 距离 ${dist} 尺 > ${ability.range} 尺（可先移动再续打）`, level: 'bad' });
+      return; // 保留队列
+    }
+    const coverPre = estimateCover(actor, target, s.obstacles, buildBlockedCells(s.obstacles));
+    if (coverPre.cover === 'full') {
+      get().logEvent({ type: 'note', text: `⛔ ${target.name} 处于全掩护——无法被直接指定为攻击目标（2024 规则）`, level: 'bad' });
+      return; // 保留队列
+    }
+    set({ multiAttackQueue: null });
+    get().logEvent({
+      type: 'attack', actorId, targetId: target.id,
+      text: `${actor.name} 续打【${ability.name}】×${queue.remaining}（多重攻击余量） → ${target.name}${coverPre.bonus > 0 ? `（目标${coverPre.cover === 'half' ? '半身' : '3/4'}掩护 +${coverPre.bonus}）` : ''}`,
+      level: 'info',
+    });
+    runMultiAttackSequence(get, set, actorId, ability, target.id, queue.remaining);
+  },
+
+  clearMultiAttackQueue: () => set({ multiAttackQueue: null }),
 
   castAbility: (actorId, abilityId, targetId, opts = {}) => {
     const s = get();
@@ -2126,17 +2213,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           text: `${actor.name} 发动【${ability.name}】${times > 1 ? `×${times}（多重攻击）` : ''} → ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
           level: 'info',
         });
-        for (let i = 0; i < times; i++) {
-          const atkResult = get().performAttack(actorId, target.id, {
-            attackBonus: ability.attackBonus ?? 0,
-            targetAc: target.ac + coverBonus(cover.cover),
-            weaponDamage: ability.dice,
-            weaponType: ability.damageType,
-            isRanged: ability.kind === 'ranged',
-            coverKind: cover.cover,
-          });
-          applyMasteryEffects(get(), actor, target, ability, atkResult);
-        }
+        runMultiAttackSequence(get, set, actorId, ability, target.id, times);
         break;
       }
       case 'heal': {

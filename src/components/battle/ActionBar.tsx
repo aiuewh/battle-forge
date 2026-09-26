@@ -45,18 +45,25 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const actorControllable = !!actor && actor.attitude === 0 && (actor.isPlayer || actor.playerControlled);
   const actorAlive = !!actor && actor.hp > 0 && !actor.deathSaves?.dead;
 
-  // 渲染期重置：行动者 / 回合 / 待执行动作变化时清空手动目标选择（React render-time 调整模式）
-  const [ctxKey, setCtxKey] = useState('');
-  const resetKey = `${actor?.id ?? '-'}|${turn.round}|${pending?.ability.id ?? ''}|${helpMode ? 'h' : ''}`;
-  if (resetKey !== ctxKey) {
-    setCtxKey(resetKey);
-    setTargetId(null);
-  }
-
   const abilities = actor?.aiAbilities ?? [];
   const weapons = abilities.filter(a => (a.kind === 'melee' || a.kind === 'ranged') && a.spellLevel === undefined);
   const spells = abilities.filter(a => a.spellLevel !== undefined);
   const specials = abilities.filter(a => ['save', 'save-aoe', 'heal'].includes(a.kind) && a.spellLevel === undefined);
+
+  // 多重攻击余量：击杀后引擎挂起等待重选目标（仅对 queued 的当前行动者生效）
+  const multiQueue = store.multiAttackQueue;
+  const queuedAbility = multiQueue && multiQueue.actorId === actor?.id
+    ? abilities.find(a => a.id === multiQueue.abilityId) ?? null
+    : null;
+  const queueActive = !!multiQueue && !!queuedAbility && multiQueue.remaining > 0 && actorAlive;
+
+  // 渲染期重置：行动者 / 回合 / 待执行动作 / 余量队列变化时清空手动目标选择（React render-time 调整模式）
+  const [ctxKey, setCtxKey] = useState('');
+  const resetKey = `${actor?.id ?? '-'}|${turn.round}|${pending?.ability.id ?? ''}|${multiQueue?.abilityId ?? ''}|${multiQueue?.remaining ?? ''}|${helpMode ? 'h' : ''}`;
+  if (resetKey !== ctxKey) {
+    setCtxKey(resetKey);
+    setTargetId(null);
+  }
 
   const living = units.filter(u => u.hp > 0 && !u.deathSaves?.dead);
   const enemies = living.filter(u => u.attitude === 2);
@@ -77,10 +84,11 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
       .sort((a, b) => a.level - b.level);
   }, [actor]);
 
-  // 目标候选
+  // 目标候选（手动 pending 与多重攻击余量队列共用一套目标选择）
+  const activeAbility = pending?.ability ?? queuedAbility;
   const targetCandidates = useMemo(() => {
-    if (!pending || !actor) return [];
-    const a = pending.ability;
+    if (!activeAbility || !actor) return [];
+    const a = activeAbility;
     let cands: BattleUnit[] = [];
     if (a.kind === 'heal') cands = allies;
     else if (a.kind === 'save-aoe') cands = living; // AoE 落点可以是任何单位位置
@@ -90,7 +98,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
       dist: unitDistance(actor, u, store.mapConfig.diagonal),
       inRange: unitDistance(actor, u, store.mapConfig.diagonal) <= a.range + 5,
     }));
-  }, [pending, actor, enemies, allies, living, store.mapConfig.diagonal]);
+  }, [activeAbility, pending, queuedAbility, actor, enemies, allies, living, store.mapConfig.diagonal]);
 
   // 派生：唯一合法目标自动选中（不写 effect，直接推导）
   const validCands = targetCandidates.filter(c => c.inRange);
@@ -390,11 +398,15 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
         </div>
       </div>
 
-      {/* ===== 目标选择条 ===== */}
-      {(pending || helpMode) && (
+      {/* ===== 目标选择条（手动动作 / 多重攻击余量续打） ===== */}
+      {(pending || helpMode || queueActive) && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
           <span className="text-[11px] font-semibold text-primary">
-            {helpMode ? '🤝 协助对象' : `${pending!.ability.name} → 选择目标`}
+            {helpMode
+              ? '🤝 协助对象'
+              : pending
+                ? `${pending.ability.name} → 选择目标`
+                : `${queuedAbility!.name} → 多重攻击剩余 ${multiQueue!.remaining} 次 · 选择新目标`}
           </span>
           <select
             className="h-8 min-w-0 flex-1 rounded-md border border-border/50 bg-black/40 px-2 text-xs text-foreground focus:border-primary/50 focus:outline-none"
@@ -416,7 +428,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             >
               <HelpingHand className="h-3.5 w-3.5" />确认协助
             </Button>
-          ) : (
+          ) : pending ? (
             <Button
               size="sm" className="h-8 gap-1 bg-red-800 text-[11px] text-white hover:bg-red-700"
               disabled={!effectiveTargetId}
@@ -424,12 +436,26 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             >
               <Zap className="h-3.5 w-3.5" />执行
             </Button>
+          ) : (
+            <Button
+              size="sm" className="h-8 gap-1 bg-red-800 text-[11px] text-white hover:bg-red-700"
+              disabled={!effectiveTargetId}
+              onClick={() => {
+                store.continueMultiAttack(actor.id, queuedAbility!.id, effectiveTargetId);
+                setTargetId(null);
+              }}
+            >
+              <Zap className="h-3.5 w-3.5" />续打 ×{multiQueue!.remaining}
+            </Button>
           )}
           <Button
             size="sm" variant="secondary" className="h-8 text-[11px]"
-            onClick={() => { setPending(null); setHelpMode(false); setTargetId(null); }}
+            onClick={() => {
+              if (!pending && queueActive) store.clearMultiAttackQueue();
+              setPending(null); setHelpMode(false); setTargetId(null);
+            }}
           >
-            取消
+            {pending ? '取消' : '放弃'}
           </Button>
         </div>
       )}
