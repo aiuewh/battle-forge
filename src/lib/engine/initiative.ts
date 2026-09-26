@@ -15,10 +15,12 @@ export function initiativeBonus(unit: BattleUnit): number {
   return base - exhaustionPenalty(unit.statuses);
 }
 
-/** 掷先攻（1d20 + 先攻加值），突袭单位劣势（2024） */
+/** 掷先攻（1d20 + 先攻加值），突袭单位劣势（2024）；initiativeMode='fixed10' 房规：不掷骰，固定 10+加值 */
 export function rollInitiative(unit: BattleUnit, rules: RulesConfig, surprised: boolean): number {
+  const bonus = initiativeBonus(unit);
+  if (rules.initiativeMode === 'fixed10') return 10 + bonus;
   const mode = surprised && rules.surpriseMode === 'init-disadvantage' ? 'disadvantage' : 'normal';
-  const r = rollFormula('1d20', { mode, bonus: initiativeBonus(unit) });
+  const r = rollFormula('1d20', { mode, bonus });
   return r.total;
 }
 
@@ -51,6 +53,13 @@ export function rollInitiativeForUnits(
     const dexMod = Math.floor(((u.abilities?.dex ?? 10) - 10) / 2);
     const bonus = initiativeBonus(u);
     const surprised = surprisedIds.includes(u.id) && rules.surpriseMode === 'init-disadvantage';
+    if (rules.initiativeMode === 'fixed10') {
+      // 固定先攻房规（DMG 变体）：10 + 先攻加值，不掷骰（突袭劣势对固定值无意义）
+      const fixed = 10 + bonus;
+      rolls.push({ id: u.id, d20: 0, dexMod: bonus, total: fixed, surprised, detail: `固定先攻 10${bonus >= 0 ? '+' : ''}${bonus}=${fixed}` });
+      initById.set(u.id, fixed);
+      continue;
+    }
     const r = rollFormula('1d20', { mode: surprised ? 'disadvantage' : 'normal', bonus });
     const d20 = r.rolls.find(x => x.kept && x.sides === 20)?.value ?? r.rolls[0]?.value ?? 0;
     rolls.push({ id: u.id, d20, dexMod: bonus, total: r.total, surprised, detail: formatDice(r) });

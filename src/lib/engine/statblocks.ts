@@ -326,17 +326,25 @@ function toDamageList(v: unknown): DamageType[] {
 }
 
 /** 解析一条动作（中英字段别名全兼容） */
-function parseAttack(raw: unknown, idx: number, warnings: string[]): AiAbility | null {
+/**
+ * 结构化动作解析器（敌卡「攻击」数组与玩家侧自设法术/特性动作共用）。
+ * 支持中英文字段与字符串简写；玩家侧可写 命中:"施法"/豁免DC:"施法" 占位，
+ * 由 ctx.spellAttack / ctx.spellDc 换算为施法攻击加值与施法 DC。
+ */
+export function parseAttack(
+  raw: unknown, idx: number, warnings: string[],
+  ctx?: { spellAttack?: number; spellDc?: number },
+): AiAbility | null {
   if (typeof raw === 'string') {
     // "长弓|+4|1d8+1|穿刺|80尺" 或 "弯刀 +4 1d6+2 挥砍"（空格分隔）
     const parts = raw.split(/[|,，]+/).map(s => s.trim()).filter(Boolean);
     if (parts.length >= 3) {
-      return parseAttack({ name: parts[0], attackBonus: parts[1], dice: parts[2], damageType: parts[3], range: parts[4] }, idx, warnings);
+      return parseAttack({ name: parts[0], attackBonus: parts[1], dice: parts[2], damageType: parts[3], range: parts[4] }, idx, warnings, ctx);
     }
     const ws = raw.split(/\s+/).map(s => s.trim()).filter(Boolean);
     if (ws.length >= 3) {
       // 弯刀 +4 1d6+2 挥砍 [5尺] [多次攻击2]
-      return parseAttack({ name: ws[0], attackBonus: ws[1], dice: ws[2], damageType: ws[3], range: ws[4], 多次攻击: ws[5] }, idx, warnings);
+      return parseAttack({ name: ws[0], attackBonus: ws[1], dice: ws[2], damageType: ws[3], range: ws[4], 多次攻击: ws[5] }, idx, warnings, ctx);
     }
     return null;
   }
@@ -357,15 +365,26 @@ function parseAttack(raw: unknown, idx: number, warnings: string[]): AiAbility |
     const dm = save.match(/DC\s*(\d+)/i);
     if (am) saveAbility = ABILITY_CN[am[1].toLowerCase()] ?? ABILITY_CN[am[1]];
     if (dm) saveDc = parseInt(dm[1], 10);
+    if (saveDc === undefined && (save.trim() === '施法' || save.trim() === '法术DC') && ctx?.spellDc !== undefined) saveDc = ctx.spellDc;
   } else if (save && typeof save === 'object') {
     const so = save as Record<string, unknown>;
     const ab = so.ability ?? so['属性'];
     if (typeof ab === 'string') saveAbility = ABILITY_CN[ab.toLowerCase()] ?? ABILITY_CN[ab];
-    saveDc = toNum(so.dc ?? so.DC ?? so['DC'], 13);
+    const dcRaw = so.dc ?? so.DC ?? so['DC'];
+    if (typeof dcRaw === 'string' && (dcRaw.trim() === '施法' || dcRaw.trim() === '法术DC') && ctx?.spellDc !== undefined) {
+      saveDc = ctx.spellDc;
+    } else if (dcRaw !== undefined) {
+      saveDc = toNum(dcRaw, 13);
+    }
     halfOnSuccess = halfOnSuccess || so.halfOnSuccess === true || so.half === true || so['半伤'] === true;
   }
   if (o.saveDc !== undefined) saveDc = toNum(o.saveDc, 13);
-  if (o['豁免DC'] !== undefined) saveDc = toNum(o['豁免DC'], 13);
+  if (o['豁免DC'] !== undefined) {
+    const dRaw = o['豁免DC'];
+    saveDc = (typeof dRaw === 'string' && (dRaw.trim() === '施法' || dRaw.trim() === '法术DC') && ctx?.spellDc !== undefined)
+      ? ctx.spellDc
+      : toNum(dRaw, 13);
+  }
   if (typeof o.saveAbility === 'string') saveAbility = ABILITY_CN[o.saveAbility.toLowerCase()] ?? ABILITY_CN[o.saveAbility];
   if (typeof o['豁免属性'] === 'string') saveAbility = ABILITY_CN[o['豁免属性'].toLowerCase()] ?? ABILITY_CN[o['豁免属性']];
 
@@ -413,7 +432,9 @@ function parseAttack(raw: unknown, idx: number, warnings: string[]): AiAbility |
   // 公式全角归一（１ｄ８＋３ → 1d8+3），存储层保持半角规范形
   const dice = normalizeWidth(String(o.dice ?? o.damage ?? o['伤害'] ?? o['伤害公式'] ?? (isHeal ? '1d8' : '1d6')));
   const ab = o.attackBonus ?? o['命中'] ?? o['命中加值'] ?? o['加值'] ?? o['攻击加值'];
-  const attackBonus = ab !== undefined ? toNum(ab, 0) : undefined;
+  const attackBonus = (typeof ab === 'string' && (ab.trim() === '施法' || ab.trim() === '法术攻击') && ctx?.spellAttack !== undefined)
+    ? ctx.spellAttack
+    : ab !== undefined ? toNum(ab, 0) : undefined;
   const multiAttack = o.multiAttack !== undefined ? toNum(o.multiAttack, 1)
     : o['多次攻击'] !== undefined ? toNum(o['多次攻击'], 1) : 1;
 

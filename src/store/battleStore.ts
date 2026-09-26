@@ -13,7 +13,7 @@ import type {
   TurnState, RulesConfig, Attitude, DamageType, BattleSnapshot, SnapshotDiff, AiAbility,
 } from '@/lib/engine/types';
 import { AI_PROFILE_META } from '@/lib/engine/types';
-import { DEFAULT_RULES } from '@/lib/engine/types';
+import { DEFAULT_RULES, normalizeRules } from '@/lib/engine/types';
 import {
   resolveAttack, resolveSave, resolveDeathSave, resolveHeal, resolveConcentration,
   applyTypeModifiers,
@@ -53,7 +53,7 @@ import {
   inMeleeRange, posToCell, gridDistanceFeet, buildBlockedCells, estimateCover, cellToFeet,
   aoeCells, unitDistance, cellCenter,
 } from '@/lib/engine/geometry';
-import { coverBonus, effectiveSpeed, abilityMod, proficiencyBonus } from '@/lib/engine/rules';
+import { coverBonus, effectiveSpeed, abilityMod, proficiencyBonus, setRules as engineSetRules } from '@/lib/engine/rules';
 import {
   planTurn, validateStep, isAiControlled, unitAbilities, opportunityAttackers,
   type AiContext, type AiStep,
@@ -455,13 +455,16 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         return false;
       }
       const data = JSON.parse(raw);
+      const restoredRules = data.rules
+        ? { ...DEFAULT_RULES, ...normalizeRules(data.rules) }
+        : { ...DEFAULT_RULES };
       set({
         units: data.units ?? [],
         obstacles: data.obstacles ?? [],
         mapConfig: data.mapConfig ?? get().mapConfig,
         turn: data.turn ?? get().turn,
         events: data.events ?? [],
-        rules: data.rules ?? { ...DEFAULT_RULES },
+        rules: restoredRules,
         battleActive: data.battleActive ?? false,
         battleName: data.battleName ?? '未命名遭遇',
         aiAutoPlay: data.aiAutoPlay ?? true,
@@ -474,6 +477,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         importChain: data.importChain ?? emptyChain(),
         history: loadHistory(),
       });
+      engineSetRules(restoredRules);
       return (data.units?.length ?? 0) > 0;
     } catch {
       return false;
@@ -1895,10 +1899,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         mapConfig: data.mapConfig ?? get().mapConfig,
         turn: data.turn ?? get().turn,
         events: data.events ?? [],
-        rules: data.rules ?? get().rules,
+        rules: data.rules ? { ...get().rules, ...normalizeRules(data.rules) } : get().rules,
         battleName: data.battleName ?? '导入战报',
         battleActive: true,
       });
+      engineSetRules(get().rules);
       persist(get());
       return true;
     } catch {
@@ -2022,7 +2027,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         mapConfig: data.mapConfig ?? get().mapConfig,
         turn: data.turn ?? get().turn,
         events: data.events ?? [],
-        rules: data.rules ?? get().rules,
+        rules: data.rules ? { ...get().rules, ...normalizeRules(data.rules) } : get().rules,
         battleActive: data.battleActive ?? false,
         battleName: data.battleName ?? get().battleName,
         playerTargetId: data.playerTargetId ?? null,
@@ -2031,6 +2036,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         stagedStatblocks: data.stagedStatblocks ?? [],
         importChain: data.importChain ?? get().importChain,
       });
+      engineSetRules(get().rules);
       return true;
     } catch {
       return false;
@@ -2367,12 +2373,31 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         break;
       }
       case 'potion': {
-        if (!needAction()) return;
+        // 房规 potionBonusAction（设置面板可切）：喝药消耗附赠动作；附赠不可用时回退动作
+        const useBonus = get().rules.potionBonusAction;
         const r = rollFormula('2d4+2');
+        if (isCurrent) {
+          if (useBonus) {
+            if (unit.actionEconomy.bonus) {
+              get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的附赠动作已用尽——回退为标准动作喝药`, level: 'info' });
+              if (unit.actionEconomy.action) {
+                get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的动作也已用尽，无法喝药`, level: 'bad' });
+                return;
+              }
+              consume('action');
+            } else {
+              consume('bonus');
+            }
+          } else if (unit.actionEconomy.action) {
+            get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的动作已用尽`, level: 'bad' });
+            return;
+          } else {
+            consume('action');
+          }
+        }
         set({ lastRoll: { id: uid(), formula: '2d4+2', result: r, note: '治疗药水' } });
-        get().logEvent({ type: 'heal', actorId: unitId, text: `🧪 ${unit.name} 饮用治疗药水，回复 ${r.total} 点`, level: 'good' });
+        get().logEvent({ type: 'heal', actorId: unitId, text: `🧪 ${unit.name} 饮用治疗药水${useBonus ? '（房规·附赠动作）' : ''}，回复 ${r.total} 点`, level: 'good' });
         get().healUnit(unitId, r.total);
-        if (isCurrent) consume('action');
         break;
       }
     }
@@ -2397,8 +2422,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   },
 
   setRules: (patch) => {
-    const rules = { ...get().rules, ...patch };
+    const rules = { ...get().rules, ...normalizeRules(patch) };
     set({ rules });
+    // 同步引擎结算单例（combat.ts 等纯函数模块读 rules.ts 的 activeRules；
+    // 此前缺失这一步，设置面板里的 minDamageOne 等房规从未真正作用于结算）
+    engineSetRules(rules);
     persist(get());
   },
 

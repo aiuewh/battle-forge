@@ -56,7 +56,8 @@ function SheetCard({ sheet }: { sheet: CharSheet }) {
           onClick={() => setExpanded(v => !v)}
         >
           <Swords className="h-3 w-3" />
-          武器 {sheet.weapons.length} · 法术书 {sheet.spells.length}（{sheet.spells.filter(s => s.matched).length} 可结算）
+          武器 {sheet.weapons.length} · 法术书 {sheet.spells.length}（{sheet.spells.filter(s => s.matched || s.custom).length} 可结算）
+          {sheet.traitActions.length > 0 ? ` · 特性动作 ${sheet.traitActions.length}` : ''}
           {expanded ? ' ▴' : ' ▾'}
         </button>
         {sheet.spellSlots && (
@@ -99,13 +100,23 @@ function SheetCard({ sheet }: { sheet: CharSheet }) {
           {sheet.spells.length > 0 && (
             <div className="flex flex-wrap gap-x-2 gap-y-0.5">
               {sheet.spells.map(s => (
-                <span key={s.name} className={cn(s.matched ? 'text-violet-300' : 'text-muted-foreground')}>
-                  {s.matched ? '✨' : '○'}{s.name}（{s.level === 0 ? '戏法' : `${s.level}环`}{s.prepared ? '·已准备' : ''}）
+                <span key={s.name} className={cn(s.matched || s.custom ? 'text-violet-300' : 'text-muted-foreground')}
+                  title={s.custom ? '自定义结构化法术：按敌卡解析器自动结算' : s.matched ? '内置法术库命中：自动结算' : '未匹配内置库且无结构化字段：仅展示，不可自动结算'}>
+                  {s.matched ? '✨' : s.custom ? '🛠' : '○'}{s.name}（{s.level === 0 ? '戏法' : `${s.level}环`}{s.prepared ? '·已准备' : ''}）
                 </span>
               ))}
             </div>
           )}
-          {sheet.weapons.length === 0 && sheet.spells.length === 0 && (
+          {sheet.traitActions.length > 0 && (
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+              {sheet.traitActions.map(a => (
+                <span key={a.name} className="text-emerald-300" title="特性动作：结构化字段自动结算">
+                  ⚡{a.name}（{a.dice}{a.saveAbility ? ` · ${a.saveAbility.toUpperCase()}豁免DC${a.saveDc ?? '?'}` : ''}）
+                </span>
+              ))}
+            </div>
+          )}
+          {sheet.weapons.length === 0 && sheet.spells.length === 0 && sheet.traitActions.length === 0 && (
             <span className="text-muted-foreground">无武器与法术数据 —— 检查变量中的 物品.武器 / 施法.法术书 字段</span>
           )}
         </div>

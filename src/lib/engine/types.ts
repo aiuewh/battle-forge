@@ -407,9 +407,16 @@ export interface SnapshotDiff {
 // ============ 规则配置 ============
 
 export interface RulesConfig {
-  critWeaponDiceOnly: boolean;
+  /** 重击模式（房规模块）：full-double=2024 正式规则全部伤害骰翻倍；weapon-dice-only=One D&D 试玩版房规仅武器骰翻倍；max-plus-roll=2014 DMG 变体「取最大值再加一次普通掷骰」（爆炸重击） */
+  critMode: 'full-double' | 'weapon-dice-only' | 'max-plus-roll';
+  /** 旧字段（持久化兼容）：true 映射为 critMode='weapon-dice-only'；新代码一律读 critMode */
+  critWeaponDiceOnly?: boolean;
   failOnDropToZero: boolean;
   failOnDamageAtZero: boolean;
+  /** 先攻模式（房规模块）：roll=每人掷 d20（默认）；fixed10=DMG 变体固定先攻（10+先攻加值，不掷骰） */
+  initiativeMode: 'roll' | 'fixed10';
+  /** 喝药水消耗附赠动作而非动作（社区常见房规；官方规则药水为动作） */
+  potionBonusAction: boolean;
   surpriseMode: 'init-disadvantage' | 'skip-turn' | 'none';
   tieBreak: 'modifier-then-player' | 'player-first' | 'random';
   diagonal: 'equal' | 'alt';
@@ -420,14 +427,126 @@ export interface RulesConfig {
 }
 
 export const DEFAULT_RULES: RulesConfig = {
-  /** 2024 正式规则：重击翻倍攻击全部伤害骰（critWeaponDiceOnly=true 为 One D&D 试玩版房规） */
-  critWeaponDiceOnly: false,
+  /** 2024 正式规则：重击翻倍攻击全部伤害骰 */
+  critMode: 'full-double',
   /** 2024 RAW：降到 0 HP 本身不记死亡豁免失败（true 为更致命房规） */
   failOnDropToZero: false,
   failOnDamageAtZero: true,
+  initiativeMode: 'roll',
+  potionBonusAction: false,
   surpriseMode: 'init-disadvantage',
   tieBreak: 'modifier-then-player',
   diagonal: 'equal',
   minDamageOne: false,
   authorityMode: 'panel',
 };
+
+/**
+ * 兼容归一：旧持久化里的 critWeaponDiceOnly 布尔映射为 critMode（显式传入 critMode 时以 critMode 为准）。
+ * setRules / 持久化恢复统一走这里。
+ */
+export function normalizeRules(raw: Partial<RulesConfig>): Partial<RulesConfig> {
+  const out: Partial<RulesConfig> = { ...raw };
+  if (out.critWeaponDiceOnly !== undefined) {
+    if (out.critMode === undefined) {
+      out.critMode = out.critWeaponDiceOnly ? 'weapon-dice-only' : 'full-double';
+    }
+    delete out.critWeaponDiceOnly;
+  }
+  return out;
+}
+
+// ============ 房规模块注册表 ============
+// 模块化房规：每个模块是独立可组合的最小规则单元（分组陈列、来源标注、自由开关）。
+// 结算点只读 RulesConfig 字段；本表仅描述 UI 与语义，不参与结算。
+
+export type HouseRuleSource = 'raw' | 'official-variant' | 'one-dd-draft' | 'community';
+
+export const HOUSE_RULE_SOURCE_LABEL: Record<HouseRuleSource, string> = {
+  'raw': '2024 RAW',
+  'official-variant': '官方变体',
+  'one-dd-draft': '官方草案',
+  'community': '社区房规',
+};
+
+export interface HouseRuleModule {
+  id: string;
+  /** 展示分组：重击 / 濒死与死亡 / 先攻与突袭 / 动作经济 / 伤害与骰子 / 战场与结算 */
+  group: string;
+  name: string;
+  source: HouseRuleSource;
+  description: string;
+  /** boolean 模块 = 开关（field 必须是 boolean 字段）；enum 模块 = 单选（choices.value 为 field 字段合法值） */
+  field: string;
+  choices?: { value: string; label: string }[];
+}
+
+export const HOUSE_RULE_MODULES: HouseRuleModule[] = [
+  {
+    id: 'crit-mode', group: '重击', name: '重击伤害模式', source: 'raw', field: 'critMode',
+    description: '重击时额外伤害骰如何计算。三种模式互斥，取其一。',
+    choices: [
+      { value: 'full-double', label: '全骰翻倍' },
+      { value: 'weapon-dice-only', label: '仅武器骰翻倍' },
+      { value: 'max-plus-roll', label: '取满+加骰' },
+    ],
+  },
+  {
+    id: 'fail-on-drop', group: '濒死与死亡', name: '跌至 0 HP 记 1 次失败', source: 'community', field: 'failOnDropToZero',
+    description: '开启=更致命：生命值归零本身记 1 次死亡豁免失败。2024 RAW 为归零不记，仅濒死中受伤才记。',
+  },
+  {
+    id: 'fail-on-damage', group: '濒死与死亡', name: '濒死受伤记失败（重击记 2 次）', source: 'raw', field: 'failOnDamageAtZero',
+    description: '2024 正式规则：濒死中受任何伤害 +1 次失败，重击 +2 次。',
+  },
+  {
+    id: 'initiative-mode', group: '先攻与突袭', name: '先攻模式', source: 'official-variant', field: 'initiativeMode',
+    description: 'roll=每人掷 d20+先攻加值（默认）；fixed10=DMG 变体「先攻值 = 10 + 先攻加值」，不掷骰、节奏更快更稳定。',
+    choices: [
+      { value: 'roll', label: '掷骰先攻' },
+      { value: 'fixed10', label: '固定先攻 10+' },
+    ],
+  },
+  {
+    id: 'surprise-mode', group: '先攻与突袭', name: '突袭处理', source: 'raw', field: 'surpriseMode',
+    description: '被突袭方的处理方式。2024：先攻劣势；2014 式：整轮无法行动（skip-turn）；或完全关闭。',
+    choices: [
+      { value: 'init-disadvantage', label: '先攻劣势(2024)' },
+      { value: 'skip-turn', label: '跳过首轮(2014)' },
+      { value: 'none', label: '不处理' },
+    ],
+  },
+  {
+    id: 'tie-break', group: '先攻与突袭', name: '先攻平局打破', source: 'official-variant', field: 'tieBreak',
+    description: '官方仅规定「同值同时行动」，具体打破方式属裁量：按敏捷调整值→玩家优先，或玩家永远优先，或随机。',
+    choices: [
+      { value: 'modifier-then-player', label: '敏调→玩家' },
+      { value: 'player-first', label: '玩家优先' },
+      { value: 'random', label: '随机' },
+    ],
+  },
+  {
+    id: 'potion-bonus', group: '动作经济', name: '喝药水 = 附赠动作', source: 'community', field: 'potionBonusAction',
+    description: '开启后战斗中饮用治疗药水消耗附赠动作；官方规则为动作。桌面圈最流行的提速房规之一。',
+  },
+  {
+    id: 'min-damage-one', group: '伤害与骰子', name: '伤害最低 1 点', source: 'community', field: 'minDamageOne',
+    description: '免疫之外的伤害经抗性/石化减免至 0 时至少结算 1 点。',
+  },
+  {
+    id: 'diagonal', group: '战场与结算', name: '对角线移动', source: 'official-variant', field: 'diagonal',
+    description: 'equal=对角线 1 格算 1 格（5e 默认）；alt=1.5 倍变体（2014 DMG 可选规则，对角线交替算 2 格）。',
+    choices: [
+      { value: 'equal', label: '1:1(5e默认)' },
+      { value: 'alt', label: '1.5倍变体' },
+    ],
+  },
+  {
+    id: 'authority-mode', group: '战场与结算', name: '结算权威', source: 'community', field: 'authorityMode',
+    description: 'panel=面板结算权威：先攻由面板掷骰、战斗中 AI 数据不覆盖已结算数值（推荐）；ai-legacy=兼容旧卡：先攻/数值以 AI 块为准。',
+    choices: [
+      { value: 'panel', label: '面板权威' },
+      { value: 'ai-legacy', label: '兼容旧卡' },
+    ],
+  },
+];

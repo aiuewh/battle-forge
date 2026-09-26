@@ -2,7 +2,7 @@
  * D&D 2024 规则计算：属性调整值、熟练加值、被动数值
  */
 import type { Abilities, AbilityKey, BattleUnit, RulesConfig } from './types';
-import { DEFAULT_RULES } from './types';
+import { DEFAULT_RULES, normalizeRules } from './types';
 import { aggregateEffects, exhaustionSpeedLoss } from './conditions';
 
 export function abilityMod(score: number): number {
@@ -139,5 +139,5 @@ export function getRules(): RulesConfig {
 }
 
 export function setRules(r: Partial<RulesConfig>) {
-  activeRules = { ...activeRules, ...r };
+  activeRules = { ...activeRules, ...normalizeRules(r) };
 }

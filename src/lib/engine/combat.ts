@@ -32,7 +32,9 @@ export interface AttackOptions {
   distanceFeet?: number;
   /** 攻击者 5 尺内是否存在敌对生物（2024：远程攻击检定劣势） */
   hostileWithin5Ft?: boolean;
-  /** 房规：重击仅翻倍武器骰（默认 false = 2024 正式规则：全部伤害骰翻倍） */
+  /** 房规：重击模式（优先级高于全局 rules.critMode；旧参 critWeaponDiceOnly=true 视为 weapon-dice-only） */
+  critMode?: 'full-double' | 'weapon-dice-only' | 'max-plus-roll';
+  /** 兼容旧参：重击仅翻倍武器骰（One D&D 试玩版房规）；新代码请传 critMode */
   critWeaponDiceOnly?: boolean;
   /** 是否应用目标抗性 */
   applyResistances?: boolean;
@@ -48,6 +50,20 @@ function blessDie(unit: BattleUnit, rolls: DieRoll[]): number {
   const v = rollDie(4);
   rolls.push({ sides: 4, value: v, kept: true, tag: 'bless' });
   return v;
+}
+
+/**
+ * 爆炸重击（2014 DMG 变体，critMode='max-plus-roll'）：伤害骰不掷、取最大面值，
+ * 再加上一次普通掷骰（骰子照掷、修正值只计一次）。
+ * diceSum = 取满骰和 + 普通掷骰骰和；total = diceSum + 修正；
+ * maxRolls/normalRolls 为同一组骰的两种取值，供调用方一并展开进骰面记录。
+ */
+function maxPlusRoll(formula: string, forcedRolls?: number[]): { diceSum: number; total: number; modifier: number; maxRolls: DieRoll[]; normalRolls: DieRoll[] } {
+  const normal = rollFormula(formula, { forcedRolls });
+  const maxRolls = normal.rolls.map(r => ({ ...r, value: r.sides }));
+  const maxDiceSum = maxRolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0);
+  const normalDiceSum = normal.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0);
+  return { diceSum: maxDiceSum + normalDiceSum, total: maxDiceSum + normal.total, modifier: normal.modifier, maxRolls, normalRolls: normal.rolls };
 }
 
 export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: AttackOptions): AttackResult {
@@ -120,27 +136,48 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
   let weaponTotal = 0;
   let riderTotal = 0;
 
-  // 2024 正式规则：重击翻倍攻击的全部伤害骰（修正值不翻倍）；
-  // critWeaponDiceOnly=true 为房规（One D&D 试玩版提案：仅武器骰翻倍）
-  const weaponDiceOnly = opts.critWeaponDiceOnly ?? getRules().critWeaponDiceOnly;
-  const critMultiplier = isCrit ? 2 : 1;
+  // 重击模式解析：显式 critMode > 旧参 critWeaponDiceOnly 映射 > 全局 rules.critMode
+  const critMode: 'full-double' | 'weapon-dice-only' | 'max-plus-roll'
+    = opts.critMode
+      ?? (opts.critWeaponDiceOnly !== undefined ? (opts.critWeaponDiceOnly ? 'weapon-dice-only' : 'full-double') : undefined)
+      ?? getRules().critMode;
+  const weaponDiceOnly = critMode === 'weapon-dice-only';
   let weaponDiceSum = 0;
   let weaponMod = 0;
-  for (let i = 0; i < critMultiplier; i++) {
-    const w = rollFormula(opts.weaponDamage, {
-      forcedRolls: opts.forcedDamageRolls && i === 0 ? opts.forcedDamageRolls : undefined,
-    });
-    for (const r of w.rolls) rolls.push({ ...r, tag: 'weapon' });
-    weaponDiceSum += w.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0);
+  if (isCrit && critMode === 'max-plus-roll') {
+    // 爆炸重击（2014 DMG 变体）：武器骰取满 + 再掷一次普通伤害（修正值只计一次）
+    const w = maxPlusRoll(opts.weaponDamage, opts.forcedDamageRolls);
+    for (const r of w.maxRolls) rolls.push({ ...r, tag: 'weapon' });
+    for (const r of w.normalRolls) rolls.push({ ...r, tag: 'weapon' });
+    weaponDiceSum = w.diceSum;
     weaponMod = w.modifier;
+  } else {
+    // 2024 正式规则：重击翻倍攻击的全部伤害骰（修正值不翻倍）；
+    // weapon-dice-only 房规（One D&D 试玩版提案） rider 部分不翻倍
+    const critMultiplier = isCrit ? 2 : 1;
+    for (let i = 0; i < critMultiplier; i++) {
+      const w = rollFormula(opts.weaponDamage, {
+        forcedRolls: opts.forcedDamageRolls && i === 0 ? opts.forcedDamageRolls : undefined,
+      });
+      for (const r of w.rolls) rolls.push({ ...r, tag: 'weapon' });
+      weaponDiceSum += w.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0);
+      weaponMod = w.modifier;
+    }
   }
   weaponTotal = weaponDiceSum + weaponMod;
-  // rider 骰（神能/偷袭等附加伤害骰）：2024 重击同样翻倍（房规仅武器骰翻倍时跳过）
+  // rider 骰（神能/偷袭等附加伤害骰）：2024 重击同样翻倍（weapon-dice-only 房规时跳过翻倍）
   if (opts.riderDamage) {
-    for (let i = 0; i < (isCrit && !weaponDiceOnly ? 2 : 1); i++) {
-      const rd = rollFormula(opts.riderDamage);
-      for (const r of rd.rolls) rolls.push({ ...r, tag: 'rider' });
-      riderTotal += rd.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0) + rd.modifier;
+    if (isCrit && critMode === 'max-plus-roll') {
+      const rd = maxPlusRoll(opts.riderDamage);
+      for (const r of rd.maxRolls) rolls.push({ ...r, tag: 'rider' });
+      for (const r of rd.normalRolls) rolls.push({ ...r, tag: 'rider' });
+      riderTotal = rd.diceSum + rd.modifier;
+    } else {
+      for (let i = 0; i < (isCrit && !weaponDiceOnly ? 2 : 1); i++) {
+        const rd = rollFormula(opts.riderDamage);
+        for (const r of rd.rolls) rolls.push({ ...r, tag: 'rider' });
+        riderTotal += rd.rolls.filter(r => r.kept).reduce((s, r) => s + r.value, 0) + rd.modifier;
+      }
     }
   }
 

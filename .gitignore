@@ -55,3 +55,4 @@ server.log
 /skills/
 # Engine regression-test build output
 /.engtest/
+/.engtest_run/

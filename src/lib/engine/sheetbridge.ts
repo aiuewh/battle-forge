@@ -11,7 +11,7 @@ import type {
   Abilities, AbilityKey, AiAbility, BattleUnit, DamageType, SpellSlots,
 } from './types';
 import { abilityMod, proficiencyBonus, formatMod } from './rules';
-import { DAMAGE_TYPE_CN, DAMAGE_TYPE_TO_CN, stripInstanceSuffix } from './statblocks';
+import { DAMAGE_TYPE_CN, DAMAGE_TYPE_TO_CN, stripInstanceSuffix, parseAttack } from './statblocks';
 
 // ============ 变量树 ============
 
@@ -180,7 +180,29 @@ export interface SpellDef {
   level: number;            // 0=戏法
   prepared: boolean;
   matched: boolean;         // 是否匹配到内置法术库（可自动结算）
-  ability?: Omit<AiAbility, 'id'>; // 匹配到的机制
+  /** 自定义结构化法术：内置库未命中，但条目带结构化动作字段（伤害/命中/豁免…），按敌卡解析器结算 */
+  custom?: boolean;
+  ability?: Omit<AiAbility, 'id'>; // 匹配到的机制（内置库或自定义结构化）
+}
+
+/**
+ * 条目是否携带结构化动作字段（与敌卡「攻击」同字段契约，见战斗协议 attack_examples）。
+ * 用于把玩家侧自设法术/特性动作接进结算器；纯描述条目（仅 描述/文本）不误判。
+ */
+function hasStructuredActionFields(o: Record<string, unknown>): boolean {
+  const keys = ['伤害公式', '伤害', '命中', '命中加值', '加值', '攻击加值', '豁免', '豁免DC', '治疗', 'save', 'dice', 'damage', 'attackBonus', 'heal'];
+  const hit = keys.some(k => {
+    const v = o[k];
+    if (v === undefined || v === null || v === false) return false;
+    if (typeof v === 'number') return true;
+    if (typeof v === 'string' && v.trim() !== '') return true;
+    if (typeof v === 'object') return true; // 豁免对象 {属性,DC,半伤}
+    return false;
+  });
+  // 伤害为空串/占位不算；排除纯资源形态 {当前,最大}（领地/资源条目不进动作栏）
+  if (!hit) return false;
+  const isResourceShape = '当前' in o && '最大' in o && !('伤害' in o) && !('伤害公式' in o) && !('命中' in o) && !('豁免' in o);
+  return !isResourceShape;
 }
 
 export interface CharSheet {
@@ -196,6 +218,8 @@ export interface CharSheet {
   spellSlots?: SpellSlots;
   weapons: WeaponDef[];
   spells: SpellDef[];
+  /** 特性动作：/特性.{种族,职业,专长} 下带结构化动作字段的条目（自设招式），按敌卡解析器结算 */
+  traitActions: Omit<AiAbility, 'id'>[];
   statuses: string[];       // 映射为引擎状态 key
   stealthBonus?: number;
   /** 豁免熟练属性（来自 熟练配置.豁免，装配时折算为 saveBonuses） */
@@ -502,15 +526,55 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
         for (const [sName, sv] of Object.entries(sbRaw as Record<string, unknown>)) {
           const prepared = !!sv && typeof sv === 'object' && (sv as Record<string, unknown>)['准备中'] === true;
           const tpl = matchSpell(sName);
+          // 内置库未命中 → 尝试结构化解析（与敌卡动作同字段契约）：
+          // 玩家条目可写 命中:"施法"/豁免DC:"施法" 占位，由施法属性自动换算攻击加值与 DC
+          let customAbility: Omit<AiAbility, 'id'> | undefined;
+          if (!tpl && sv && typeof sv === 'object' && hasStructuredActionFields(sv as Record<string, unknown>)) {
+            const parsed = parseAttack(sv, 0, [], { spellAttack: pb + castMod, spellDc: dc });
+            if (parsed) {
+              const { id: _id, ...rest } = parsed;
+              // 法术名在变量键上（条目本身不带 名称 字段）
+              customAbility = { ...rest, name: rest.name && !/^动作\d+$/.test(rest.name) ? rest.name : sName };
+            }
+          }
           spells.push({
             name: sName,
-            level: tpl?.level ?? getNum(sv, '环阶', '等级') ?? 1,
+            level: tpl?.level ?? getNum(sv, '环阶', '等级') ?? customAbility?.spellLevel ?? 1,
             prepared,
             matched: !!tpl,
-            ability: tpl ? tpl.build(castMod, dc, pb) : undefined,
+            custom: !tpl && !!customAbility,
+            ability: tpl ? tpl.build(castMod, dc, pb) : customAbility,
           });
         }
         spells.sort((a, b) => a.level - b.level || a.name.localeCompare(b.name));
+      }
+    }
+
+    // 特性动作：/特性.{种族,职业,专长}.{名} 下带结构化动作字段的条目 → 自设招式
+    // （非攻击动作仍按登记规则放 描述；仅当条目携带 伤害/命中/豁免/治疗 等字段时才解析为可结算动作）
+    const traitActions: Omit<AiAbility, 'id'>[] = [];
+    const traitsRaw = c['特性'];
+    if (traitsRaw && typeof traitsRaw === 'object') {
+      // 特性动作同样支持 命中:"施法"/豁免DC:"施法" 占位（自设武术/魔法特性共用一套契约）
+      const castKeyT = casting && typeof casting === 'object' ? castingAbility(abilities, casting) : undefined;
+      const castCtx = castKeyT
+        ? { spellAttack: pb + abilityMod(abilities[castKeyT]), spellDc: 8 + pb + abilityMod(abilities[castKeyT]) }
+        : undefined;
+      const cats = ['职业', '种族', '专长', 'class', 'race', 'feat'];
+      for (const cat of cats) {
+        const catRaw = (traitsRaw as Record<string, unknown>)[cat];
+        if (!catRaw || typeof catRaw !== 'object') continue;
+        for (const [tName, tv] of Object.entries(catRaw as Record<string, unknown>)) {
+          if (!tv || typeof tv !== 'object' || Array.isArray(tv)) continue;
+          const to = tv as Record<string, unknown>;
+          if (!hasStructuredActionFields(to)) continue;
+          const parsed = parseAttack(to, traitActions.length, [], castCtx);
+          if (parsed) {
+            const { id: _id, ...rest } = parsed;
+            // 特性名同样在键上；条目自带 名称 时以条目为准
+            traitActions.push({ ...rest, name: rest.name && !/^动作\d+$/.test(rest.name) ? rest.name : tName });
+          }
+        }
       }
     }
 
@@ -574,6 +638,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       spellSlots,
       weapons,
       spells,
+      traitActions,
       statuses,
       stealthBonus,
       saveProficiencies: saveProficiencies.size > 0 ? saveProficiencies : undefined,
@@ -628,10 +693,13 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
     };
   });
 
-  // 法术动作（仅匹配到机制的）
+  // 法术动作：内置库命中（matched）+ 自定义结构化法术（custom）都进动作栏
   const spellAbilities: AiAbility[] = sheet.spells
-    .filter(s => s.matched && s.ability)
-    .map((s, i) => ({ ...s.ability!, id: `s${i}-${s.name}` }));
+    .filter(s => s.ability && (s.matched || s.custom))
+    .map((s, i) => ({ ...s.ability!, id: `s${i}-${s.name}`, note: [s.custom ? '自设法术（结构化）' : '', s.ability!.note].filter(Boolean).join(' · ') || undefined }));
+
+  // 特性动作（自设招式，结构化解析）
+  const traitAbilities: AiAbility[] = sheet.traitActions.map((a, i) => ({ ...a, id: `t${i}-${a.name}`, note: [a.note, '特性动作'].filter(Boolean).join(' · ') || undefined }));
 
   const unit: BattleUnit = {
     id: sheet.name,
@@ -662,9 +730,9 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
     actionEconomy: { action: false, bonus: false, reaction: false, movementUsed: 0 },
     hasActed: false,
     aiProfile: 'tactical',
-    aiAbilities: [...weaponAbilities, ...spellAbilities],
+    aiAbilities: [...weaponAbilities, ...spellAbilities, ...traitAbilities],
     stealthBonus: sheet.stealthBonus,
-    notes: `Lv.${sheet.level} 角色（名单同步）${sheet.spells.length > 0 ? ` · 法术书 ${sheet.spells.length} 条（${sheet.spells.filter(s => s.matched).length} 条可自动结算）` : ''}`,
+    notes: `Lv.${sheet.level} 角色（名单同步）${sheet.spells.length > 0 ? ` · 法术书 ${sheet.spells.length} 条（${sheet.spells.filter(s => s.matched || s.custom).length} 条可自动结算）` : ''}${sheet.traitActions.length > 0 ? ` · 特性动作 ${sheet.traitActions.length}` : ''}`,
   };
   return unit;
 }
