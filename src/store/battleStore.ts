@@ -41,7 +41,7 @@ import { generateBattleResultBlock } from '@/lib/engine/report';
 import {
   fnv1a, shouldApplyImport, appendChain, emptyChain, type HashChainState,
 } from '@/lib/engine/embedSync';
-import { aggregateEffects, exhaustionPenalty } from '@/lib/engine/conditions';
+import { aggregateEffects, exhaustionPenalty, getCondition } from '@/lib/engine/conditions';
 import {
   snapshotFromParsed, snapshotFromUnits, diffSnapshots, appendHistory, loadHistory,
   findPrevSnapshot,
@@ -1278,9 +1278,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     },
 
   executeLairAction: () => {
+    const round = get().turn.round;
     const casters = get().units.filter(u => u.attitude === 2 && u.hp > 0 && !u.deathSaves?.dead && (u.lairActions?.length ?? 0) > 0);
     for (const caster of casters) {
-      const act = caster.lairActions![0];
+      // 规则：每轮只用一个巢穴动作；多条目按轮次轮换，避免永远只用第一条
+      const list = caster.lairActions!;
+      const act = list[(Math.max(0, round - 1)) % list.length];
       const rangeFeet = act.rangeFeet ?? 9999;
       const targets = get().units.filter(u =>
         u.attitude !== caster.attitude && u.hp > 0 && !u.deathSaves?.dead &&
@@ -1577,6 +1580,41 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             const applied = get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: unit.id });
             // 专注检定用类型修正后的实际扣血（抗性减免不应抬高专注 DC）
             get().concentrationAfterDamage(tid, applied);
+          }
+        }
+        return true;
+      }
+      case 'save-single': {
+        const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
+        const t = get().units.find(u => u.id === step.targetId);
+        if (ability && t && t.hp > 0 && !t.deathSaves?.dead) {
+          set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
+          if (ability.spellLevel) get().spendSpellSlot(unit.id, ability.spellLevel);
+          const saveKey = ability.saveAbility ?? 'wis';
+          const dc = ability.saveDc ?? 13;
+          get().logEvent({
+            type: 'attack', actorId: unit.id, targetId: t.id,
+            text: `🌀 ${unit.name} 施放【${ability.name}】→ ${t.name}（DC${dc} ${saveKey.toUpperCase()} 豁免）`,
+            level: 'crit',
+          });
+          const r = resolveSave(t, { ability: saveKey, dc });
+          const success = r.check.outcome.includes('success');
+          get().logEvent({
+            type: 'save', actorId: t.id,
+            text: `${t.name} ${saveKey.toUpperCase()} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${dc} —— ${success ? '成功（效果无效）' : '失败（中招）'}`,
+            level: success ? 'good' : 'bad',
+          });
+          if (!success) {
+            const status = ability.applyStatus;
+            const def = status ? getCondition(status) : undefined;
+            if (status) {
+              set({ units: get().units.map(u => (u.id === t.id ? { ...u, statuses: [...new Set([...u.statuses, status])] } : u)) });
+            }
+            get().logEvent({
+              type: 'note', actorId: t.id, targetId: t.id,
+              text: def ? `⚡ ${t.name} 陷入【${def.name}】` : (status ? `⚡ ${t.name} 受到【${status}】影响（自定义状态，仅记录）` : `⚡ ${t.name} 受到【${ability.name}】影响`),
+              level: 'bad',
+            });
           }
         }
         return true;

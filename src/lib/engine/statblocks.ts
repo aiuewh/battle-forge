@@ -76,9 +76,9 @@ const KIND_CN: Record<string, AiAbilityKind> = {
 };
 
 const AOSE_SHAPE_CN: Record<string, AoeShapeKind> = {
-  'circle': 'circle', '圆': 'circle', '圆形': 'circle', '球': 'sphere', 'sphere': 'sphere', '球形': 'sphere',
-  'cylinder': 'cylinder', '圆柱': 'cylinder', '圆柱体': 'cylinder',
-  'cone': 'cone', '锥': 'cone', '锥形': 'cone',
+  'circle': 'circle', '圆': 'circle', '圆形': 'circle', '球': 'sphere', 'sphere': 'sphere', '球形': 'sphere', '球体': 'sphere',
+  'cylinder': 'cylinder', '圆柱': 'cylinder', '圆柱体': 'cylinder', '柱体': 'cylinder',
+  'cone': 'cone', '锥': 'cone', '锥形': 'cone', '锥体': 'cone',
   'line': 'line', '线': 'line', '线形': 'line', '直线': 'line',
   'cube': 'cube', '立方': 'cube', '立方体': 'cube',
   'square': 'square', '方': 'square', '方形': 'square',
@@ -522,7 +522,7 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
       const rName = String(ro.name ?? ro['名称'] ?? '').trim();
       if (!rName) continue;
       const trigRaw = String(ro.trigger ?? ro['触发'] ?? '').trim();
-      const trigger: ReactionDef['trigger'] = /回合结束|turn.?end/i.test(trigRaw) ? 'turn-end'
+      const trigger: ReactionDef['trigger'] = /回合结束|结束回合|turn.?end/i.test(trigRaw) ? 'turn-end'
         : /命中|传奇|抗性|hit/i.test(trigRaw) ? 'hit' : 'manual';
       const effRaw = String(ro.effect ?? ro['效果'] ?? '').trim();
       const attackName = String(ro.attackName ?? ro['武器'] ?? ro['攻击名'] ?? '').trim();

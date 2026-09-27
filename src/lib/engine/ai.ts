@@ -34,6 +34,7 @@ export type AiStep =
   | { type: 'move'; path: Cell[]; cost: number }
   | { type: 'attack'; abilityId: string; targetId: string }
   | { type: 'aoe'; abilityId: string; origin: { x: number; y: number }; angle?: number; targets: string[] }
+  | { type: 'save-single'; abilityId: string; targetId: string }
   | { type: 'heal'; abilityId: string; targetId: string }
   | { type: 'flee-note'; text: string }
   | { type: 'end-turn' };
@@ -428,6 +429,27 @@ export function planTurn(ctx: AiContext, unit: BattleUnit): AiStep[] {
     }
   }
 
+  // 4.5) 单体豁免类（控制/减益）：WB3 鼓励的单体控制法术此前解析为 kind='save' 却无消费路径
+  //      目标：得分最高的射程内敌人，且尚未带有该法术要施加的状态
+  const saveSingle = abilities.find(a => a.kind === 'save' && hasSlotFor(a));
+  if (saveSingle && hasAction) {
+    const rangeCellsSave = Math.max(1, Math.floor(saveSingle.range / CELL));
+    const statusKey = saveSingle.applyStatus;
+    const controlTarget = scores.map(s => s.unit).find(t =>
+      gridDistanceCells(posToCell(unit.pos), posToCell(t.pos), ctx.diagonal) <= rangeCellsSave &&
+      !(statusKey && t.statuses.some(st => st === statusKey || st.split(':')[0] === statusKey)));
+    if (controlTarget) {
+      steps.push({ type: 'save-single', abilityId: saveSingle.id, targetId: controlTarget.id });
+      if (profile === 'ranged' || profile === 'blaster') {
+        const retreat = planRetreat(ctx, unit, remainingCells);
+        if (retreat) for (const c of retreat.path.slice(0, Math.min(retreat.path.length, 2))) {
+          steps.push({ type: 'move', path: [c], cost: 1 });
+        }
+      }
+      return [...steps, { type: 'end-turn' }];
+    }
+  }
+
   // 5) 选择攻击动作与移动（攻击法术同样受法术位约束，见 hasSlotFor）
   const meleeAbilities = abilities.filter(a => a.kind === 'melee' && hasSlotFor(a));
   const rangedAbilities = abilities.filter(a => a.kind === 'ranged' && hasSlotFor(a));
@@ -625,6 +647,14 @@ export function validateStep(ctx: AiContext, unit: BattleUnit, step: AiStep): bo
     }
     case 'aoe': {
       return ctx.units.some(u => step.targets.includes(u.id) && u.hp > 0 && !u.deathSaves?.dead);
+    }
+    case 'save-single': {
+      const t = ctx.units.find(u => u.id === step.targetId);
+      if (!t || t.hp <= 0 || t.deathSaves?.dead) return false;
+      const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
+      if (!ability) return false;
+      const dist = gridDistanceCells(posToCell(unit.pos), posToCell(t.pos), ctx.diagonal) * CELL;
+      return dist <= ability.range + CELL; // 容差一格（同 attack）
     }
     case 'heal': {
       const t = ctx.units.find(u => u.id === step.targetId);

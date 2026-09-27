@@ -316,10 +316,10 @@ export function parseCheckDetail(detail: string): {
 /** 判定结果文字 → 结果类型（同义词扩展：命中/未命中/重击/暴击/失手/miss/hit） */
 export function parseOutcome(text: string): 'critical-success' | 'success' | 'failure' | 'critical-failure' | null {
   const t = normalizeWidth(text);
-  // 大成功类（先判，避免被「成功」提前命中）
-  if (t.includes('大成功') || t.includes('重击') || t.includes('暴击') && !t.includes('失败') || /critical\s*success/i.test(t)) return 'critical-success';
-  // 大失败类
-  if (t.includes('大失败') || t.includes('暴击失败') || /critical\s*failure/i.test(t)) return 'critical-failure';
+  // 大成功类（先判，避免被「成功」提前命中）；「重击/暴击」须排除失败与未命中（重击失败≠大成功）
+  if (t.includes('大成功') || (t.includes('重击') || t.includes('暴击')) && !t.includes('失败') && !t.includes('未命中') || /critical\s*success/i.test(t)) return 'critical-success';
+  // 大失败类（含「重击失败」这类攻击重击失手的表述）
+  if (t.includes('大失败') || t.includes('暴击失败') || t.includes('重击失败') || /critical\s*failure/i.test(t)) return 'critical-failure';
   // 未命中类（先于「命中」，因为包含「命中」二字）
   if (t.includes('未命中') || t.includes('失手') || t.includes('没有命中') || /\bmiss(ed|es)?\b/i.test(t)) return 'failure';
   // 成功类

@@ -9,6 +9,9 @@ import { parseBattleBlock, parseOutcome, parseCheckDetail, parseDmMessage } from
 import { parseFormula, rollFormula, setRng } from '../src/lib/engine/dice';
 import { parseEncounterDefs } from '../src/lib/engine/statblocks';
 import { applyPatches } from '../src/lib/engine/sheetbridge';
+import { suggestPatches } from '../src/lib/engine/report';
+import { planTurn, validateStep, type AiContext } from '../src/lib/engine/ai';
+import type { BattleUnit } from '../src/lib/engine/types';
 
 let pass = 0, fail = 0;
 const findings: string[] = [];
@@ -169,6 +172,60 @@ console.log('━━━━━━ S6. 端到端消息级语义等价 ━━━━�
   const v4 = parseDmMessage('艾尔玛｜先攻：１７｜生命值：２２／２２｜位置：(0,15)｜阵营：我方\n哥布林｜init:9｜hp:10/10｜pos:20,20｜att:敌方');
   ok('s6d 纯全角竖线消息可导入', (v4.latestBattle || []).length === 2, sig(v4));
   ok('s6d 全角行语义正确', sig(v4) === '艾尔玛:17:22/22:0,15:0|哥布林:9:10/10:20,20:2', sig(v4));
+}
+
+console.log('━━━━━━ S7. 修复回归：单体豁免 / 反应触发词 / 重击失败 / AoE 形状 / 法术位补丁 ━━━━━━');
+{
+  // s7a parseOutcome：重击失败/重击未命中 ≠ 大成功
+  ok('s7a 重击失败 → critical-failure', parseOutcome('重击失败') === 'critical-failure', parseOutcome('重击失败') ?? 'null');
+  ok('s7a 重击未命中 → failure', parseOutcome('重击未命中') === 'failure');
+  ok('s7a 重击 → critical-success 不回归', parseOutcome('重击') === 'critical-success');
+  ok('s7a 暴击命中 → critical-success 不回归', parseOutcome('暴击命中') === 'critical-success');
+
+  // s7b 敌卡反应触发词：协议示例原文「结束回合时」应归为 turn-end（此前只认「回合结束」）
+  const enc = parseEncounterDefs('{"enemies":[{"name":"时龙卫士","ac":18,"hp":"200","reactions":[{"name":"时光缓速","trigger":"一个可见生物结束回合时","effect":"使其速度降为0"}]}]}');
+  const rx = (enc.defs[0] as { reactions?: Array<{ trigger: string }> }).reactions?.[0];
+  ok('s7b 「结束回合时」→ turn-end', rx?.trigger === 'turn-end', JSON.stringify(rx));
+
+  // s7c planTurn 消费单体豁免类（kind='save'）：WB3 控制法术此前永不施放
+  const baseUnit = (p: Partial<BattleUnit>): BattleUnit => ({
+    id: 'u', name: 'u', hp: 10, maxHp: 10, ac: 13, speed: 30, attitude: 1,
+    pos: { x: 10, y: 10 }, statuses: [], resistances: [], immunities: [],
+    vulnerabilities: [], init: 10, next: false,
+    actionEconomy: { movementUsed: 0, action: false, bonusAction: false, reaction: false },
+    ...p,
+  } as BattleUnit);
+  const caster = baseUnit({ id: 'c1', name: '敌咒术师', attitude: 2, init: 15, hp: 30, maxHp: 30,
+    aiAbilities: [{ id: 'a0-hold', name: '束缚术', kind: 'save', dice: '0', range: 60, saveAbility: 'wis', saveDc: 14, applyStatus: 'restrained', spellLevel: 3 }] });
+  const foeA = baseUnit({ id: 'f1', name: '艾尔玛', attitude: 0, init: 10, hp: 22, maxHp: 22, pos: { x: 40, y: 40 } });
+  const foeB = baseUnit({ id: 'f2', name: '队友', attitude: 0, init: 9, hp: 22, maxHp: 22, pos: { x: 45, y: 40 } });
+  const ctx: AiContext = { units: [caster, foeA, foeB], obstacles: [], diagonal: 'equal', mapWidth: 32, mapHeight: 32, playerTargetId: null };
+  const steps = planTurn(ctx, caster);
+  const ctrl = steps.find(s => s.type === 'save-single');
+  ok('s7c 控制法术进入规划', ctrl !== undefined, JSON.stringify(steps.map(s => s.type)));
+  ok('s7c 目标为得分最高敌人', (ctrl as { targetId?: string } | undefined)?.targetId === 'f1', JSON.stringify(ctrl));
+  ok('s7c validateStep 通过', validateStep({ ...ctx, units: [caster, foeA] }, caster, { type: 'save-single', abilityId: 'a0-hold', targetId: 'f1' }));
+  // 目标已带该状态 → 不再对其施控（全场均中招时回退到攻击路径）
+  const foeA2 = { ...foeA, statuses: ['restrained'] };
+  const foeB2 = { ...foeB, statuses: ['restrained'] };
+  const steps2 = planTurn({ ...ctx, units: [caster, foeA2, foeB2] }, caster);
+  ok('s7c 已中招目标不重复施控', !steps2.some(s => s.type === 'save-single'), JSON.stringify(steps2.map(s => s.type)));
+  // 超射程 → 不施控
+  const foeFar = baseUnit({ id: 'f3', name: '远处敌人', attitude: 0, init: 9, hp: 22, maxHp: 22, pos: { x: 400, y: 400 } });
+  const steps3 = planTurn({ ...ctx, units: [caster, foeFar] }, caster);
+  ok('s7c 超射程不施控', !steps3.some(s => s.type === 'save-single'));
+
+  // s7d AoE 形状词：协议写法「球体」应解析为 sphere（此前只有「球/球形」）
+  const fireball = parseEncounterDefs('{"enemies":[{"name":"高等法师","ac":17,"hp":"150","actions":[{"name":"火球术","kind":"save-aoe","aoe":"球体","aoeSize":"20尺","dice":"8d6","damageType":"火焰","saveAbility":"敏捷","saveDc":17,"save":"敏捷"}]}]}');
+  const ab = (fireball.defs[0] as { attacks?: Array<{ aoe?: { kind: string } }> }).attacks?.[0];
+  ok('s7d 「球体」→ sphere', ab?.aoe?.kind === 'sphere', JSON.stringify(ab?.aoe));
+
+  // s7e 战报建议补丁：法术位变化也生成补丁（此前只回写 HP）
+  const sheets = [{ name: '艾尔玛', hp: 22, maxHp: 22, spellSlots: { 3: { current: 2, max: 3 } } }] as never[];
+  const unitsSp = [baseUnit({ id: 'f1', name: '艾尔玛', attitude: 0, hp: 22, maxHp: 22, spellSlots: { 3: { current: 1, max: 3 } } })];
+  const patches = suggestPatches(unitsSp, sheets);
+  const slotPatch = patches.find(p => p.path === '/角色列表/艾尔玛/施法/法术位/3环/当前');
+  ok('s7e 法术位补丁路径', slotPatch !== undefined && slotPatch.value === 1, JSON.stringify(patches.map(p => p.path)));
 }
 
 console.log('\n━━━━━━━━━━━━━━ 语义测试汇总 ━━━━━━━━━━━━━━');

@@ -166,6 +166,16 @@ export const CONDITIONS: Record<string, ConditionDef> = {
     brief: '脱离动作：本回合移动不触发任何借机攻击。',
     effect: {},
   },
+  slow_time: {
+    key: 'slow_time', name: '时光缓速', en: 'Time Slow', icon: '⏳', color: '#7a9ab8',
+    brief: '被时光吐息削弱：速度降为 0，持续到施放者下个回合开始。',
+    effect: { speedMultiplier: 0 },
+  },
+  lit: {
+    key: 'lit', name: '照亮', en: 'Lit', icon: '✨', color: '#e8d47a',
+    brief: '妖火照亮：攻击该生物的检定有优势。',
+    effect: { attacksAgainst: 'advantage' },
+  },
 };
 
 /** 协议官方支持的 key 列表（解析 <battle> status 字段用） */

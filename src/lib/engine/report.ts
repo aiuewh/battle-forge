@@ -59,6 +59,22 @@ export function suggestPatches(units: BattleUnit[], sheets: CharSheet[]): Sugges
         note: `${sheet.name} HP ${sheet.hp} → ${hp}`,
       });
     }
+    // 法术位回写：单位实时余量 vs 名单快照，仅有法术位模型且发生变化时生成
+    if (u.spellSlots && sheet.spellSlots) {
+      for (const [lvStr, slot] of Object.entries(u.spellSlots)) {
+        const lv = parseInt(lvStr, 10);
+        const before = sheet.spellSlots[lv];
+        if (!before || !slot || !Number.isFinite(slot.current)) continue;
+        if (slot.current !== before.current) {
+          patches.push({
+            op: 'replace',
+            path: `/角色列表/${sheet.name}/施法/法术位/${lv}环/当前`,
+            value: slot.current,
+            note: `${sheet.name} ${lv}环法术位 ${before.current} → ${slot.current}`,
+          });
+        }
+      }
+    }
   }
   return patches;
 }
@@ -137,7 +153,8 @@ export function generateBattleResultBlock(input: ReportInput): string {
   if (friendly.length === 0) L.push('- （无我方单位记录）');
   for (const u of friendly) {
     const hp = Math.max(0, u.hp);
-    L.push(`- ${u.name}：HP ${hp}/${u.maxHp}［${unitState(u)}］${u.statuses.length > 0 ? ` 状态：${u.statuses.map(s => conditionName(s)).join('、')}` : ''}`);
+    const temp = u.tempHp > 0 ? `（临时HP ${u.tempHp}）` : '';
+    L.push(`- ${u.name}：HP ${hp}/${u.maxHp}${temp}［${unitState(u)}］${u.statuses.length > 0 ? ` 状态：${u.statuses.map(s => conditionName(s)).join('、')}` : ''}`);
   }
 
   L.push('');
