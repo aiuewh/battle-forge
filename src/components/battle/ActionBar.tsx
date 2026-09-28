@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
   Swords, Wand2, Footprints, Zap, Wind, Shield, DoorOpen, EyeOff,
-  HelpingHand, Timer, FlaskConical, ChevronsRight, Bot, User,
+  HelpingHand, Timer, FlaskConical, ChevronsRight, Bot, User, LogOut, MapPin,
 } from 'lucide-react';
 
 interface PendingAction {
@@ -71,6 +71,12 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
 
   // 动作经济展示
   const eco = actor?.actionEconomy;
+  // 逃离战场门控：玩家单位 + 存活 + 站在战场外圈一格
+  const onEdge = !!actor && actorAlive && actor.attitude === 0 && (() => {
+    const cx = actor.pos.x / store.mapConfig.cellSize;
+    const cy = actor.pos.y / store.mapConfig.cellSize;
+    return cx < 1 || cy < 1 || cx >= store.mapConfig.width - 1 || cy >= store.mapConfig.height - 1;
+  })();
   const speed = actor ? effectiveSpeed(actor) : 30;
   const moveLeft = actor ? Math.max(0, speed - (eco?.movementUsed ?? 0)) : 0;
   const movePct = Math.min(100, speed > 0 ? (moveLeft / speed) * 100 : 0);
@@ -396,6 +402,32 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             );
           })}
         </div>
+        {/* 逃离战场：玩家侧逃跑机制——需站上战场外圈格 */}
+        {actorControllable && actorAlive && (
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              disabled={!onEdge || !actorIsCurrent}
+              onClick={() => actor && store.escapeUnit(actor.id)}
+              title={onEdge
+                ? '逃离战场：移出先攻轮，不再参战'
+                : '需先移动到战场边缘格外圈（最外一圈格子）才能逃离'}
+              className={cn(
+                'flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition-all',
+                onEdge && actorIsCurrent
+                  ? 'border-amber-400/50 bg-amber-500/10 text-amber-200 hover:border-amber-300 hover:bg-amber-500/20'
+                  : 'cursor-not-allowed border-border/30 bg-card/40 text-muted-foreground/60',
+              )}
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              逃离战场{onEdge ? '' : '（需在边缘格）'}
+            </button>
+            {!onEdge && (
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <MapPin className="h-3 w-3" />移动到战场最外圈后可逃离
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ===== 目标选择条（手动动作 / 多重攻击余量续打） ===== */}

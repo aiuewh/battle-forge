@@ -255,6 +255,8 @@ export interface BattleUnit {
   color?: string;
   hasActed: boolean;
   reach?: number;
+  /** 已逃离战场（玩家侧逃离机制）：移出 units 数组存入 escapedUnits，不参与先攻/索敌/地图 */
+  escaped?: boolean;
 
   // ---- AI 行动逻辑扩展 ----
   /** 战术档案（无则按 CR/体型推导默认值） */

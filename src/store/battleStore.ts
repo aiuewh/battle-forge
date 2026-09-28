@@ -12,7 +12,7 @@ import type {
   BattleUnit, BattleEvent, MapObstacle, AoeTemplate, MapConfig,
   TurnState, RulesConfig, Attitude, DamageType, BattleSnapshot, SnapshotDiff, AiAbility,
 } from '@/lib/engine/types';
-import { AI_PROFILE_META } from '@/lib/engine/types';
+import { AI_PROFILE_META, SIZE_META } from '@/lib/engine/types';
 import { DEFAULT_RULES, normalizeRules } from '@/lib/engine/types';
 import {
   resolveAttack, resolveSave, resolveDeathSave, resolveHeal, resolveConcentration,
@@ -251,9 +251,43 @@ export interface CastOpts {
 
 export type PlayerActionKind = 'dash' | 'dodge' | 'disengage' | 'hide' | 'help' | 'ready' | 'potion';
 
+/** 战场外圈一格（逃跑门控）：单位站在四条边的任意格即可逃离 */
+function isEdgeCell(pos: { x: number; y: number }, cfg: MapConfig): boolean {
+  const cx = pos.x / cfg.cellSize;
+  const cy = pos.y / cfg.cellSize;
+  return cx < 1 || cy < 1 || cx >= cfg.width - 1 || cy >= cfg.height - 1;
+}
+
+/** 回合开始快照（「撤回本回合」用） */
+interface TurnSnapshot {
+  units: BattleUnit[];
+  escapedUnits: BattleUnit[];
+  turn: TurnState;
+  aoeTemplates: AoeTemplate[];
+  obstacles: MapObstacle[];
+  events: BattleEvent[];
+  battleActive: boolean;
+}
+
+function snapTurnStart(s: {
+  units: BattleUnit[]; escapedUnits: BattleUnit[]; turn: TurnState;
+  aoeTemplates: AoeTemplate[]; obstacles: MapObstacle[]; events: BattleEvent[]; battleActive: boolean;
+}): TurnSnapshot {
+  return JSON.parse(JSON.stringify({
+    units: s.units, escapedUnits: s.escapedUnits, turn: s.turn,
+    aoeTemplates: s.aoeTemplates, obstacles: s.obstacles, events: s.events, battleActive: s.battleActive,
+  })) as TurnSnapshot;
+}
+
 export interface BattleStore {
   // ---- 状态 ----
   units: BattleUnit[];
+  /** 已逃离战场的玩家单位（保留记录，不参与先攻/索敌/地图） */
+  escapedUnits: BattleUnit[];
+  /** 本回合开始时的快照（「撤回本回合」恢复源） */
+  turnSnap: TurnSnapshot | null;
+  /** 历史回合快照栈（最多 24 条） */
+  undoStack: TurnSnapshot[];
   obstacles: MapObstacle[];
   aoeTemplates: AoeTemplate[];
   mapConfig: MapConfig;
@@ -326,6 +360,10 @@ export interface BattleStore {
   nextTurn: () => void;
   prevTurn: () => void;
   endCombat: () => void;
+  /** 玩家单位逃离战场：需身处战场外圈格；移出战斗，全员撤离则战斗结束 */
+  escapeUnit: (id: string) => void;
+  /** 撤回本回合：恢复到当前单位回合开始时的完整状态（可重复按） */
+  undoTurn: () => void;
   rollInitiativeAll: () => void;
   setSurprised: (ids: string[]) => void;
 
@@ -438,6 +476,9 @@ function persist(state: BattleStore, force = false) {
       aiAutoPlay: state.aiAutoPlay,
       aiSpeed: state.aiSpeed,
       playerTargetId: state.playerTargetId,
+      escapedUnits: state.escapedUnits,
+      turnSnap: state.turnSnap,
+      undoStack: state.undoStack,
       varTree: state.varTree,
       rosterSheets: state.rosterSheets,
       stagedStatblocks: state.stagedStatblocks,
@@ -449,12 +490,15 @@ function persist(state: BattleStore, force = false) {
 
 export const useBattleStore = create<BattleStore>((set, get) => ({
   units: [],
+  escapedUnits: [],
   obstacles: [],
   aoeTemplates: [],
   mapConfig: { width: 30, height: 30, cellSize: 5, diagonal: 'equal' },
   turn: { round: 0, currentUnitId: null, order: [], turnIndex: -1, ended: false, surprisedIds: [] },
   events: [],
   rules: { ...DEFAULT_RULES },
+  turnSnap: null,
+  undoStack: [],
   battleActive: false,
   battleName: '未命名遭遇',
   lastDiff: null,
@@ -539,6 +583,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       units: [], obstacles: [], aoeTemplates: [], events: [],
       turn: { round: 0, currentUnitId: null, order: [], turnIndex: -1, ended: false, surprisedIds: [] },
       battleActive: false, lastDiff: null, lastRoll: null, playerTargetId: null, multiAttackQueue: null, history: loadHistory(),
+      escapedUnits: [], turnSnap: null, undoStack: [],
     });
     persist(get());
   },
@@ -988,14 +1033,17 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         turn.round = adv.state.round;
       }
     }
-    // 重置动作经济
+    // 重置动作经济 + 清空逃离/撤回栈 + 首个当前单位回合快照
     set({
       turn,
       battleActive: true,
       units: finalUnits.map(u => ({ ...u, actionEconomy: defaultActionEconomy(), hasActed: false })),
+      escapedUnits: [], turnSnap: null, undoStack: [],
     });
     const first = finalUnits.find(u => u.id === turn.currentUnitId);
     get().logEvent({ type: 'round-start', text: `⚔️ 战斗开始！第 1 轮 —— ${first?.name ?? '?'} 先行动`, level: 'info' });
+    const s = get();
+    set({ turnSnap: snapTurnStart(s) });
     appendHistory(snapshotFromUnits(get().units, 'manual'));
     persist(get());
   },
@@ -1006,6 +1054,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     if (turn.currentUnitId && get().battleActive) get().fireTurnEndReactions(turn.currentUnitId);
     // 传奇动作：其他单位的回合结束后，敌方传奇单位消耗点数执行一次
     if (turn.currentUnitId && get().battleActive) get().runLegendaryActions(turn.currentUnitId);
+    // 「撤回本回合」：把当前单位回合开始时的状态压栈（后进先出，最多 24 层）
+    const st = get();
+    if (st.turnSnap) {
+      const undoStack = [...st.undoStack, st.turnSnap].slice(-24);
+      set({ undoStack, turnSnap: null });
+    }
     const result = advanceTurn(turn, units, rules);
     // 标记当前已行动（清除脱离状态），重置下一单位动作经济；多重攻击余量不跨回合
     set({
@@ -1058,6 +1112,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       text: `▶️ 轮到 ${nu?.name ?? '?'} 行动`,
       level: 'info',
     });
+    // 「撤回本回合」：新当前单位回合开始快照（撤回恢复源）
+    const s2 = get();
+    set({ turnSnap: snapTurnStart(s2) });
     // 战斗结束检查
     const endCheck = checkBattleEnd(get().units);
     if (endCheck.ended) {
@@ -1082,6 +1139,59 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   endCombat: () => {
     set({ battleActive: false, turn: { ...get().turn, ended: true } });
     get().logEvent({ type: 'note', text: '🏁 战斗结束', level: 'info' });
+    persist(get());
+  },
+
+  escapeUnit: (id) => {
+    const s = get();
+    const unit = s.units.find(u => u.id === id);
+    // 门控：仅玩家可逃 / 存活 / 未逃 / 必须站在战场外圈一格
+    if (!unit || unit.attitude !== 0 || !(unit.isPlayer || unit.playerControlled)) return;
+    if (unit.hp <= 0 || unit.deathSaves?.dead || unit.escaped) return;
+    if (!isEdgeCell(unit.pos, s.mapConfig)) return;
+    // 快照：逃离可被「撤回本回合」撤销
+    const snap = s.turnSnap ? JSON.parse(JSON.stringify(s.turnSnap)) as TurnSnapshot : null;
+    if (snap) set({ undoStack: [...s.undoStack, snap].slice(-24) });
+    const escapedUnit = { ...unit, escaped: true };
+    set({
+      units: s.units.filter(u => u.id !== id),
+      escapedUnits: [...s.escapedUnits, escapedUnit],
+      selectedId: s.selectedId === id ? null : s.selectedId,
+    });
+    get().logEvent({ type: 'note', actorId: id, text: `🏃 ${unit.name} 逃离了战场！（位于战场边缘）`, level: 'info' });
+    // 全员撤离判定：友方全逃或阵亡 → 战斗结束（无胜者=撤离结算）
+    const left = get().units.filter(u => u.attitude === 0 && u.hp > 0 && !u.deathSaves?.dead);
+    if (left.length === 0) {
+      set({ battleActive: false, turn: { ...get().turn, ended: true } });
+      const survivors = [...get().escapedUnits.filter(u => u.attitude === 0), ...left];
+      get().logEvent({
+        type: 'note',
+        text: survivors.length > 0
+          ? `🏳️ 全员撤离战场 —— 战斗结束（${survivors.map(u => u.name).join('、')} 逃离）`
+          : '🏳️ 全员撤离战场 —— 战斗结束',
+        level: 'crit',
+      });
+    }
+    persist(get());
+  },
+
+  undoTurn: () => {
+    const s = get();
+    const snap = s.undoStack[s.undoStack.length - 1];
+    if (!snap) return;
+    set({
+      units: snap.units,
+      escapedUnits: snap.escapedUnits,
+      turn: snap.turn,
+      aoeTemplates: snap.aoeTemplates,
+      obstacles: snap.obstacles,
+      events: snap.events,
+      battleActive: snap.battleActive,
+      undoStack: s.undoStack.slice(0, -1),
+      // 恢复到快照对应的回合开始快照
+      turnSnap: snap,
+    });
+    get().logEvent({ type: 'note', text: `⏪ 撤回本回合 —— 已恢复到 ${snap.units.find(u => u.id === snap.turn.currentUnitId)?.name ?? '?'} 的回合开始`, level: 'info' });
     persist(get());
   },
 

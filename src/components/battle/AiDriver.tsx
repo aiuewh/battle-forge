@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { sendReportToHost } from '@/components/battle/EmbedBridge';
 import { cn } from '@/lib/utils';
-import { Bot, User, ChevronRight, Gauge, Pause, Play, ClipboardList, Check } from 'lucide-react';
+import { Bot, User, ChevronRight, Gauge, Pause, Play, ClipboardList, Check, Undo2 } from 'lucide-react';
 
 export function AiDriver({ leader = true }: { leader?: boolean }) {
   const aiAutoPlay = useBattleStore(s => s.aiAutoPlay);
@@ -124,12 +124,17 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
           )}
           {playerTurn ? (
             <span className="text-[11px] text-amber-200/80">
-              轮到你了 —— 拖拽地图移动 · 右侧攻击面板结算 · 完成后「下一回合」
+              轮到你了 —— 点击棋子选中、点击范围格移动 · 结算后「结束回合」
             </span>
           ) : (
             <span className="text-[11px] text-muted-foreground">AI 行动中…</span>
           )}
           <div className="grow" />
+          {playerTurn && store.undoStack.length > 0 && (
+            <Button size="sm" variant="outline" className="h-7 gap-1 border-amber-400/40 text-[11px] text-amber-200 hover:bg-amber-500/10" onClick={() => store.undoTurn()} title="恢复到本回合开始时（可连按多步回退）">
+              <Undo2 className="h-3.5 w-3.5" />撤回本回合
+            </Button>
+          )}
           {playerTurn && (
             <Button size="sm" className="h-7 gap-1 bg-primary text-[11px] text-primary-foreground" onClick={() => store.nextTurn()}>
               结束回合 <ChevronRight className="h-3.5 w-3.5" />
