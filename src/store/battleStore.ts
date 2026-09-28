@@ -451,7 +451,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   units: [],
   obstacles: [],
   aoeTemplates: [],
-  mapConfig: { width: 30, height: 20, cellSize: 5, diagonal: 'equal' },
+  mapConfig: { width: 30, height: 30, cellSize: 5, diagonal: 'equal' },
   turn: { round: 0, currentUnitId: null, order: [], turnIndex: -1, ended: false, surprisedIds: [] },
   events: [],
   rules: { ...DEFAULT_RULES },
