@@ -99,14 +99,13 @@ function BattleForgeInner() {
               </Button>
             )}
           </div>
-          {/* 地图 + 先攻 */}
+          {/* 地图通栏（宽度 2 倍） */}
+          <BattleControls />
+          <BattleMapIso compact />
+          {/* 行动栏 + 先攻 + 详情 */}
           <div className="grid gap-2.5 md:grid-cols-[1fr_260px]">
-            <div className="flex flex-col gap-2">
-              <BattleControls />
-              <div className="rounded-xl parchment-panel p-2.5">
-                <ActionBar compact />
-              </div>
-              <BattleMapIso compact />
+            <div className="rounded-xl parchment-panel p-2.5">
+              <ActionBar compact />
             </div>
             <div className="flex flex-col gap-2.5">
               <InitiativeBar compact />
@@ -216,6 +215,9 @@ function BattleForgeInner() {
           <div className="flex flex-col gap-3">
             {followerBadge}
             <EncounterBriefing />
+            {/* 地图通栏（宽度 2 倍） */}
+            <BattleControls />
+            <BattleMapIso />
             <div className="grid gap-3 lg:grid-cols-[280px_1fr_300px]">
             {/* 左列：先攻 + 单位详情 */}
             <div className="flex flex-col gap-3 order-2 lg:order-1">
@@ -230,16 +232,14 @@ function BattleForgeInner() {
               </div>
             </div>
 
-            {/* 中列：控制条 + 行动栏 + 地图 + 日志 */}
+            {/* 中列：行动栏 + 日志 */}
             <div className="flex flex-col gap-3 order-1 lg:order-2">
-              <BattleControls />
               <div className="rounded-xl parchment-panel p-3">
                 <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
                   <UserCog className="h-3.5 w-3.5" />行动栏
                 </div>
                 <ActionBar />
               </div>
-              <BattleMapIso />
               <div className="rounded-xl parchment-panel p-3">
                 <BattleLog />
               </div>

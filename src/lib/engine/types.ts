@@ -53,6 +53,11 @@ export const DAMAGE_TYPE_META: Record<DamageType, { name: string; icon: string }
 /** 体型（决定占格数与擒抱限制） */
 export type Size = 'tiny' | 'small' | 'medium' | 'large' | 'huge' | 'gargantuan';
 
+/** 生物族类（决定地图棋子的徽记形体与配色；generic = 未识别） */
+export type CreatureKind =
+  | 'dragon' | 'wyvern' | 'demon' | 'undead' | 'fey' | 'cultist'
+  | 'beast' | 'construct' | 'humanoid' | 'generic';
+
 // ============ AI 行动逻辑 ============
 
 /** 战术档案：决定目标选择 / 移动偏好 / 撤退倾向 */
@@ -216,6 +221,8 @@ export interface BattleUnit {
   attitude: Attitude;
   statuses: string[];
   portrait?: string;
+  /** 生物族类（协议 type 字段 / 预设标注 / 名字兜底识别）——决定地图棋子徽记 */
+  creatureType?: CreatureKind;
 
   // ---- 引擎扩展字段（协议外，UI 可编辑） ----
   isPlayer: boolean;

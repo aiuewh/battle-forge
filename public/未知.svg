@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone="no"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+  <!-- 未知生物：悬浮神秘水晶（菱形主晶+簇生小晶+悬浮碎晶，紫水晶），中央符文眼 -->
+  <!-- 主水晶（大菱柱） -->
+  <path d="M512 96 L 716 424 L 512 752 L 308 424 Z" fill="#9A6AD0"/>
+  <!-- 主水晶左切面（高光） -->
+  <path d="M512 96 L 512 752 L 308 424 Z" fill="#C8A8F0"/>
+  <!-- 中央符文眼（深底+亮瞳） -->
+  <path d="M512 322 L 604 424 L 512 526 L 420 424 Z" fill="#3A2158"/>
+  <path d="M512 374 A 50 50 0 1 1 511.9 374 Z" fill="#FFE9A0"/>
+  <!-- 两侧簇生小晶 -->
+  <path d="M232 420 L 322 570 L 232 720 L 142 570 Z" fill="#9A6AD0"/>
+  <path d="M232 420 L 232 720 L 142 570 Z" fill="#C8A8F0"/>
+  <path d="M792 420 L 882 570 L 792 720 L 702 570 Z" fill="#9A6AD0"/>
+  <path d="M792 420 L 702 570 L 792 720 L 882 570 Z" fill="#C8A8F0"/>
+  <!-- 底部悬浮碎晶（三颗） -->
+  <path d="M512 786 L 556 856 L 512 926 L 468 856 Z" fill="#C8A8F0"/>
+  <path d="M356 800 L 390 852 L 356 904 L 322 852 Z" fill="#9A6AD0"/>
+  <path d="M668 800 L 702 852 L 668 904 L 634 852 Z" fill="#9A6AD0"/>
+</svg>

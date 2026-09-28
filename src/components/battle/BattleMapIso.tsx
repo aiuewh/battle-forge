@@ -18,6 +18,9 @@ import type { AoeTemplate, MapObstacle, Cell } from '@/lib/engine/types';
 import { SIZE_META } from '@/lib/engine/types';
 import { CONDITIONS } from '@/lib/engine/conditions';
 import { remainingMovement } from '@/lib/engine/rules';
+import { EMBLEM_ASSETS } from '@/lib/engine/emblemAssets';
+import { resolveCreatureKind } from '@/lib/engine/creatures';
+import { getIconStage, resolveIconKind } from './emblem3d/stage';
 import {
   makeProjector, strHash, drawFloorTile, drawCellOverlay, drawCube, drawShadow,
   drawSphere, drawPyramid, drawHpBar, drawLabel, drawRing,
@@ -31,6 +34,9 @@ import {
 } from 'lucide-react';
 
 type Tool = 'select' | 'measure' | 'aoe' | 'obstacle';
+
+/** 敌方徽章开关：true = 3D 图标徽章（按族类/名字映射）；false = 回退最初版红四棱锥。友方恒为绿球 */
+const USE_ICON_BADGES = true;
 
 interface DragState {
   kind: 'token' | 'pan' | 'measure' | 'aoe' | 'obstacle' | null;
@@ -406,14 +412,32 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
               const ex = span * 24 * cam.scale * 0.92;
               const ey = span * 12 * cam.scale * 0.92;
               drawShadow(ctx, cp.x, groundY, ex * 0.95, isDead ? 0.15 : 0.3);
-              drawPyramid(ctx, {
-                x: cp.x + ox, groundY: groundY + oy,
-                baseRx: ex, baseRy: ey,
-                height: span * 26 * cam.scale + bob,
-                alpha, squash,
-                hi: isDead ? '#8a8886' : '#e05a4a',
-                lo: isDead ? '#5f5d5b' : '#9c2418',
-              });
+              const kind = resolveCreatureKind(u.creatureType, u.name);
+              // 哥布林等地表野怪按名字二级映射到专属徽章，不占用剑盾人形徽章
+              const iconKind = resolveIconKind(kind, u.name);
+              if (USE_ICON_BADGES && (EMBLEM_ASSETS[kind] || iconKind === 'goblin' || iconKind === 'orc')) {
+                // 有矢量图标资产的族类 → 3D 金属徽章（挤出 + 斜角 + 金属材质）
+                // 自转用往复摆动（±35°）而非全周旋转——扁徽章侧对镜头时会失去辨识度
+                const swingSpeed = s.battleActive && s.turn.currentUnitId === u.id ? 0.0024 : 0.0009;
+                const swingPhase = (strHash(u.id) % 100) / 100 * Math.PI;
+                getIconStage().drawIcon(ctx, {
+                  x: cp.x + ox, groundY: groundY + oy,
+                  size: 28 * cam.scale,
+                  kind: iconKind,
+                  spin: Math.sin(t * swingSpeed + swingPhase) * 0.6,
+                  lift: bob, alpha, squash, dead: isDead,
+                });
+              } else {
+                // 其余族类：原版红色四棱锥
+                drawPyramid(ctx, {
+                  x: cp.x + ox, groundY: groundY + oy,
+                  baseRx: ex, baseRy: ey,
+                  height: span * 26 * cam.scale + bob,
+                  alpha, squash,
+                  hi: isDead ? '#8a8886' : '#e05a4a',
+                  lo: isDead ? '#5f5d5b' : '#9c2418',
+                });
+              }
             } else {
               const r = (12 + span * 7.5) * cam.scale;
               drawShadow(ctx, cp.x, groundY, r * 0.95, isDead ? 0.15 : 0.32);
@@ -596,12 +620,13 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
       setDragBoth({ kind: 'obstacle', startX: cell.cx, startY: cell.cy, curX: cell.cx, curY: cell.cy, lastScreenX: sx, lastScreenY: sy, screenStartX: sx, screenStartY: sy, moved: false, obstacleCells: [cell] });
       return;
     }
-    // select 工具
-    const tokenId = e.button === 0 ? pickToken(e.clientX, e.clientY) : null;
-    if (e.button === 0 && tokenId) {
-      store.setSelectedId(tokenId);
-      setDragBoth({ kind: 'token', unitId: tokenId, startX: cell.cx, startY: cell.cy, curX: cell.cx, curY: cell.cy, lastScreenX: sx, lastScreenY: sy, screenStartX: sx, screenStartY: sy, moved: false });
-      return;
+    // select 工具：点选式——点击棋子=选中/再点取消（移动改为点击目标格）
+    if (e.button === 0) {
+      const tokenId = pickToken(e.clientX, e.clientY);
+      if (tokenId) {
+        store.setSelectedId(store.selectedId === tokenId ? null : tokenId);
+        return;
+      }
     }
     // 背景：平移（点击=取消选中）
     setDragBoth({ kind: 'pan', startX: cell.cx, startY: cell.cy, curX: e.clientX, curY: e.clientY, lastScreenX: e.clientX, lastScreenY: e.clientY, screenStartX: e.clientX, screenStartY: e.clientY, moved: false });
@@ -653,7 +678,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
     });
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
     const s = useBattleStore.getState();
@@ -679,7 +704,34 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
     } else if (d.kind === 'obstacle' && d.obstacleCells && d.obstacleCells.length > 0) {
       s.addObstacle(d.obstacleCells, obstacleKind);
     } else if (d.kind === 'pan' && !d.moved) {
-      // 点击空白：取消选中
+      // 点在棋子上：选中/取消已在 down 处理，这里仅结束
+      if (pickToken(e.clientX, e.clientY)) { setDragBoth(null); return; }
+      // 点选式移动：选中棋子 + 点击可抵达的空格 → 移动
+      if (tool === 'select' && e.button === 0 && s.selectedId) {
+        const unit = s.units.find(u => u.id === s.selectedId);
+        const target = pickCell(e.clientX, e.clientY);
+        if (unit && unit.hp > 0) {
+          const cur = posToCell(unit.pos);
+          if (target.cx !== cur.cx || target.cy !== cur.cy) {
+            const occupied = new Set(s.units.filter(u => u.id !== unit.id).flatMap(u => unitOccupiedCells(u).map(cellKey)));
+            const span = SIZE_META[unit.size].cells;
+            let blocked = false;
+            for (let i = 0; i < span; i++) {
+              for (let j = 0; j < span; j++) {
+                if (occupied.has(cellKey({ cx: target.cx + i, cy: target.cy + j }))) blocked = true;
+              }
+            }
+            const mv = remainingMovement(unit);
+            const range = mv > 0 ? reachableCells(unit, s.units, s.obstacles, mv, s.mapConfig.diagonal) : null;
+            if (!blocked && range?.has(cellKey(target))) {
+              s.moveUnit(unit.id, { x: cellToFeet(target.cx), y: cellToFeet(target.cy) });
+              setDragBoth(null);
+              return;
+            }
+          }
+        }
+      }
+      // 无效目标（超范围/被阻挡/无选中）：维持原「取消选中」
       s.setSelectedId(null);
       setHoverInfo(null);
     }
@@ -727,13 +779,12 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
   ];
 
   const selectedUnit = store.selectedId ? store.units.find(u => u.id === store.selectedId) : null;
-  const dragUnitInfo = drag?.kind === 'token' ? store.units.find(u => u.id === drag.unitId) : null;
   const rangeHint = selectedUnit ? `已选 ${selectedUnit.name}` : null;
 
   return (
     <div
       ref={containerRef}
-      className={cn('relative overflow-hidden rounded-xl parchment-panel', compact ? 'h-[340px] md:h-[400px]' : 'h-[480px] md:h-[600px]')}
+      className={cn('relative overflow-hidden rounded-xl parchment-panel', compact ? 'h-[340px] md:h-[400px]' : 'h-[480px] md:h-[640px]')}
     >
       <canvas
         ref={canvasRef}
@@ -741,7 +792,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={() => setDragBoth(null)}
       />
 
       {/* 顶部工具栏 */}
@@ -834,10 +885,10 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         </div>
       )}
 
-      {/* 拖拽中单位名 */}
-      {dragUnitInfo && drag?.kind === 'token' && (
+      {/* 选中提示（点选式移动） */}
+      {selectedUnit && tool === 'select' && !drag && (
         <div className="pointer-events-none absolute bottom-2 left-1/2 z-20 -translate-x-1/2 rounded-md border border-border/50 bg-black/70 px-3 py-1 text-[11px] text-muted-foreground backdrop-blur">
-          拖拽 <span className="font-bold text-foreground">{dragUnitInfo.name}</span> —— 松手落位（移动超出上限会有红色警告，借机攻击将自动结算）
+          已选中 <span className="font-bold text-foreground">{selectedUnit.name}</span> —— 点击青色范围内的格子移动，再点该棋子取消
         </div>
       )}
 
