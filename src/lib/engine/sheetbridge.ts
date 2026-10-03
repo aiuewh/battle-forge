@@ -208,6 +208,8 @@ function hasStructuredActionFields(o: Record<string, unknown>): boolean {
 export interface CharSheet {
   name: string;
   level: number;
+  /** 2024 额外攻击次数：额外攻击 变量字段优先，缺省按 职业 字段查表（战士 5/11/20→2/3/4；野蛮人/圣武士/游侠 5→2；其余 1） */
+  extraAttacks?: number;
   hp: number;
   maxHp: number;
   tempHp: number;
@@ -276,6 +278,39 @@ const STATUS_CN: Record<string, string> = {
 const ABILITY_CN_KEY: Record<string, AbilityKey> = {
   '力量': 'str', '敏捷': 'dex', '体质': 'con', '智力': 'int', '感知': 'wis', '魅力': 'cha',
 };
+
+/**
+ * 2024 额外攻击职业表：战士 5/11/20 级 → 2/3/4 次；野蛮人/圣武士/游侠 5 级 → 2 次；
+ * 其余职业（法师/术士/邪术师等）无额外攻击，保持 1 次。
+ */
+const EXTRA_ATTACK_TABLE: Record<string, Array<[number, number]>> = {
+  '战士': [[20, 4], [11, 3], [5, 2]],
+  '野蛮人': [[5, 2]],
+  '圣武士': [[5, 2]],
+  '游侠': [[5, 2]],
+};
+
+/**
+ * 从 职业 字段解析 2024 额外攻击次数（字段为中文字符串，如「战士 3」「法师 5/邪术师 2」「圣武士（复仇之愿）5」）。
+ * 兼职不叠加额外攻击（2024 多职业规则：特性不叠加），取单职业最高档；识别不到职业/等级时回退 1。
+ */
+export function extraAttacksFromClass(classRaw: string | undefined, fallbackLevel: number): number {
+  if (!classRaw) return 1;
+  let best = 1;
+  for (const part of classRaw.split(/[/、,，+]/)) {
+    const seg = part.trim();
+    if (!seg) continue;
+    for (const [cls, ladder] of Object.entries(EXTRA_ATTACK_TABLE)) {
+      if (!seg.includes(cls)) continue;
+      // 等级 = 段内首个数字（如「战士 11」「战士11级」）；缺数字回退角色总等级
+      const lv = parseInt(seg.match(/(\d+)/)?.[1] ?? '', 10) || fallbackLevel;
+      for (const [threshold, attacks] of ladder) {
+        if (lv >= threshold) { best = Math.max(best, attacks); break; }
+      }
+    }
+  }
+  return best;
+}
 
 // ============ 内置常见法术库（2024 数值，法术书名匹配后自动获得机制） ============
 
@@ -458,6 +493,8 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
     }
     const level = getNum(c, '等级') ?? 1;
     const pb = proficiencyBonus(level);
+    // 额外攻击：可选变量字段直接指定；缺省按 职业 字符串查 2024 职业表
+    const extraAttacks = Math.max(1, Math.round(getNum(c, '额外攻击') ?? extraAttacksFromClass(getStr(c, '职业'), level)));
 
     // 生命值
     const hpRaw = c['生命值'];
@@ -659,6 +696,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
     out.push({
       name,
       level,
+      extraAttacks,
       hp, maxHp, tempHp,
       ac, initMod, speed,
       abilities,
@@ -697,7 +735,8 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
     saveBonuses[key] = abilityMod(abilities[key]) + (sheet.saveProficiencies?.has(key) ? pb : 0);
   }
 
-  // 武器动作（已装备优先）
+  // 武器动作（已装备优先）；额外攻击：2024 职业表/显式变量（角色级，作用于每件武器）
+  const multiAttacks = Math.max(1, sheet.extraAttacks ?? 1);
   const sorted = [...sheet.weapons].sort((a, b) => Number(b.equipped) - Number(a.equipped));
   const weaponAbilities: AiAbility[] = sorted.map((w, i) => {
     const abMod = abilityMod(abilities[w.ability] ?? 10);
@@ -709,7 +748,7 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
       dice: `${w.formula}${formatMod(abMod + w.magicBonus)}`,
       damageType: w.damageType,
       range: w.range,
-      multiAttack: 1,
+      multiAttack: multiAttacks,
       mastery: w.mastery,
       masteryMod: abMod + w.magicBonus,
       note: [

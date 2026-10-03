@@ -761,6 +761,36 @@ check('角色单位: 武器命中=属性+熟练+魔法', longsword?.attackBonus 
 check('角色单位: 武器伤害公式', longsword?.dice === '1d8+2', `实际 ${longsword?.dice}`);
 check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name === '治疗真言' && a.spellLevel === 1) === true);
 
+// E1 玩家额外攻击：职业字段查 2024 职业表 + 额外攻击 变量字段优先
+{
+  const mkClassTree = (name: string, classStr: string | undefined, extraAttacks?: number): Record<string, unknown> => ({
+    '角色列表': {
+      [name]: {
+        '姓名': name, '等级': 5,
+        ...(classStr !== undefined ? { '职业': classStr } : {}),
+        ...(extraAttacks !== undefined ? { '额外攻击': extraAttacks } : {}),
+        '属性': { 力量: 16, 敏捷: 10, 体质: 10, 智力: 10, 感知: 10, 魅力: 10 },
+        '物品': { '武器': { '长剑': { 伤害公式: '1d8', 伤害类型: '挥砍', 映射属性: '力量', 熟练: true, 已装备: true } } },
+      },
+    },
+  });
+  const maOf = (t: Record<string, unknown>) => {
+    const s = charSheetsFromTree(t)[0];
+    return unitFromCharSheet(s, { isPlayer: true }).aiAbilities?.find(a => a.name === '长剑')?.multiAttack;
+  };
+  check('额外攻击: 战士5级=2', maOf(mkClassTree('甲', '战士 5')) === 2, `实际 ${maOf(mkClassTree('甲', '战士 5'))}`);
+  check('额外攻击: 战士11级=3', maOf(mkClassTree('甲2', '战士11')) === 3, `实际 ${maOf(mkClassTree('甲2', '战士11'))}`);
+  check('额外攻击: 战士20级=4', maOf(mkClassTree('甲3', '战士 20')) === 4, `实际 ${maOf(mkClassTree('甲3', '战士 20'))}`);
+  check('额外攻击: 法师5级=1', maOf(mkClassTree('乙', '法师 5')) === 1, `实际 ${maOf(mkClassTree('乙', '法师 5'))}`);
+  check('额外攻击: 兼职法师5/邪术师2=1', maOf(mkClassTree('乙2', '法师 5/邪术师 2')) === 1, `实际 ${maOf(mkClassTree('乙2', '法师 5/邪术师 2'))}`);
+  check('额外攻击: 野蛮人5级=2', maOf(mkClassTree('丙', '野蛮人 5')) === 2, `实际 ${maOf(mkClassTree('丙', '野蛮人 5'))}`);
+  check('额外攻击: 圣武士5级=2', maOf(mkClassTree('丙2', '圣武士（复仇之愿）5')) === 2, `实际 ${maOf(mkClassTree('丙2', '圣武士（复仇之愿）5'))}`);
+  check('额外攻击: 游侠5级=2', maOf(mkClassTree('丙3', '游侠 5')) === 2, `实际 ${maOf(mkClassTree('丙3', '游侠 5'))}`);
+  check('额外攻击: 战士2级=1', maOf(mkClassTree('丙4', '战士 2')) === 1, `实际 ${maOf(mkClassTree('丙4', '战士 2'))}`);
+  check('额外攻击: 变量额外攻击=3覆盖职业表', maOf(mkClassTree('丁', '战士 2', 3)) === 3, `实际 ${maOf(mkClassTree('丁', '战士 2', 3))}`);
+  check('额外攻击: 无职业字段回退1', maOf(mkClassTree('戊', undefined)) === 1, `实际 ${maOf(mkClassTree('戊', undefined))}`);
+}
+
 // 角色卡补全已有瘦单位
 const thinElma = mkUnit({ id: '艾尔玛', name: '艾尔玛', attitude: 0, ac: 13, hp: 28, maxHp: 28, dataSource: 'ai-parsed' });
 const filledElma = applySheetToUnit(thinElma, elma);
