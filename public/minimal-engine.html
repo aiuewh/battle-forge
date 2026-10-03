@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Battle Forge · 最小结算引擎（离线兜底）</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 13px; color: #efe6d6;
+    background: linear-gradient(165deg, rgba(46,36,24,.97), rgba(24,18,12,.99)); min-height: 100vh; }
+  h1 { font-size: 15px; color: #f0c289; letter-spacing: .06em; margin: 0 0 4px; }
+  .sub { color: #a89478; font-size: 11px; margin-bottom: 10px; }
+  .card { border: 1px solid rgba(216,178,122,.3); border-radius: 10px; background: rgba(0,0,0,.28); padding: 10px; margin-bottom: 10px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+  input, select { background: rgba(0,0,0,.4); color: #efe6d6; border: 1px solid rgba(216,178,122,.3); border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+  input[type="number"] { width: 72px; }
+  button { background: rgba(240,194,137,.15); color: #f0c289; border: 1px solid rgba(240,194,137,.45); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  button:hover { background: rgba(240,194,137,.3); }
+  button.danger { color: #ff9d8a; border-color: rgba(255,120,100,.45); background: rgba(255,120,100,.1); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid rgba(216,178,122,.15); }
+  tr.dead { opacity: .4; text-decoration: line-through; }
+  tr.turn td { background: rgba(240,194,137,.12); }
+  .log { max-height: 200px; overflow-y: auto; font-size: 11px; color: #cbbfa5; white-space: pre-wrap; }
+  .hint { color: #a89478; font-size: 10px; }
+</style>
+</head>
+<body>
+<h1>⚔ Battle Forge · 最小结算引擎</h1>
+<div class="sub">离线兜底：先攻 → 攻防 → 伤害 → HP。主引擎不可用时的人工结算台；战报可复制回对话交 DM 叙述。数据存本地浏览器。</div>
+
+<div class="card">
+  <div class="row">
+    <b>添加单位：</b>
+    <input id="u-name" placeholder="名称" style="width:110px" />
+    <input id="u-hp" type="number" placeholder="HP" value="20" />
+    <input id="u-ac" type="number" placeholder="AC" value="13" />
+    <input id="u-init" type="number" placeholder="先攻加值" value="0" />
+    <select id="u-side"><option value="foe">敌方</option><option value="ally">我方</option></select>
+    <button onclick="addUnit()">＋ 添加</button>
+    <button onclick="rollInitiative()">🎲 全员掷先攻</button>
+    <button class="danger" onclick="resetAll()">清空</button>
+  </div>
+  <div class="hint">提示：先攻 = d20 + 加值，自动降序排序；回合推进用「下一回合」。</div>
+</div>
+
+<div class="card">
+  <table id="tbl"><thead><tr><th>先攻</th><th>名称</th><th>阵营</th><th>HP</th><th>AC</th><th>操作</th></tr></thead><tbody></tbody></table>
+  <div class="row" style="margin-top:8px">
+    <button onclick="nextTurn()">⏭ 下一回合</button>
+    <span id="turn-ind" class="hint"></span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <b>攻击结算：</b>
+    <select id="atk-from"></select>
+    <span>→</span>
+    <select id="atk-to"></select>
+    <input id="atk-bonus" type="number" placeholder="命中加值" value="5" />
+    <input id="atk-damage" placeholder="伤害骰" value="1d8+3" style="width:90px" />
+    <button onclick="doAttack()">⚔ 掷骰攻击</button>
+  </div>
+  <div class="hint">命中 = d20+加值 vs 目标 AC（裸20 重击翻倍骰、裸1 自动失手）；伤害骰支持 2d6+3 / 8d6。</div>
+</div>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between">
+    <b>战斗日志</b>
+    <button onclick="exportReport()">📋 复制战报</button>
+  </div>
+  <div id="log" class="log"></div>
+</div>
+
+<script>
+'use strict';
+var UNITS = JSON.parse(localStorage.getItem('bfe-units') || '[]');
+var TURN = parseInt(localStorage.getItem('bfe-turn') || '-1', 10);
+var LOG = JSON.parse(localStorage.getItem('bfe-log') || '[]');
+
+function save() {
+  localStorage.setItem('bfe-units', JSON.stringify(UNITS));
+  localStorage.setItem('bfe-turn', String(TURN));
+  localStorage.setItem('bfe-log', JSON.stringify(LOG.slice(-200)));
+}
+function d20() { return 1 + Math.floor(Math.random() * 20); }
+function rollFormula(f) {
+  var total = 0, flat = 0, parts = String(f).replace(/\s+/g, '').split('+'), m;
+  for (var i = 0; i < parts.length; i++) {
+    if ((m = parts[i].match(/^(\d+)d(\d+)$/))) {
+      for (var k = 0; k < parseInt(m[1], 10); k++) total += 1 + Math.floor(Math.random() * parseInt(m[2], 10));
+    } else { flat += parseInt(parts[i], 10) || 0; }
+  }
+  return total + flat;
+}
+function logLine(t) { LOG.push(t); logEl().textContent = LOG.slice(-60).join('\n'); save(); }
+function logEl() { return document.getElementById('log'); }
+
+function addUnit() {
+  var name = document.getElementById('u-name').value.trim() || ('单位' + (UNITS.length + 1));
+  UNITS.push({
+    id: 'u' + Date.now() + Math.floor(Math.random() * 100),
+    name: name,
+    hp: parseInt(document.getElementById('u-hp').value, 10) || 20,
+    maxHp: parseInt(document.getElementById('u-hp').value, 10) || 20,
+    ac: parseInt(document.getElementById('u-ac').value, 10) || 13,
+    initBonus: parseInt(document.getElementById('u-init').value, 10) || 0,
+    init: 0, side: document.getElementById('u-side').value, dead: false,
+  });
+  document.getElementById('u-name').value = '';
+  save(); render();
+}
+function rollInitiative() {
+  UNITS.forEach(function (u) { u.init = d20() + u.initBonus; logLine('🎲 ' + u.name + ' 先攻 ' + u.init); });
+  UNITS.sort(function (a, b) { return b.init - a.init; });
+  TURN = UNITS.length ? 0 : -1;
+  save(); render();
+}
+function nextTurn() {
+  if (!UNITS.length) return;
+  TURN = (TURN + 1) % UNITS.length;
+  logLine('⏭ 轮到 ' + UNITS[TURN].name);
+  save(); render();
+}
+function killOrHeal(u, delta) {
+  u.hp += delta;
+  if (u.hp <= 0 && !u.dead) { u.dead = true; logLine('💀 ' + u.name + ' 倒下（0 HP）'); }
+  if (u.hp > 0 && u.dead) u.dead = false;
+}
+function doAttack() {
+  var from = UNITS.find(function (u) { return u.id === document.getElementById('atk-from').value; });
+  var to = UNITS.find(function (u) { return u.id === document.getElementById('atk-to').value; });
+  if (!from || !to) { alert('先添加单位'); return; }
+  var bonus = parseInt(document.getElementById('atk-bonus').value, 10) || 0;
+  var raw = d20(), crit = raw === 20, autoMiss = raw === 1;
+  var total = raw + bonus;
+  logLine('⚔ ' + from.name + ' → ' + to.name + '：d20(' + raw + ')+' + bonus + '=' + total + ' vs AC ' + to.ac + (crit ? ' 🎯重击' : autoMiss ? ' 💨大失败' : ''));
+  if (autoMiss || total < to.ac) { logLine('   ✗ 未命中'); save(); render(); return; }
+  var dmg = rollFormula(document.getElementById('atk-damage').value) * (crit ? 2 : 1);
+  killOrHeal(to, -dmg);
+  logLine('   ✓ 命中，' + dmg + (crit ? '（重击翻倍）' : '') + ' 伤害 —— ' + to.name + ' 余 ' + Math.max(0, to.hp) + '/' + to.maxHp);
+  save(); render();
+}
+function removeUnit(id) {
+  UNITS = UNITS.filter(function (u) { return u.id !== id; });
+  if (TURN >= UNITS.length) TURN = UNITS.length - 1;
+  save(); render();
+}
+function adjustHp(id, delta) {
+  var u = UNITS.find(function (x) { return x.id === id; });
+  if (u) { killOrHeal(u, delta); save(); render(); }
+}
+function resetAll() {
+  if (!confirm('清空全部单位与日志？')) return;
+  UNITS = []; TURN = -1; LOG = [];
+  save(); render();
+}
+function exportReport() {
+  var lines = ['<battleresult>（最小引擎人工结算战报）'];
+  LOG.slice(-40).forEach(function (l) { lines.push(l); });
+  lines.push('</battleresult>');
+  var text = lines.join('\n');
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text);
+  logLine('📋 战报已生成并尝试复制到剪贴板');
+  save(); render();
+  window.__lastReport = text;
+}
+function render() {
+  var tb = document.querySelector('#tbl tbody');
+  tb.innerHTML = '';
+  UNITS.forEach(function (u, i) {
+    var tr = document.createElement('tr');
+    if (u.dead) tr.className = 'dead';
+    if (i === TURN) tr.className += ' turn';
+    tr.innerHTML = '<td>' + u.init + '</td><td>' + u.name + '</td><td>' + (u.side === 'ally' ? '我方' : '敌方') + '</td>'
+      + '<td><button onclick="adjustHp(\'' + u.id + '\',-1)">-</button> ' + Math.max(0, u.hp) + '/' + u.maxHp + ' <button onclick="adjustHp(\'' + u.id + '\',1)">+</button></td>'
+      + '<td>' + u.ac + '</td>'
+      + '<td><button onclick="removeUnit(\'' + u.id + '\')">移除</button></td>';
+    tb.appendChild(tr);
+  });
+  document.getElementById('turn-ind').textContent = TURN >= 0 && UNITS[TURN] ? '当前回合：' + UNITS[TURN].name : '尚未开战（先添加单位并掷先攻）';
+  var fromSel = document.getElementById('atk-from'), toSel = document.getElementById('atk-to');
+  var fv = fromSel.value, tv = toSel.value;
+  fromSel.innerHTML = ''; toSel.innerHTML = '';
+  UNITS.forEach(function (u) {
+    if (!u.dead) {
+      fromSel.insertAdjacentHTML('beforeend', '<option value="' + u.id + '">' + u.name + '</option>');
+      toSel.insertAdjacentHTML('beforeend', '<option value="' + u.id + '">' + u.name + '</option>');
+    }
+  });
+  fromSel.value = fv; toSel.value = tv;
+  logEl().textContent = LOG.slice(-60).join('\n');
+}
+render();
+</script>
+</body>
+</html>

@@ -225,6 +225,8 @@ export interface CharSheet {
   /** 特性动作：/特性.{种族,职业,专长} 下带结构化动作字段的条目（自设招式），按敌卡解析器结算 */
   traitActions: Omit<AiAbility, 'id'>[];
   statuses: string[];       // 映射为引擎状态 key
+  /** 2024 英雄激励（/英雄激励） */
+  inspiration?: boolean;
   stealthBonus?: number;
   /** 豁免熟练属性（来自 熟练配置.豁免，装配时折算为 saveBonuses） */
   saveProficiencies?: Set<AbilityKey>;
@@ -704,6 +706,8 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
     const resistances = parseDamageTypes(c['抗性']);
     const immunities = parseDamageTypes(c['免疫']);
     const vulnerabilities = parseDamageTypes(c['易伤']);
+    // 2024 英雄激励（E10）
+    const inspiration = c['英雄激励'] === true || c['英雄激励'] === 'true';
 
     out.push({
       name,
@@ -717,6 +721,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       spells,
       traitActions,
       statuses,
+      inspiration,
       stealthBonus,
       saveProficiencies: saveProficiencies.size > 0 ? saveProficiencies : undefined,
       resistances,
@@ -810,6 +815,7 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
     pos: opts.pos ?? { x: 0, y: 0 },
     attitude: 0,
     statuses: [...sheet.statuses],
+    inspiration: sheet.inspiration === true,
     isPlayer: opts.isPlayer ?? false,
     playerControlled: true,
     level: sheet.level,

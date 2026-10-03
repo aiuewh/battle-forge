@@ -484,6 +484,8 @@ export interface BattleStore {
   setBattleName: (name: string) => void;
   setEmbedMode: (v: boolean) => void;
   clearLastRoll: () => void;
+  /** 英雄激励重投（E10）：重掷 lastRoll 公式取新值，消耗 unit.inspiration */
+  rerollLastRoll: (actorId: string) => boolean;
   clearHistory: () => void;
   computeLastDiff: (ts: number) => void;
 }
@@ -2802,6 +2804,27 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
 
   setEmbedMode: (v) => set({ embedMode: v }),
   clearLastRoll: () => set({ lastRoll: null }),
+
+  rerollLastRoll: (actorId) => {
+    const s = get();
+    const last = s.lastRoll;
+    if (!last) return false;
+    const unit = s.units.find(u => u.id === actorId);
+    if (!unit || unit.inspiration !== true) return false;
+    const rerolled = rollFormula(last.formula);
+    const oldValue = last.result && typeof last.result === 'object' && 'total' in last.result ? last.result.total : null;
+    set({
+      lastRoll: { ...last, result: rerolled, note: `${last.note ? last.note + ' ' : ''}🍀 英雄激励重投` },
+      units: s.units.map(u => (u.id === actorId ? { ...u, inspiration: false } : u)),
+    });
+    get().logEvent({
+      type: 'note', actorId,
+      text: `🍀 ${unit.name} 使用英雄激励重投 [${last.formula}]：旧 ${oldValue ?? '?'} → 新 ${rerolled.total}（激励已消耗）`,
+      level: 'good',
+    });
+    persist(get());
+    return true;
+  },
   clearHistory: () => {
     try { localStorage.removeItem('dnd-battle-history'); } catch { /* noop */ }
     set({ history: [], lastDiff: null });

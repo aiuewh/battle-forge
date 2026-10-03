@@ -884,6 +884,22 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('通用施法: unitAbilities 过滤占位(AI 不可见)', !unitAbilities(gUnit).some(a => a.genericCast) && unitAbilities(gUnit).some(a => a.name === '火球术'));
 }
 
+// E10 英雄激励：变量装配透传到单位
+{
+  const iTree: Record<string, unknown> = {
+    '角色列表': {
+      '幸运儿': { '姓名': '幸运儿', '等级': 2, '英雄激励': true },
+      '倒霉蛋': { '姓名': '倒霉蛋', '等级': 2, '英雄激励': false },
+      '普通人': { '姓名': '普通人', '等级': 2 },
+    },
+  };
+  const units = charSheetsFromTree(iTree).map(s => unitFromCharSheet(s, { isPlayer: true, pos: { x: 0, y: 0 } }));
+  const by = (n: string) => units.find(u => u.name === n);
+  check('激励: 英雄激励=true 装配', by('幸运儿')?.inspiration === true);
+  check('激励: 英雄激励=false 不装配(true)', by('倒霉蛋')?.inspiration === false);
+  check('激励: 字段缺省归一为 false（行动侧判 ===true 不受影响）', by('普通人')?.inspiration === false);
+}
+
 // E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加
 {
   const mk = (slots: Record<number, { current: number; max: number }>) => ({ name: '法系', spellSlots: slots });

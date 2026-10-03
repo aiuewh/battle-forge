@@ -231,6 +231,8 @@ export interface BattleUnit {
   portrait?: string;
   /** 生物族类（协议 type 字段 / 预设标注 / 名字兜底识别）——决定地图棋子徽记 */
   creatureType?: CreatureKind;
+  /** 2024 英雄激励：重投一次 d20 攻击/豁免或伤害骰，用后即失（角色卡 /英雄激励 装配） */
+  inspiration?: boolean;
 
   // ---- 引擎扩展字段（协议外，UI 可编辑） ----
   isPlayer: boolean;

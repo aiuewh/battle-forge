@@ -117,6 +117,22 @@ export function DiceRoller() {
           </div>
         </div>
       )}
+
+      {/* 英雄激励重投（E10）：有 lastRoll 且当前操控单位持有激励时可见 */}
+      {(() => {
+        if (!last) return null;
+        const actor = store.units.find(u => u.id === store.turn.currentUnitId)
+          ?? store.units.find(u => u.attitude === 0 && u.playerControlled)
+          ?? store.units.find(u => u.attitude === 0);
+        if (!actor || actor.inspiration !== true) return null;
+        return (
+          <Button size="sm" variant="secondary"
+            className="gap-1 text-xs text-emerald-300 hover:bg-emerald-500/15"
+            onClick={() => store.rerollLastRoll(actor.id)}>
+            🍀 英雄激励重投（{actor.name}，取新值）
+          </Button>
+        );
+      })()}
     </div>
   );
 }
