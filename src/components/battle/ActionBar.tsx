@@ -13,7 +13,7 @@ import { useBattleStore } from '@/store/battleStore';
 import type { AiAbility, BattleUnit } from '@/lib/engine/types';
 import { AI_ABILITY_KIND_META, DAMAGE_TYPE_META, SIZE_META } from '@/lib/engine/types';
 import { effectiveSpeed } from '@/lib/engine/rules';
-import { unitDistance } from '@/lib/engine/geometry';
+import { unitDistance, inMeleeRange } from '@/lib/engine/geometry';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -31,6 +31,8 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [targetId, setTargetId] = useState<string | null>(null);
   const [helpMode, setHelpMode] = useState(false);
+  // 喂药模式：药水按钮 → 目标条选 5 尺内友方（不选 = 自己饮用），复用 help 的目标条交互
+  const [potionMode, setPotionMode] = useState(false);
 
   // 行动者：战斗中 = 当前玩家操控单位；非战斗 = 选中的友方单位
   const currentUnit = units.find(u => u.id === turn.currentUnitId);
@@ -59,7 +61,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
 
   // 渲染期重置：行动者 / 回合 / 待执行动作 / 余量队列变化时清空手动目标选择（React render-time 调整模式）
   const [ctxKey, setCtxKey] = useState('');
-  const resetKey = `${actor?.id ?? '-'}|${turn.round}|${pending?.ability.id ?? ''}|${multiQueue?.abilityId ?? ''}|${multiQueue?.remaining ?? ''}|${helpMode ? 'h' : ''}`;
+  const resetKey = `${actor?.id ?? '-'}|${turn.round}|${pending?.ability.id ?? ''}|${multiQueue?.abilityId ?? ''}|${multiQueue?.remaining ?? ''}|${helpMode ? 'h' : ''}|${potionMode ? 'p' : ''}`;
   if (resetKey !== ctxKey) {
     setCtxKey(resetKey);
     setTargetId(null);
@@ -111,6 +113,18 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const autoTargetId = validCands.length === 1 ? validCands[0].unit.id : null;
   const effectiveTargetId = targetId ?? autoTargetId;
 
+  // 喂药候选：同阵营存活友方（含濒死——喂药正是拉人手段）×5 尺触及
+  const potionCands = useMemo(() => {
+    if (!potionMode || !actor) return [];
+    return units
+      .filter(u => u.id !== actor.id && u.attitude === actor.attitude && !u.deathSaves?.dead)
+      .map(u => ({
+        unit: u,
+        dist: unitDistance(actor, u, store.mapConfig.diagonal),
+        inRange: inMeleeRange(actor, u, 5, store.mapConfig.diagonal),
+      }));
+  }, [potionMode, actor, units, store.mapConfig.diagonal]);
+
   if (!actor) return null;
 
   const canActFree = !battleActive || !actorIsCurrent; // 非当前回合/非战斗 → 自由结算（不消耗）
@@ -118,7 +132,15 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
 
   const startAction = (ability: AiAbility) => {
     setHelpMode(false);
+    setPotionMode(false);
     setPending({ ability });
+  };
+
+  const confirmPotion = () => {
+    // targetId 为空 = 自己饮用；选友方 = 喂药（消耗施动者附赠/回退动作，目标回血）
+    store.playerAction('potion', actor.id, targetId);
+    setPotionMode(false);
+    setTargetId(null);
   };
 
   const execute = () => {
@@ -137,7 +159,6 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
     }
     store.playerAction(kind, actor.id, null);
   };
-
   const abilityLabel = (a: AiAbility) => {
     const parts: string[] = [];
     if (a.attackBonus !== undefined) parts.push(`+${a.attackBonus}`);
@@ -377,7 +398,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             ['hide', '隐藏', EyeOff, '隐匿检定，成功则攻击优势'],
             ['help', '协助', HelpingHand, '友方下次攻击优势'],
             ['ready', '预备', Timer, '记录触发条件'],
-            ['potion', '药水', FlaskConical, '2d4+2 治疗'],
+            ['potion', '药水', FlaskConical, '2d4+2 治疗：附赠动作，可喂 5 尺内友方（附赠耗尽回退动作）'],
           ] as const).map(([kind, label, Icon, hint]) => {
             const actionUsed = battleActive && actorIsCurrent && (eco?.action ?? false);
             const disabled = !actorAlive || (kind !== 'potion' ? actionUsed : actionUsed);
@@ -386,13 +407,14 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
                 key={kind}
                 disabled={disabled}
                 onClick={() => {
-                  if (kind === 'help') { setHelpMode(true); setPending(null); }
+                  if (kind === 'help') { setHelpMode(true); setPending(null); setPotionMode(false); }
+                  else if (kind === 'potion') { setPotionMode(true); setPending(null); setHelpMode(false); }
                   else doPlayerAction(kind);
                 }}
                 title={hint}
                 className={cn(
                   'flex items-center gap-1 rounded-lg border border-border/40 bg-card/60 px-2 py-1.5 text-[11px] transition-all hover:border-primary/60 hover:bg-primary/10',
-                  helpMode && kind === 'help' && 'border-primary bg-primary/20',
+                  (helpMode && kind === 'help') || (potionMode && kind === 'potion') ? 'border-primary bg-primary/20' : '',
                   disabled && 'cursor-not-allowed opacity-40',
                 )}
               >
@@ -430,29 +452,51 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
         )}
       </div>
 
-      {/* ===== 目标选择条（手动动作 / 多重攻击余量续打） ===== */}
-      {(pending || helpMode || queueActive) && (
+      {/* ===== 目标选择条（手动动作 / 协助 / 喂药 / 多重攻击余量续打） ===== */}
+      {(pending || helpMode || queueActive || potionMode) && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
           <span className="text-[11px] font-semibold text-primary">
-            {helpMode
-              ? '🤝 协助对象'
-              : pending
-                ? `${pending.ability.name} → 选择目标`
-                : `${queuedAbility!.name} → 多重攻击剩余 ${multiQueue!.remaining} 次 · 选择新目标`}
+            {potionMode
+              ? '🧪 喂药对象（5 尺内友方；不选 = 自己饮用）'
+              : helpMode
+                ? '🤝 协助对象'
+                : pending
+                  ? `${pending.ability.name} → 选择目标`
+                  : `${queuedAbility!.name} → 多重攻击剩余 ${multiQueue!.remaining} 次 · 选择新目标`}
           </span>
           <select
             className="h-8 min-w-0 flex-1 rounded-md border border-border/50 bg-black/40 px-2 text-xs text-foreground focus:border-primary/50 focus:outline-none"
             value={effectiveTargetId ?? ''}
             onChange={e => setTargetId(e.target.value || null)}
           >
-            <option value="">— 选择目标 —</option>
-            {targetCandidates.map(({ unit: u, dist, inRange }) => (
-              <option key={u.id} value={u.id} disabled={!inRange}>
-                {u.name}（{dist}尺{!inRange ? ' · 超出射程' : ''} · AC {u.ac}{u.hp <= u.maxHp * 0.4 ? ' · 残血' : ''}）
-              </option>
-            ))}
+            {potionMode ? (
+              <>
+                <option value="">— 自己饮用 —</option>
+                {potionCands.map(({ unit: u, dist, inRange }) => (
+                  <option key={u.id} value={u.id} disabled={!inRange}>
+                    {u.name}（{dist}尺{!inRange ? ' · 超5尺' : ''}{u.hp <= 0 ? ' · 濒死' : ` · HP ${u.hp}/${u.maxHp}`}{u.hp > 0 && u.hp <= u.maxHp * 0.4 ? ' · 残血' : ''}）
+                  </option>
+                ))}
+              </>
+            ) : (
+              <>
+                <option value="">— 选择目标 —</option>
+                {targetCandidates.map(({ unit: u, dist, inRange }) => (
+                  <option key={u.id} value={u.id} disabled={!inRange}>
+                    {u.name}（{dist}尺{!inRange ? ' · 超出射程' : ''} · AC {u.ac}{u.hp <= u.maxHp * 0.4 ? ' · 残血' : ''}）
+                  </option>
+                ))}
+              </>
+            )}
           </select>
-          {helpMode ? (
+          {potionMode ? (
+            <Button
+              size="sm" className="h-8 gap-1 bg-emerald-800 text-[11px] text-white hover:bg-emerald-700"
+              onClick={confirmPotion}
+            >
+              <FlaskConical className="h-3.5 w-3.5" />{targetId ? '喂药' : '自己饮用'}
+            </Button>
+          ) : helpMode ? (
             <Button
               size="sm" className="h-8 gap-1 bg-primary text-[11px] text-primary-foreground"
               disabled={!effectiveTargetId}
@@ -484,7 +528,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             size="sm" variant="secondary" className="h-8 text-[11px]"
             onClick={() => {
               if (!pending && queueActive) store.clearMultiAttackQueue();
-              setPending(null); setHelpMode(false); setTargetId(null);
+              setPending(null); setHelpMode(false); setPotionMode(false); setTargetId(null);
             }}
           >
             {pending ? '取消' : '放弃'}

@@ -210,6 +210,45 @@ console.log('\n── charSheetsFromTree 自设结构化法术/特性动作 ─�
     check('自定义法术带环阶（耗3环法术位）', unit.aiAbilities.find(a => a.name === '霜火交汇')?.spellLevel === 3);
 }
 
+// ============ 7. 喝药动作经济（E2：默认附赠 + 附赠耗尽回退 + 喂药） ============
+console.log('\n── 喝药动作经济（E2：默认附赠/回退/喂药） ──');
+{
+    // 默认喝药耗附赠（2024 摘要口径）
+    check('默认 potionBonusAction=true（喝药=附赠动作）', (0, types_1.DEFAULT_RULES.potionBonusAction) === true);
+    // 附赠可用 → 消耗附赠
+    const d1 = (0, types_1.decidePotionCost)({ potionBonusAction: true }, { action: false, bonus: false });
+    check('附赠可用 → 耗附赠', d1.ok === true && d1.useBonus === true && d1.fallbackToAction === false);
+    // 附赠耗尽 → 回退动作
+    const d2 = (0, types_1.decidePotionCost)({ potionBonusAction: true }, { action: false, bonus: true });
+    check('附赠耗尽 → 回退动作', d2.ok === true && d2.useBonus === false && d2.fallbackToAction === true);
+    // 附赠与动作均耗尽 → 阻断
+    const d3 = (0, types_1.decidePotionCost)({ potionBonusAction: true }, { action: true, bonus: true });
+    check('附赠与动作均耗尽 → 阻断', d3.ok === false && d3.reason === 'bonus');
+    // 房规关闭 → 动作口径
+    const d4 = (0, types_1.decidePotionCost)({ potionBonusAction: false }, { action: false, bonus: false });
+    check('房规关闭 → 耗动作', d4.ok === true && d4.useBonus === false && d4.fallbackToAction === false);
+    const d5 = (0, types_1.decidePotionCost)({ potionBonusAction: false }, { action: true, bonus: false });
+    check('房规关闭且动作耗尽 → 阻断', d5.ok === false && d5.reason === 'action');
+
+    // 喂药（喂 5 尺内友方）：消耗施动者附赠动作（与自饮同一决策函数），目标回血走 resolveHeal
+    const fd = (0, types_1.decidePotionCost)({ potionBonusAction: true }, { action: false, bonus: false });
+    check('喂药扣施动者附赠（与自饮同决策）', fd.ok === true && fd.useBonus === true);
+    const dyingAlly = { ...mkUnit(10), hp: 0, deathSaves: { successes: 1, failures: 1, stable: false, dead: false } };
+    const healed = (0, combat_1.resolveHeal)(dyingAlly, 5);
+    check('喂药目标回血：濒死苏醒+死亡豁免重置', healed.newHp === 5 && healed.fromZero === true && healed.deathSavesReset === true);
+
+    // localStorage 兼容：旧存档（无 rulesRev）merge 后按新默认生效
+    const m1 = (0, types_1.migrateRules)({ potionBonusAction: false });
+    check('旧存档显式 false（旧默认）→ 迁移为 true', m1.potionBonusAction === true && m1.rulesRev === types_1.RULES_REV);
+    const m2 = (0, types_1.migrateRules)({ potionBonusAction: false, rulesRev: types_1.RULES_REV });
+    check('新存档用户显式关闭 → 尊重 false', m2.potionBonusAction === false && m2.rulesRev === types_1.RULES_REV);
+    const m3 = (0, types_1.migrateRules)({ critMode: 'weapon-dice-only', initiativeMode: 'fixed10' });
+    check('旧存档迁移保留其余设置', m3.critMode === 'weapon-dice-only' && m3.initiativeMode === 'fixed10' && m3.potionBonusAction === true);
+    check('migrateRules(空) → 全新默认', (0, types_1.migrateRules)(undefined).potionBonusAction === true);
+    // setRules 增量补丁路径不注入迁移（不覆盖用户显式选择）
+    check('normalizeRules 补丁不注入 potionBonusAction', (0, types_1.normalizeRules)({ minDamageOne: true }).potionBonusAction === undefined);
+}
+
 // ============ 汇总 ============
 console.log('\n━━━━━━━━━━━━━━━━ 新功能测试汇总 ━━━━━━━━━━━━━━━━');
 console.log(`✅ 通过: ${pass}`);

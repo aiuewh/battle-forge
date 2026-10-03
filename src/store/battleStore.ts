@@ -13,7 +13,7 @@ import type {
   TurnState, RulesConfig, Attitude, DamageType, BattleSnapshot, SnapshotDiff, AiAbility,
 } from '@/lib/engine/types';
 import { AI_PROFILE_META, SIZE_META } from '@/lib/engine/types';
-import { DEFAULT_RULES, normalizeRules } from '@/lib/engine/types';
+import { DEFAULT_RULES, normalizeRules, migrateRules, decidePotionCost } from '@/lib/engine/types';
 import {
   resolveAttack, resolveSave, resolveDeathSave, resolveHeal, resolveConcentration,
   applyTypeModifiers,
@@ -548,9 +548,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         return false;
       }
       const data = JSON.parse(raw);
-      const restoredRules = data.rules
-        ? { ...DEFAULT_RULES, ...normalizeRules(data.rules) }
-        : { ...DEFAULT_RULES };
+      // 旧存档迁移：rulesRev 缺失 = 喝药默认值变更前写入 → 按新默认重置（此后用户显式选择随 rulesRev 持久化）
+      const restoredRules = migrateRules(data.rules);
       set({
         units: data.units ?? [],
         obstacles: data.obstacles ?? [],
@@ -2598,31 +2597,45 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         break;
       }
       case 'potion': {
-        // 房规 potionBonusAction（设置面板可切）：喝药消耗附赠动作；附赠不可用时回退动作
-        const useBonus = get().rules.potionBonusAction;
-        const r = rollFormula('2d4+2');
-        if (isCurrent) {
-          if (useBonus) {
-            if (unit.actionEconomy.bonus) {
-              get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的附赠动作已用尽——回退为标准动作喝药`, level: 'info' });
-              if (unit.actionEconomy.action) {
-                get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的动作也已用尽，无法喝药`, level: 'bad' });
-                return;
-              }
-              consume('action');
-            } else {
-              consume('bonus');
-            }
-          } else if (unit.actionEconomy.action) {
-            get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的动作已用尽`, level: 'bad' });
+        // 2024 摘要口径：喝药 = 附赠动作；喂 5 尺内友方同样消耗施动者附赠动作（房规 potionBonusAction 可切回动作口径）
+        // targetId 为空 = 自饮；附赠不可用时回退标准动作（decidePotionCost 纯函数，housrule-tests 同源断言）
+        const feedTarget = targetId && targetId !== unitId ? s.units.find(u => u.id === targetId) : null;
+        if (feedTarget) {
+          if (feedTarget.deathSaves?.dead) {
+            get().logEvent({ type: 'note', text: `⛔ ${feedTarget.name} 已死亡——药水无法起效（需复活法术）`, level: 'bad' });
             return;
-          } else {
-            consume('action');
+          }
+          if (feedTarget.attitude !== unit.attitude) {
+            get().logEvent({ type: 'note', text: `⛔ 喂药只能对友方目标（${feedTarget.name} 非友方）`, level: 'bad' });
+            return;
+          }
+          const feedDist = unitDistance(unit, feedTarget, s.mapConfig.diagonal);
+          if (feedDist > 5) {
+            get().logEvent({ type: 'note', text: `⛔ ${feedTarget.name} 距离 ${feedDist} 尺——喂药需在 5 尺内`, level: 'bad' });
+            return;
           }
         }
-        set({ lastRoll: { id: uid(), formula: '2d4+2', result: r, note: '治疗药水' } });
-        get().logEvent({ type: 'heal', actorId: unitId, text: `🧪 ${unit.name} 饮用治疗药水${useBonus ? '（房规·附赠动作）' : ''}，回复 ${r.total} 点`, level: 'good' });
-        get().healUnit(unitId, r.total);
+        const potionDecision = decidePotionCost(get().rules, { action: unit.actionEconomy.action, bonus: unit.actionEconomy.bonus });
+        if (isCurrent) {
+          if (!potionDecision.ok) {
+            get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的${potionDecision.reason === 'bonus' ? '附赠动作与动作' : '动作'}均已用尽，无法喝药`, level: 'bad' });
+            return;
+          }
+          if (potionDecision.fallbackToAction) {
+            get().logEvent({ type: 'note', text: `⛔ ${unit.name} 的附赠动作已用尽——回退为标准动作喝药`, level: 'info' });
+          }
+          consume(potionDecision.useBonus ? 'bonus' : 'action');
+        }
+        const potionRoll = rollFormula('2d4+2');
+        const healTargetId = feedTarget ? feedTarget.id : unitId;
+        const healTargetName = feedTarget ? feedTarget.name : unit.name;
+        set({ lastRoll: { id: uid(), formula: '2d4+2', result: potionRoll, note: '治疗药水' } });
+        get().logEvent({
+          type: 'heal', actorId: unitId, targetId: healTargetId,
+          text: `🧪 ${unit.name} ${feedTarget ? `给 ${healTargetName} 喂` : '饮用'}治疗药水${potionDecision.useBonus ? '（附赠动作）' : potionDecision.fallbackToAction ? '（附赠耗尽·回退标准动作）' : '（标准动作）'}，回复 ${potionRoll.total} 点`,
+          level: 'good',
+        });
+        get().healUnit(healTargetId, potionRoll.total);
         break;
       }
     }

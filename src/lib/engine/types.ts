@@ -424,7 +424,7 @@ export interface RulesConfig {
   failOnDamageAtZero: boolean;
   /** 先攻模式（房规模块）：roll=每人掷 d20（默认）；fixed10=DMG 变体固定先攻（10+先攻加值，不掷骰） */
   initiativeMode: 'roll' | 'fixed10';
-  /** 喝药水消耗附赠动作而非动作（社区常见房规；官方规则药水为动作） */
+  /** 喝药水消耗附赠动作而非动作（2024 摘要口径：喝药是附赠动作，喂 5 尺内他人也是附赠动作；2014 RAW 为动作） */
   potionBonusAction: boolean;
   surpriseMode: 'init-disadvantage' | 'skip-turn' | 'none';
   tieBreak: 'modifier-then-player' | 'player-first' | 'random';
@@ -433,7 +433,12 @@ export interface RulesConfig {
   /** 结算权威：panel=面板（默认，先攻由面板掷骰、战斗中 AI 数据不覆盖已结算数值）
    *  ai-legacy=兼容旧卡（先攻用 AI 给定值、战斗中 AI 块数值直入） */
   authorityMode: 'panel' | 'ai-legacy';
+  /** 配置版本（持久化兼容）：旧存档缺此字段 = 喝药默认值变更前写入，加载时按新默认重置标记字段（见 migrateRules） */
+  rulesRev?: number;
 }
+
+/** 当前规则配置版本：E2 起喝药默认改为附赠动作 */
+export const RULES_REV = 2;
 
 export const DEFAULT_RULES: RulesConfig = {
   /** 2024 正式规则：重击翻倍攻击全部伤害骰 */
@@ -442,12 +447,14 @@ export const DEFAULT_RULES: RulesConfig = {
   failOnDropToZero: false,
   failOnDamageAtZero: true,
   initiativeMode: 'roll',
-  potionBonusAction: false,
+  /** 2024 摘要口径：喝药 = 附赠动作（喂 5 尺内他人同理）；附赠不可用回退动作 */
+  potionBonusAction: true,
   surpriseMode: 'init-disadvantage',
   tieBreak: 'modifier-then-player',
   diagonal: 'equal',
   minDamageOne: false,
   authorityMode: 'panel',
+  rulesRev: RULES_REV,
 };
 
 /**
@@ -463,6 +470,52 @@ export function normalizeRules(raw: Partial<RulesConfig>): Partial<RulesConfig> 
     delete out.critWeaponDiceOnly;
   }
   return out;
+}
+
+/**
+ * 旧存档 rules 对象迁移（localStorage 恢复专用）：
+ * 旧存档（无 rulesRev）里 potionBonusAction:false 只是变更前的默认值而非用户显式选择，
+ * 合并后按新默认（2024：喝药=附赠动作）重置；此后用户在设置面板的改动随 rulesRev 一起持久化，
+ * 不会再被迁移覆盖。setRules 的增量补丁不走这里（避免覆盖用户显式选择）。
+ */
+export function migrateRules(raw: Partial<RulesConfig> | undefined | null): RulesConfig {
+  // 以原始存档对象判定版本（DEFAULT_RULES 自带 rulesRev，不能看合并结果）
+  const isLegacySave = raw?.rulesRev === undefined;
+  const merged = { ...DEFAULT_RULES, ...normalizeRules(raw ?? {}) } as RulesConfig;
+  if (isLegacySave) {
+    merged.potionBonusAction = DEFAULT_RULES.potionBonusAction;
+  }
+  merged.rulesRev = RULES_REV;
+  return merged;
+}
+
+/** 喝药/喂药的动作经济决策（纯函数，供 battleStore 与测试共用） */
+export interface PotionCostDecision {
+  /** false = 动作与附赠均耗尽，无法喝药 */
+  ok: boolean;
+  /** 本次消耗附赠动作（true）还是标准动作（false） */
+  useBonus: boolean;
+  /** 附赠不可用回退为动作（含提示文案场景） */
+  fallbackToAction: boolean;
+  /** 阻断原因：bonus=附赠与动作均耗尽；action=动作耗尽 */
+  reason?: 'bonus' | 'action';
+}
+
+/**
+ * 喝药消耗决策：potionBonusAction 开启时优先附赠、附赠耗尽回退动作；
+ * 关闭时消耗动作。非本回合单位（演练结算）由调用方跳过消耗，不受阻断。
+ */
+export function decidePotionCost(
+  rules: Pick<RulesConfig, 'potionBonusAction'>,
+  eco: { action: boolean; bonus: boolean },
+): PotionCostDecision {
+  if (rules.potionBonusAction) {
+    if (!eco.bonus) return { ok: true, useBonus: true, fallbackToAction: false };
+    if (!eco.action) return { ok: true, useBonus: false, fallbackToAction: true };
+    return { ok: false, useBonus: false, fallbackToAction: false, reason: 'bonus' };
+  }
+  if (!eco.action) return { ok: true, useBonus: false, fallbackToAction: false };
+  return { ok: false, useBonus: false, fallbackToAction: false, reason: 'action' };
 }
 
 // ============ 房规模块注册表 ============
@@ -536,7 +589,7 @@ export const HOUSE_RULE_MODULES: HouseRuleModule[] = [
   },
   {
     id: 'potion-bonus', group: '动作经济', name: '喝药水 = 附赠动作', source: 'community', field: 'potionBonusAction',
-    description: '开启后战斗中饮用治疗药水消耗附赠动作；官方规则为动作。桌面圈最流行的提速房规之一。',
+    description: '开启后饮用治疗药水（含喂给 5 尺内友方）消耗附赠动作，附赠耗尽回退标准动作；默认开启（2024 摘要口径）。关闭则回退为喝药消耗标准动作（2014 RAW）。',
   },
   {
     id: 'min-damage-one', group: '伤害与骰子', name: '伤害最低 1 点', source: 'community', field: 'minDamageOne',
