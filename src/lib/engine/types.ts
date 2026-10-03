@@ -119,6 +119,8 @@ export interface AiAbility {
   concentration?: boolean;
   /** 附赠动作施放 */
   bonusAction?: boolean;
+  /** 法术是否已准备（undefined=非法术或未知；false=未准备，UI 提示后可强施） */
+  spellPrepared?: boolean;
   /** 攻击/豁免后的附加状态效果（如 麻痹/恐惧），豁免失败时施加 */
   applyStatus?: string;
   /** 2024 武器精通词条（Graze/Topple/Push/Vex/Sap/Slow/Nick/Cleave；引擎自动结算前三者） */

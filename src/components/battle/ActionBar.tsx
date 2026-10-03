@@ -350,12 +350,16 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
               const lvl = a.spellLevel ?? 0;
               const noSlot = !slotOk(a);
               const disabled = econDisabled(a) || !actorAlive || noSlot;
+              const unprepared = a.spellPrepared === false && lvl > 0;
               return (
                 <button
                   key={a.id}
                   disabled={disabled}
-                  onClick={() => startAction(a)}
-                  title={noSlot ? `${lvl} 环法术位不足` : AI_ABILITY_KIND_META[a.kind].hint}
+                  onClick={() => {
+                    if (unprepared && !window.confirm(`「${a.name}」未准备——仍要强施吗？（2024 RAW：未准备法术不可施放，此处为面板宽松兜底）`)) return;
+                    startAction(a);
+                  }}
+                  title={noSlot ? `${lvl} 环法术位不足` : unprepared ? '⚠ 未准备法术：点击确认后强施' : AI_ABILITY_KIND_META[a.kind].hint}
                   className={cn(
                     'flex flex-col items-start rounded-lg border px-2.5 py-1.5 text-left transition-all',
                     pending?.ability.id === a.id
@@ -370,6 +374,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
                       {lvl === 0 ? '戏法' : `${lvl}环`}
                     </span>
                     {a.bonusAction && <span className="ml-1 text-[9px] text-amber-300">附赠</span>}
+                    {unprepared && <span className="ml-1 rounded bg-amber-500/15 px-1 text-[9px] text-amber-300">未准备</span>}
                     {a.concentration && <span className="ml-1 text-[9px] text-cyan-300">🎯专注</span>}
                   </span>
                   <span className="font-mono text-[10px] text-muted-foreground">

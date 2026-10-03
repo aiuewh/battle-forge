@@ -816,6 +816,26 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('精通: 命中仍含魔法加值', mw?.attackBonus === 4, `实际 ${mw?.attackBonus}`);
 }
 
+// E5：未准备法术透传 spellPrepared（UI 据此显示警示并可确认强施）
+{
+  const pTree: Record<string, unknown> = {
+    '角色列表': {
+      '术士': {
+        '姓名': '术士', '等级': 3,
+        '施法': {
+          '关键属性': '魅力',
+          '法术书': { '火球术': { '准备中': false }, '治疗真言': { '准备中': true }, '燃烧之手': {} },
+        },
+      },
+    },
+  };
+  const pUnit = unitFromCharSheet(charSheetsFromTree(pTree)[0], { isPlayer: true, pos: { x: 0, y: 0 } });
+  const ab = (n: string) => pUnit.aiAbilities?.find(a => a.name === n);
+  check('未准备: 火球术 spellPrepared=false', ab('火球术')?.spellPrepared === false);
+  check('未准备: 已准备法术 spellPrepared=true', ab('治疗真言')?.spellPrepared === true);
+  check('未准备: 无准备中字段视为未准备(false)', ab('燃烧之手')?.spellPrepared === false);
+}
+
 // E1 玩家额外攻击：职业字段查 2024 职业表 + 额外攻击 变量字段优先
 {
   const mkClassTree = (name: string, classStr: string | undefined, extraAttacks?: number): Record<string, unknown> => ({

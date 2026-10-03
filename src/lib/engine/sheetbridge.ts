@@ -763,7 +763,7 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
   // 法术动作：内置库命中（matched）+ 自定义结构化法术（custom）都进动作栏
   const spellAbilities: AiAbility[] = sheet.spells
     .filter(s => s.ability && (s.matched || s.custom))
-    .map((s, i) => ({ ...s.ability!, id: `s${i}-${s.name}`, note: [s.custom ? '自设法术（结构化）' : '', s.ability!.note].filter(Boolean).join(' · ') || undefined }));
+    .map((s, i) => ({ ...s.ability!, id: `s${i}-${s.name}`, spellPrepared: s.prepared, note: [s.custom ? '自设法术（结构化）' : '', !s.prepared ? '⚠ 未准备' : '', s.ability!.note].filter(Boolean).join(' · ') || undefined }));
 
   // 特性动作（自设招式，结构化解析）
   const traitAbilities: AiAbility[] = sheet.traitActions.map((a, i) => ({ ...a, id: `t${i}-${a.name}`, note: [a.note, '特性动作'].filter(Boolean).join(' · ') || undefined }));
