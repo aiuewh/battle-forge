@@ -837,6 +837,25 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('未准备: 无准备中字段视为未准备(false)', ab('燃烧之手')?.spellPrepared === false);
 }
 
+// E9 戏法按等级分段成长：1/5/11/17 级 → 1/2/3/4 骰
+{
+  const cTree: Record<string, unknown> = {
+    '角色列表': {
+      '小法': { '姓名': '小法', '等级': 5, '施法': { '关键属性': '智力', '法术书': { '火焰箭': { '准备中': true }, '魔法飞弹': { '准备中': true } } } },
+      '学徒': { '姓名': '学徒', '等级': 3, '施法': { '关键属性': '智力', '法术书': { '火焰箭': { '准备中': true } } } },
+      '大法': { '姓名': '大法', '等级': 17, '施法': { '关键属性': '智力', '法术书': { '火焰箭': { '准备中': true } } } },
+    },
+  };
+  const abOf = (name: string, spell: string) => {
+    const u = unitFromCharSheet(charSheetsFromTree(cTree).find(s => s.name === name)!, { isPlayer: true, pos: { x: 0, y: 0 } });
+    return u.aiAbilities?.find(a => a.name === spell);
+  };
+  check('戏法: 5级火焰箭 2d10(+0)', abOf('小法', '火焰箭')?.dice === '2d10+0', `实际 ${abOf('小法', '火焰箭')?.dice}`);
+  check('戏法: 3级火焰箭 1d10(+0)', abOf('学徒', '火焰箭')?.dice === '1d10+0', `实际 ${abOf('学徒', '火焰箭')?.dice}`);
+  check('戏法: 17级火焰箭 4d10(+0)', abOf('大法', '火焰箭')?.dice === '4d10+0', `实际 ${abOf('大法', '火焰箭')?.dice}`);
+  check('非戏法: 5级魔法飞弹保持2024三镖3d4+3', abOf('小法', '魔法飞弹')?.dice?.startsWith('3d4') === true, `实际 ${abOf('小法', '魔法飞弹')?.dice}`);
+}
+
 // E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加
 {
   const mk = (slots: Record<number, { current: number; max: number }>) => ({ name: '法系', spellSlots: slots });

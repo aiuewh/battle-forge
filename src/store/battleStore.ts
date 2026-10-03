@@ -1704,7 +1704,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
             return true;
           }
-          set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
+          set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: ability.bonusAction ? { ...u.actionEconomy, bonus: true } : { ...u.actionEconomy, action: true } } : u)) });
           // AI 施法同样消耗法术位（此前绕过 castAbility 导致无限火球）
           if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
           const effDice = aiCastDice(ability, cast);
@@ -1750,7 +1750,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
             return true;
           }
-          set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
+          set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: ability.bonusAction ? { ...u.actionEconomy, bonus: true } : { ...u.actionEconomy, action: true } } : u)) });
           if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
           const saveKey = ability.saveAbility ?? 'wis';
           const dc = ability.saveDc ?? 13;
@@ -1797,7 +1797,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           set({
             lastRoll: { id: uid(), formula: effDice, result: r, note: `${ability.name} 治疗${cast.upcast ? `（${cast.level} 环升环）` : ''}` },
             units: get().units.map(u => (u.id === unit.id
-              ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } }
+              ? { ...u, actionEconomy: ability.bonusAction ? { ...u.actionEconomy, bonus: true } : { ...u.actionEconomy, action: true } }
               : u)),
           });
           get().logEvent({

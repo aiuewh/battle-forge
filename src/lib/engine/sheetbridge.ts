@@ -419,6 +419,15 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
 ];
 
+/** 2024 戏法成长：1/5/11/17 级 → 骰数 ×1/2/3/4（保留调整值后缀；非标准骰式原样返回） */
+function scaleCantripDice(dice: string, level: number): string {
+  const tier = level >= 17 ? 4 : level >= 11 ? 3 : level >= 5 ? 2 : 1;
+  if (tier <= 1) return dice;
+  const m = /^(\d+)d(\d+)([+-].+)?$/.exec(dice.replace(/\s+/g, ''));
+  if (!m) return dice;
+  return `${parseInt(m[1], 10) * tier}d${m[2]}${m[3] ?? ''}`;
+}
+
 /** 法术名归一：去空白/括号注音/分隔符，用于跨译名与复合键匹配（「定身类人(Hold Person)」→「定身类人」） */
 function normalizeSpellKey(name: string): string {
   return name.toLowerCase().replace(/\s+/g, '')
@@ -763,7 +772,12 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
   // 法术动作：内置库命中（matched）+ 自定义结构化法术（custom）都进动作栏
   const spellAbilities: AiAbility[] = sheet.spells
     .filter(s => s.ability && (s.matched || s.custom))
-    .map((s, i) => ({ ...s.ability!, id: `s${i}-${s.name}`, spellPrepared: s.prepared, note: [s.custom ? '自设法术（结构化）' : '', !s.prepared ? '⚠ 未准备' : '', s.ability!.note].filter(Boolean).join(' · ') || undefined }));
+    .map((s, i) => {
+      const ab: AiAbility = { ...s.ability!, id: `s${i}-${s.name}`, spellPrepared: s.prepared, note: [s.custom ? '自设法术（结构化）' : '', !s.prepared ? '⚠ 未准备' : '', s.ability!.note].filter(Boolean).join(' · ') || undefined };
+      // 2024 戏法成长：1/5/11/17 级 → 1/2/3/4 骰（E9/T4，调整值部分不动）
+      if (s.level === 0 && ab.dice) ab.dice = scaleCantripDice(ab.dice, sheet.level);
+      return ab;
+    });
 
   // 特性动作（自设招式，结构化解析）
   const traitAbilities: AiAbility[] = sheet.traitActions.map((a, i) => ({ ...a, id: `t${i}-${a.name}`, note: [a.note, '特性动作'].filter(Boolean).join(' · ') || undefined }));
