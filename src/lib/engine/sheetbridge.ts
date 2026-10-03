@@ -371,7 +371,7 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['护盾术', 'shield'], level: 1,
-    build: () => ({ name: '护盾术', kind: 'save', dice: '0', range: 0, spellLevel: 1, bonusAction: true, note: '反应施放：AC+5 直至下回合开始（手动改 AC 或加备注）' }),
+    build: () => ({ name: '护盾术', kind: 'save', dice: '0', range: 0, spellLevel: 1, reaction: true, note: '反应施放：AC+5 直至下回合开始（被攻击时可触发反应窗口）' }),
   },
   {
     keys: ['人类定身术', 'hold person'], level: 2,

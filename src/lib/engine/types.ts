@@ -233,6 +233,8 @@ export interface BattleUnit {
   creatureType?: CreatureKind;
   /** 2024 英雄激励：重投一次 d20 攻击/豁免或伤害骰，用后即失（角色卡 /英雄激励 装配） */
   inspiration?: boolean;
+  /** 临时 AC 加值（反应法术如护盾术 +5）：受术者下回合开始时清除（E11） */
+  tempAcBonus?: number;
 
   // ---- 引擎扩展字段（协议外，UI 可编辑） ----
   isPlayer: boolean;

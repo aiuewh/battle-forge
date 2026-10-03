@@ -900,6 +900,18 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('激励: 字段缺省归一为 false（行动侧判 ===true 不受影响）', by('普通人')?.inspiration === false);
 }
 
+// E11 反应法术：护盾术模板带 reaction 标记并装配到单位动作
+{
+  const sTree: Record<string, unknown> = {
+    '角色列表': {
+      '盾法': { '姓名': '盾法', '等级': 3, '施法': { '关键属性': '智力', '法术书': { '护盾术': { '准备中': true } } } },
+    },
+  };
+  const sUnit = unitFromCharSheet(charSheetsFromTree(sTree)[0], { isPlayer: true, pos: { x: 0, y: 0 } });
+  const shield = sUnit.aiAbilities?.find(a => a.name === '护盾术');
+  check('反应法术: 护盾术 reaction 标记+1环', shield?.reaction === true && shield?.spellLevel === 1);
+}
+
 // E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加
 {
   const mk = (slots: Record<number, { current: number; max: number }>) => ({ name: '法系', spellSlots: slots });

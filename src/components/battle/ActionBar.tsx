@@ -638,6 +638,27 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
         {canActFree && battleActive && <span className="text-amber-300/80">非本回合单位：演练结算</span>}
       </div>
 
+      {/* E11 反应法术窗口：AI 攻击玩家单位时挂起，等待确认/忽略 */}
+      {store.pendingReactionStep && (() => {
+        const pr = store.pendingReactionStep;
+        const target = units.find(u => u.id === pr.targetId);
+        return (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-cyan-400/50 bg-cyan-500/10 px-3 py-2 text-xs">
+            <span className="font-semibold text-cyan-200">
+              ⏸ {pr.attackerId} 即将攻击 {target?.name ?? pr.targetId}
+            </span>
+            <Button size="sm" className="h-7 gap-1 bg-cyan-600 hover:bg-cyan-500"
+              onClick={() => store.resolvePendingReaction(true)}>
+              🛡 施放【{pr.spellName}】（反应+{pr.spellLevel}环，AC+5）
+            </Button>
+            <Button size="sm" variant="secondary" className="h-7"
+              onClick={() => store.resolvePendingReaction(false)}>
+              忽略
+            </Button>
+          </div>
+        );
+      })()}
+
       {/* 通用施法弹窗（E6/T2） */}
       <SpellCastDialog
         open={!!gcRequest && !!actor}

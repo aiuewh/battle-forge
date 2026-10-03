@@ -197,7 +197,7 @@ function runMultiAttackSequence(
     const cover = estimateCover(actor, target, get().obstacles, buildBlockedCells(get().obstacles));
     const atkResult = get().performAttack(actorId, target.id, {
       attackBonus: ability.attackBonus ?? 0,
-      targetAc: target.ac + coverBonus(cover.cover),
+      targetAc: target.ac + (target.tempAcBonus ?? 0) + coverBonus(cover.cover),
       weaponDamage: ability.dice,
       weaponType: ability.damageType,
       isRanged: ability.kind === 'ranged',
@@ -331,6 +331,8 @@ export interface BattleStore {
     result: ReturnType<typeof rollFormula>;
     note?: string;
   } | null;
+  /** E11 反应法术窗口：AI 攻击玩家操控单位时挂起，等待玩家确认/忽略 */
+  pendingReactionStep: { attackerId: string; targetId: string; spellName: string; spellLevel: number } | null;
   embedMode: boolean;
   /** UI：当前选中单位 */
   selectedId: string | null;
@@ -486,6 +488,8 @@ export interface BattleStore {
   clearLastRoll: () => void;
   /** 英雄激励重投（E10）：重掷 lastRoll 公式取新值，消耗 unit.inspiration */
   rerollLastRoll: (actorId: string) => boolean;
+  /** E11 反应法术窗口：确认（true=施放护盾术）或忽略挂起的攻击 */
+  resolvePendingReaction: (cast: boolean) => void;
   clearHistory: () => void;
   computeLastDiff: (ts: number) => void;
 }
@@ -524,6 +528,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   aoeTemplates: [],
   mapConfig: { width: 30, height: 30, cellSize: 5, diagonal: 'equal' },
   turn: { round: 0, currentUnitId: null, order: [], turnIndex: -1, ended: false, surprisedIds: [] },
+  pendingReactionStep: null,
   events: [],
   rules: { ...DEFAULT_RULES },
   turnSnap: null,
@@ -610,7 +615,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     set({
       units: [], obstacles: [], aoeTemplates: [], events: [],
       turn: { round: 0, currentUnitId: null, order: [], turnIndex: -1, ended: false, surprisedIds: [] },
-      battleActive: false, lastDiff: null, lastRoll: null, playerTargetId: null, multiAttackQueue: null, history: loadHistory(),
+      battleActive: false, lastDiff: null, lastRoll: null, playerTargetId: null, multiAttackQueue: null, pendingReactionStep: null, history: loadHistory(),
       escapedUnits: [], turnSnap: null, undoStack: [],
     });
     persist(get());
@@ -1122,6 +1127,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             actionEconomy: defaultActionEconomy(),
             // 闪避持续到自身下回合开始（2024）：轮到闪避者行动时解除
             statuses: u.statuses.filter(st => st !== 'dodging'),
+            // 护盾术等临时 AC 加值持续到受术者下回合开始（E11）
+            tempAcBonus: 0,
           };
         }
         return base;
@@ -1163,7 +1170,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     // 战斗结束检查
     const endCheck = checkBattleEnd(get().units);
     if (endCheck.ended) {
-      set({ turn: { ...get().turn, ended: true }, battleActive: false });
+      set({ turn: { ...get().turn, ended: true }, battleActive: false, pendingReactionStep: null });
       get().logEvent({
         type: 'note',
         text: `🏁 战斗结束！${endCheck.winner === 0 ? '友方' : endCheck.winner === 2 ? '敌方' : ''}获胜`,
@@ -1182,7 +1189,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   },
 
   endCombat: () => {
-    set({ battleActive: false, turn: { ...get().turn, ended: true } });
+    set({ battleActive: false, turn: { ...get().turn, ended: true }, pendingReactionStep: null });
     get().logEvent({ type: 'note', text: '🏁 战斗结束', level: 'info' });
     persist(get());
   },
@@ -1207,7 +1214,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     // 全员撤离判定：友方全逃或阵亡 → 战斗结束（无胜者=撤离结算）
     const left = get().units.filter(u => u.attitude === 0 && u.hp > 0 && !u.deathSaves?.dead);
     if (left.length === 0) {
-      set({ battleActive: false, turn: { ...get().turn, ended: true } });
+      set({ battleActive: false, turn: { ...get().turn, ended: true }, pendingReactionStep: null });
       const survivors = [...get().escapedUnits.filter(u => u.attitude === 0), ...left];
       get().logEvent({
         type: 'note',
@@ -1514,7 +1521,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           spend();
           get().performAttack(actor.id, target.id, {
             attackBonus: ability.attackBonus ?? 0,
-            targetAc: target.ac + coverBonus(cover.cover),
+            targetAc: target.ac + (target.tempAcBonus ?? 0) + coverBonus(cover.cover),
             weaponDamage: ability.dice,
             weaponType: ability.damageType,
             coverKind: cover.cover,
@@ -1599,6 +1606,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   takeAiStep: () => {
     const s = get();
     if (!s.battleActive || s.turn.ended) return false;
+    // E11 反应法术窗口挂起中：等待玩家在行动栏确认/忽略，不推进 AI
+    if (s.pendingReactionStep) return false;
     const unit = s.units.find(u => u.id === s.turn.currentUnitId);
     if (!unit) return false;
     if (!isAiControlled(unit)) return false;
@@ -1669,6 +1678,18 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         const target = get().units.find(u => u.id === step.targetId);
         if (ability && target) {
+          // E11 反应法术窗口：目标是玩家操控单位、反应可用、且持有可用反应法术（有环位或戏法）→ 挂起等待决策
+          const _rs = target.playerControlled && !target.actionEconomy.reaction
+            ? (target.aiAbilities ?? []).find(a => a.reaction === true
+              && a.spellPrepared !== false
+              && ((a.spellLevel ?? 0) === 0 || (target.spellSlots?.[a.spellLevel ?? 0]?.current ?? 0) > 0))
+            : undefined;
+          if (_rs) {
+            aiPlanCache.steps.unshift(step); // 放回队首：决策后重执行（届时 AC 已含护盾加值）
+            set({ pendingReactionStep: { attackerId: unit.id, targetId: target.id, spellName: _rs.name, spellLevel: _rs.spellLevel ?? 1 } });
+            get().logEvent({ type: 'note', actorId: target.id, text: `⏸ ${unit.name} 即将攻击 ${target.name} —— 可反应施放【${_rs.name}】，请在行动栏确认或忽略`, level: 'info' });
+            return false;
+          }
           // 攻击法术结算法术位：升环向上代打（此前仅 AoE/治疗结算；无 spellSlots 模型的天生施法者不设限）
           const cast = resolveAiCast(unit, ability);
           if (!cast.ok) {
@@ -1689,7 +1710,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           });
           const atkResult = get().performAttack(unit.id, target.id, {
             attackBonus: ability.attackBonus ?? 0,
-            targetAc: target.ac + coverBonus(cover.cover),
+            targetAc: target.ac + (target.tempAcBonus ?? 0) + coverBonus(cover.cover),
             weaponDamage: effDice,
             weaponType: ability.damageType,
             isRanged: ability.kind === 'ranged',
@@ -2824,6 +2845,33 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     });
     persist(get());
     return true;
+  },
+
+  resolvePendingReaction: (cast) => {
+    const pending = get().pendingReactionStep;
+    if (!pending) return;
+    if (cast) {
+      const target = get().units.find(u => u.id === pending.targetId);
+      if (target) {
+        set({
+          units: get().units.map(u => (u.id === target.id
+            ? {
+              ...u,
+              actionEconomy: { ...u.actionEconomy, reaction: true },
+              reactionUsedTurn: true,
+              tempAcBonus: (u.tempAcBonus ?? 0) + 5,
+            }
+            : u)),
+        });
+        if (pending.spellLevel > 0) get().spendSpellSlot(target.id, pending.spellLevel);
+        get().logEvent({ type: 'save', actorId: target.id, text: `🛡 ${target.name} 反应施放【${pending.spellName}】——AC +5 至其下回合开始（反应+${pending.spellLevel}环位已消耗）`, level: 'good' });
+      }
+    } else {
+      get().logEvent({ type: 'note', actorId: pending.targetId, text: `➡ ${pending.spellName ? '忽略反应施法' : ''}，攻击继续结算`, level: 'info' });
+    }
+    set({ pendingReactionStep: null });
+    // 重执行放回队首的攻击步骤（此时目标 AC 已含护盾加值）
+    get().takeAiStep();
   },
   clearHistory: () => {
     try { localStorage.removeItem('dnd-battle-history'); } catch { /* noop */ }
