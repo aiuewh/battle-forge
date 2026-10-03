@@ -15,6 +15,7 @@ import { AI_ABILITY_KIND_META, DAMAGE_TYPE_META, SIZE_META } from '@/lib/engine/
 import { effectiveSpeed } from '@/lib/engine/rules';
 import { canUnarmedStrikeTarget } from '@/lib/engine/combat';
 import { SpellCastDialog, type GenericCastRequest } from '@/components/battle/SpellCastDialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import type { AiAbility as AiAbilityT } from '@/lib/engine/types';
 import { unitDistance, inMeleeRange } from '@/lib/engine/geometry';
 import { Button } from '@/components/ui/button';
@@ -40,6 +41,12 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const [strikeMode, setStrikeMode] = useState<null | 'grapple' | 'shove'>(null);
   // 通用施法（E6/T2）：未结构化法术 → 弹窗填参施放
   const [gcRequest, setGcRequest] = useState<GenericCastRequest | null>(null);
+  // 预备动作（E12）：登记弹窗开关 + 表单
+  const [readyMode, setReadyMode] = useState(false);
+  const [readyAbilityId, setReadyAbilityId] = useState('');
+  const [readyTrigger, setReadyTrigger] = useState('');
+  // 预备触发：目标选择
+  const [readyTriggerTarget, setReadyTriggerTarget] = useState('');
   const [shoveEffect, setShoveEffect] = useState<'prone' | 'push5'>('prone');
 
   // 行动者：战斗中 = 当前玩家操控单位；非战斗 = 选中的友方单位
@@ -471,7 +478,8 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
                 key={kind}
                 disabled={disabled}
                 onClick={() => {
-                  if (kind === 'help') { setHelpMode(true); setPending(null); setPotionMode(false); setStrikeMode(null); }
+                  if (kind === 'ready') { setReadyMode(true); setReadyAbilityId(''); setReadyTrigger(''); }
+                  else if (kind === 'help') { setHelpMode(true); setPending(null); setPotionMode(false); setStrikeMode(null); }
                   else if (kind === 'potion') { setPotionMode(true); setPending(null); setHelpMode(false); setStrikeMode(null); }
                   else if (kind === 'grapple' || kind === 'shove') { setStrikeMode(kind); setShoveEffect('prone'); setPending(null); setHelpMode(false); setPotionMode(false); }
                   else doPlayerAction(kind);
@@ -638,6 +646,33 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
         {canActFree && battleActive && <span className="text-amber-300/80">非本回合单位：演练结算</span>}
       </div>
 
+      {/* E12 预备动作触发条：已登记且反应可用时可见 */}
+      {actor?.readyAction && actorAlive && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-400/50 bg-amber-500/10 px-3 py-2 text-xs">
+          <span className="font-semibold text-amber-200">
+            ⏳ 已预备【{actor.readyAction.abilityName}】（触发：{actor.readyAction.triggerText}）
+          </span>
+          <select
+            value={readyTriggerTarget}
+            onChange={e => setReadyTriggerTarget(e.target.value)}
+            className="rounded border border-border/60 bg-background/60 px-2 py-1"
+          >
+            <option value="">— 选择触发目标 —</option>
+            {units.filter(u => u.id !== actor.id && u.hp > 0 && !u.deathSaves?.dead && u.attitude !== 0).map(u => (
+              <option key={u.id} value={u.id}>{u.name}（{u.hp}/{u.maxHp}）</option>
+            ))}
+          </select>
+          <Button size="sm" className="h-7 bg-amber-600 hover:bg-amber-500"
+            disabled={!readyTriggerTarget || actor.actionEconomy.reaction || actor.reactionUsedTurn}
+            onClick={() => { store.triggerReadyAction(actor.id, readyTriggerTarget); setReadyTriggerTarget(''); }}>
+            ▶ 以反应触发
+          </Button>
+          {(actor.actionEconomy.reaction || actor.reactionUsedTurn) && (
+            <span className="text-[10px] text-red-300">反应已用尽</span>
+          )}
+        </div>
+      )}
+
       {/* E11 反应法术窗口：AI 攻击玩家单位时挂起，等待确认/忽略 */}
       {store.pendingReactionStep && (() => {
         const pr = store.pendingReactionStep;
@@ -658,6 +693,43 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
           </div>
         );
       })()}
+
+      {/* E12 预备动作登记弹窗 */}
+      <Dialog open={readyMode} onOpenChange={setReadyMode}>
+        <DialogContent className="max-w-sm bg-card text-card-foreground">
+          <DialogHeader>
+            <DialogTitle className="text-amber-300">⏳ 预备动作 —— {actor?.name ?? ''}</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 text-xs">
+            <label className="flex flex-col gap-1">
+              <span className="text-muted-foreground">预备的动作（触发时以反应执行并按常结算）</span>
+              <select value={readyAbilityId} onChange={e => setReadyAbilityId(e.target.value)} className="rounded border border-border/60 bg-background/60 px-2 py-1">
+                <option value="">— 选择动作 —</option>
+                {(actor?.aiAbilities ?? [])
+                  .filter(a => ['melee', 'ranged', 'save', 'save-aoe', 'heal'].includes(a.kind) && !a.genericCast)
+                  .map(a => <option key={a.id} value={a.id}>{AI_ABILITY_KIND_META[a.kind].icon} {a.name}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-muted-foreground">触发条件（记录用，如「地精从门口露头」）</span>
+              <input value={readyTrigger} onChange={e => setReadyTrigger(e.target.value)} className="rounded border border-border/60 bg-background/60 px-2 py-1" />
+            </label>
+            <p className="text-[10px] text-muted-foreground">2024：预备消耗本回合动作；触发时消耗反应并按该动作正常结算（法术位照常消耗）。失去对触发目标的可见性则预备作废（由 DM 叙事裁定）。</p>
+            <Button
+              className="w-full bg-amber-600 hover:bg-amber-500"
+              disabled={!readyAbilityId || !actor}
+              onClick={() => {
+                const ab = (actor?.aiAbilities ?? []).find(a => a.id === readyAbilityId);
+                if (!ab || !actor) return;
+                store.setReadyAction(actor.id, ab.id, ab.name, readyTrigger);
+                setReadyMode(false);
+              }}
+            >
+              登记预备（消耗动作）
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 通用施法弹窗（E6/T2） */}
       <SpellCastDialog

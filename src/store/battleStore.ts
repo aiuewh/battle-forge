@@ -490,6 +490,10 @@ export interface BattleStore {
   rerollLastRoll: (actorId: string) => boolean;
   /** E11 反应法术窗口：确认（true=施放护盾术）或忽略挂起的攻击 */
   resolvePendingReaction: (cast: boolean) => void;
+  /** E12 预备动作：登记（消耗动作） */
+  setReadyAction: (unitId: string, abilityId: string, abilityName: string, triggerText: string) => void;
+  /** E12 预备动作：以反应触发执行（走 castAbility 现成结算） */
+  triggerReadyAction: (unitId: string, targetId: string | null) => void;
   clearHistory: () => void;
   computeLastDiff: (ts: number) => void;
 }
@@ -2872,6 +2876,38 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     set({ pendingReactionStep: null });
     // 重执行放回队首的攻击步骤（此时目标 AC 已含护盾加值）
     get().takeAiStep();
+  },
+
+  setReadyAction: (unitId, abilityId, abilityName, triggerText) => {
+    const unit = get().units.find(u => u.id === unitId);
+    if (!unit) return;
+    set({
+      units: get().units.map(u => (u.id === unitId
+        ? { ...u, readyAction: { abilityId, abilityName, triggerText: triggerText || '触发条件（自定）' } }
+        : u)),
+    });
+    // 消耗动作（仅当前回合且战斗中）
+    if (get().battleActive && get().turn.currentUnitId === unitId) {
+      set({ units: get().units.map(u => (u.id === unitId ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
+    }
+    get().logEvent({ type: 'note', actorId: unitId, text: `⏳ ${unit.name} 预备【${abilityName}】—— 触发条件：${triggerText || '（自定）'}（触发时消耗反应）`, level: 'info' });
+    persist(get());
+  },
+
+  triggerReadyAction: (unitId, targetId) => {
+    const unit = get().units.find(u => u.id === unitId);
+    if (!unit?.readyAction) return;
+    if (unit.actionEconomy.reaction || unit.reactionUsedTurn) {
+      get().logEvent({ type: 'note', actorId: unitId, text: `⛔ ${unit.name} 的反应已用尽——预备动作无法触发`, level: 'bad' });
+      return;
+    }
+    const ra = unit.readyAction;
+    // 反应消耗 + 清除登记（castAbility 走现成结算；ignoreEconomy：触发不占动作）
+    set({ units: get().units.map(u => (u.id === unitId
+      ? { ...u, readyAction: undefined, actionEconomy: { ...u.actionEconomy, reaction: true }, reactionUsedTurn: true }
+      : u)) });
+    get().logEvent({ type: 'note', actorId: unitId, text: `▶ ${unit.name} 触发预备【${ra.abilityName}】（触发：${ra.triggerText}）—— 以反应执行`, level: 'info' });
+    get().castAbility(unitId, ra.abilityId, targetId, { ignoreEconomy: true });
   },
   clearHistory: () => {
     try { localStorage.removeItem('dnd-battle-history'); } catch { /* noop */ }

@@ -912,6 +912,13 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('反应法术: 护盾术 reaction 标记+1环', shield?.reaction === true && shield?.spellLevel === 1);
 }
 
+// E12 预备动作：readyAction 字段契约（登记/触发为 store 行为，此处验证字段透传路径存在）
+{
+  const rUnit = mkUnit({ id: '剑士', name: '剑士', attitude: 0, ac: 16, hp: 30, maxHp: 30 });
+  rUnit.readyAction = { abilityId: 'w0-长剑', abilityName: '长剑', triggerText: '地精露头' };
+  check('预备: readyAction 字段可挂载', rUnit.readyAction?.abilityName === '长剑' && rUnit.readyAction?.triggerText === '地精露头');
+}
+
 // E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加
 {
   const mk = (slots: Record<number, { current: number; max: number }>) => ({ name: '法系', spellSlots: slots });

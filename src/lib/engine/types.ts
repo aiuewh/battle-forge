@@ -235,6 +235,8 @@ export interface BattleUnit {
   inspiration?: boolean;
   /** 临时 AC 加值（反应法术如护盾术 +5）：受术者下回合开始时清除（E11） */
   tempAcBonus?: number;
+  /** 2024 预备动作登记（E12）：动作 + 触发条件；触发时以反应执行并清除 */
+  readyAction?: { abilityId: string; abilityName: string; triggerText: string };
 
   // ---- 引擎扩展字段（协议外，UI 可编辑） ----
   isPlayer: boolean;
