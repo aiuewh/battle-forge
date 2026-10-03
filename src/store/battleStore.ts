@@ -727,7 +727,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       ),
     });
     if (recordEvent && dist > 0) {
-      get().logEvent({ type: 'move', actorId: id, text: `${unit.name} 移动 ${dist} 尺 → (${Math.round(pos.x / 5)},${Math.round(pos.y / 5)})`, level: 'info' });
+      // E13：非步行移动模式在战报标注
+      const modeTag = unit.moveMode === 'fly' ? '（飞行）' : unit.moveMode === 'climb' ? '（攀爬）' : unit.moveMode === 'swim' ? '（游泳）' : '';
+      get().logEvent({ type: 'move', actorId: id, text: `${unit.name} 移动 ${dist} 尺${modeTag} → (${Math.round(pos.x / 5)},${Math.round(pos.y / 5)})`, level: 'info' });
     }
     // 借机攻击：主动离开敌人触及范围（战斗中 & 非脱离状态）
     // 规则修正：所有具备反应的威胁者各自借机（每人消耗自己的反应），不再只取第一个
@@ -740,6 +742,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         }
         return true;
       });
+      // E13 注记：飞行移动不豁免借机（简化口径，规则口径见 RULES_2024_NOTES）
+      if (threats.length > 0 && unit.moveMode === 'fly') {
+        get().logEvent({ type: 'note', actorId: id, text: '🕊️ 飞行移动仍会触发借机攻击（简化口径）', level: 'info' });
+      }
       for (const t of threats) {
         set({ units: get().units.map(u => (u.id === t.unit.id
           ? {
@@ -1570,7 +1576,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     const u = get().units.find(x => x.id === id);
     const target = get().units.find(x => x.id === targetId);
     if (!u || !target) return false;
-    const blocked = new Set([...buildBlockedCells(get().obstacles).keys()]);
+    // E13：飞行单位把完全阻挡地形视为可穿越
+    const blocked = u.moveMode === 'fly' ? new Set<string>() : new Set([...buildBlockedCells(get().obstacles).keys()]);
     const occ = new Set(get().units.filter(x => x.id !== id && x.hp > 0).map(x => `${x.pos.x},${x.pos.y}`));
     let best: { x: number; y: number } | null = null;
     let bestDist = Infinity;

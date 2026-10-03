@@ -28,7 +28,7 @@ import {
 import { unitAbilities } from '../src/lib/engine/ai';
 import {
   abilityMod, proficiencyBonus, getSaveBonus, attackRollModeAgainst, coverBonus,
-  concentrationDc, fallDamage, effectiveSpeed, resolveCastSlot,
+  concentrationDc, fallDamage, effectiveSpeed, resolveCastSlot, unitSpeedFor,
 } from '../src/lib/engine/rules';
 import { aggregateEffects, conditionName, CONDITIONS } from '../src/lib/engine/conditions';
 import { applyUpcast } from '../src/lib/engine/dice';
@@ -922,6 +922,24 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
 // E14 非致命：引擎状态表含 unconscious（昏迷·稳定），供击倒路径挂接
 {
   check('非致命: unconscious 状态键存在', CONDITIONS['unconscious']?.key === 'unconscious' && /昏迷/.test(CONDITIONS['unconscious']?.name ?? ''));
+}
+
+// E13 多速度：全量速度装配 + 按模式取速 + 旧档回退
+{
+  const vTree: Record<string, unknown> = {
+    '角色列表': {
+      '翼人': { '姓名': '翼人', '等级': 3, '速度': { '步行': 30, '飞行': 60, '攀爬': 15, '游泳': 15 } },
+      '矮人': { '姓名': '矮人', '等级': 3, '速度': 25 },
+    },
+  };
+  const sheets = charSheetsFromTree(vTree);
+  const wing = unitFromCharSheet(sheets[0], { isPlayer: true, pos: { x: 0, y: 0 } });
+  const dwarf = unitFromCharSheet(sheets[1], { isPlayer: true, pos: { x: 0, y: 0 } });
+  check('多速度: 装配 speeds 四项', wing.speeds?.fly === 60 && wing.speeds?.climb === 15 && wing.speeds?.walk === 30);
+  check('多速度: unitSpeedFor fly 模式取 60', unitSpeedFor(wing, 'fly') === 60 && unitSpeedFor(wing) === 30);
+  check('多速度: 旧档无 speeds 回退主速度', dwarf.speeds === undefined && unitSpeedFor(dwarf, 'fly') === dwarf.speed);
+  const flying = { ...wing, moveMode: 'fly' as const, statuses: [] as string[] };
+  check('多速度: effectiveSpeed 按 moveMode 取飞行速度', effectiveSpeed(flying) === 60 && effectiveSpeed({ ...flying, moveMode: 'walk' }) === 30);
 }
 
 // E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加

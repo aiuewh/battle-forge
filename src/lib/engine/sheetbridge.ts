@@ -8,7 +8,7 @@
  *   /状态.{名}.{存在}、/熟练配置.技能.隐匿
  */
 import type {
-  Abilities, AbilityKey, AiAbility, BattleUnit, DamageType, SpellSlots,
+  Abilities, AbilityKey, AiAbility, BattleUnit, DamageType, SpellSlots, UnitSpeeds,
 } from './types';
 import { abilityMod, proficiencyBonus, formatMod } from './rules';
 import { DAMAGE_TYPE_CN, DAMAGE_TYPE_TO_CN, stripInstanceSuffix, parseAttack } from './statblocks';
@@ -218,6 +218,8 @@ export interface CharSheet {
   ac: number;
   initMod: number;
   speed: number;
+  /** 全量速度（E13）：来自 速度:{步行,飞行,攀爬,游泳}；纯数字旧形态为 undefined */
+  speeds?: UnitSpeeds;
   abilities: Abilities;
   spellSlots?: SpellSlots;
   weapons: WeaponDef[];
@@ -521,8 +523,17 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
     const acRaw = c['护甲等级'];
     const ac = getNum(acRaw, '总值', '值') ?? (typeof acRaw === 'number' ? acRaw : 13);
     const initMod = getNum(c['先攻'], '加值', '总值') ?? abilityMod(abilities.dex);
-    // 速度：卡内为对象 {步行,飞行,攀爬,游泳}，取步行；兼容纯数字旧形态
-    const speed = getNum(c['速度'], '步行') ?? getNum(c, '速度') ?? 30;
+    // 速度：卡内为对象 {步行,飞行,攀爬,游泳}，主字段取步行；E13 全量装配 speeds（缺省项回退步行）；兼容纯数字旧形态
+    const speedRaw = c['速度'];
+    const speed = getNum(speedRaw, '步行') ?? getNum(c, '速度') ?? 30;
+    const speeds: UnitSpeeds | undefined = speedRaw && typeof speedRaw === 'object' && !Array.isArray(speedRaw)
+      ? {
+          walk: speed,
+          fly: getNum(speedRaw, '飞行'),
+          climb: getNum(speedRaw, '攀爬'),
+          swim: getNum(speedRaw, '游泳'),
+        }
+      : undefined;
 
     // 法术位
     const casting = c['施法'];
@@ -714,7 +725,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       level,
       extraAttacks,
       hp, maxHp, tempHp,
-      ac, initMod, speed,
+      ac, initMod, speed, speeds,
       abilities,
       spellSlots,
       weapons,
@@ -812,6 +823,7 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
     tempHp: sheet.tempHp,
     ac: sheet.ac,
     speed: sheet.speed,
+    speeds: sheet.speeds ? { ...sheet.speeds } : undefined,
     pos: opts.pos ?? { x: 0, y: 0 },
     attitude: 0,
     statuses: [...sheet.statuses],

@@ -225,7 +225,9 @@ interface MovePlan { path: Cell[]; cost: number }
 /** 近战：找能贴到目标身边的可达格（多格目标检查所有邻格） */
 function planMeleeApproach(ctx: AiContext, unit: BattleUnit, target: BattleUnit, movementCells: number): MovePlan | null {
   const reachMax = Math.max(1, Math.floor((unitAbilities(unit).find(a => a.kind === 'melee')?.range ?? 5) / CELL));
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal);
+  // E13：飞行单位忽略完全阻挡地形（直线移动）
+  const fly = unit.moveMode === 'fly';
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
   const targetCells = unitOccupiedCells(target);
   const myCell = posToCell(unit.pos);
   let best: { cell: Cell; cost: number } | null = null;
@@ -238,14 +240,15 @@ function planMeleeApproach(ctx: AiContext, unit: BattleUnit, target: BattleUnit,
     if (best === null || cost < best.cost) best = { cell, cost };
   }
   if (!best) return null;
-  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal);
+  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
   if (!r.reachable || r.path.length < 2) return { path: [myCell], cost: 0 };
   return { path: r.path.slice(1), cost: r.costCells };
 }
 
 /** 无法贴脸时：向目标方向推进到最近可达格 */
 function planApproachOnly(ctx: AiContext, unit: BattleUnit, target: BattleUnit, movementCells: number): MovePlan | null {
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal);
+  const fly = unit.moveMode === 'fly';
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
   const myCell = posToCell(unit.pos);
   const targetCell = posToCell(target.pos);
   const curDist = gridDistanceCells(myCell, targetCell, ctx.diagonal);
@@ -261,7 +264,7 @@ function planApproachOnly(ctx: AiContext, unit: BattleUnit, target: BattleUnit, 
     }
   }
   if (!best) return null;
-  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal);
+  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
   if (!r.reachable || r.path.length < 2) return null;
   return { path: r.path.slice(1), cost: r.costCells };
 }
@@ -269,7 +272,8 @@ function planApproachOnly(ctx: AiContext, unit: BattleUnit, target: BattleUnit, 
 /** 远程/游击：找「有视线 + 距敌最远 + 有掩体」的可达格 */
 function planRangedPosition(ctx: AiContext, unit: BattleUnit, target: BattleUnit, movementCells: number, abilityRange: number): MovePlan | null {
   const blocked = buildBlockedCells(ctx.obstacles);
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal);
+  const fly = unit.moveMode === 'fly';
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
   const myCell = posToCell(unit.pos);
   const enemies = livingEnemies(unit, ctx.units);
   const targetCell = posToCell(target.pos);
@@ -304,14 +308,15 @@ function planRangedPosition(ctx: AiContext, unit: BattleUnit, target: BattleUnit
   }
   if (!bestCell) return null;
   if (cellKey(bestCell.cell) === cellKey(myCell)) return null;      // 原地已最优
-  const r = findPath(myCell, bestCell.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal);
+  const r = findPath(myCell, bestCell.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
   if (!r.reachable || r.path.length < 2) return null;
   return { path: r.path.slice(1), cost: r.costCells };
 }
 
 /** 脱离/溃逃：向离所有敌人最远的可达格移动 */
 function planRetreat(ctx: AiContext, unit: BattleUnit, movementCells: number): MovePlan | null {
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal);
+  const fly = unit.moveMode === 'fly';
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
   const myCell = posToCell(unit.pos);
   const enemies = livingEnemies(unit, ctx.units);
   if (enemies.length === 0) return null;
@@ -327,7 +332,7 @@ function planRetreat(ctx: AiContext, unit: BattleUnit, movementCells: number): M
     }
   }
   if (!best || cellKey(best.cell) === cellKey(myCell)) return null;
-  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal);
+  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
   if (!r.reachable || r.path.length < 2) return null;
   return { path: r.path.slice(1), cost: r.costCells };
 }

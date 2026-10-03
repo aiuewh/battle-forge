@@ -114,6 +114,12 @@ export interface PathResult {
   reachable: boolean;
 }
 
+/** 移动模式选项（E13）：飞行单位忽略 'full' 完全阻挡地形——直线移动不绕障；
+ *  单位占位（敌方可穿不可停）校验保持不变 */
+export interface MoveOptions {
+  ignoreFullObstacles?: boolean;
+}
+
 /** A* 寻路：可穿己方、不可穿敌方（敌人格需绕行），阻挡格不可通行 */
 export function findPath(
   from: Cell,
@@ -122,9 +128,12 @@ export function findPath(
   obstacles: MapObstacle[],
   movingUnit: BattleUnit,
   diagonal: 'equal' | 'alt' = 'equal',
+  opts: MoveOptions = {},
 ): PathResult {
   if (cellKey(from) === cellKey(to)) return { path: [from], costCells: 0, reachable: true };
-  const blocked = buildBlockedCells(obstacles);
+  const blocked = opts.ignoreFullObstacles
+    ? new Map<string, MapObstacle['kind']>()
+    : buildBlockedCells(obstacles);
   const occupancy = buildOccupancy(units, movingUnit.id);
   // 目标格被其他单位占据 → 不可达（D&D 不允许同格）
   if (occupancy.has(cellKey(to))) return { path: [], costCells: Infinity, reachable: false };
@@ -227,13 +236,17 @@ export function reachableCells(
   obstacles: MapObstacle[],
   movementFeet: number,
   diagonal: 'equal' | 'alt' = 'equal',
+  opts: MoveOptions = {},
 ): Map<string, number> {
   const start = posToCell(unit.pos);
   // 反 DoS：洪水填充上限 500 格（2500尺；最快单位 80尺=16格，余量 30 倍）
   const maxCells = Math.min(Math.floor(movementFeet / CELL), 500);
   const result = new Map<string, number>([[cellKey(start), 0]]);
   if (maxCells <= 0) return result;
-  const blocked = buildBlockedCells(obstacles);
+  // E13：飞行（或显式传入）忽略 'full' 障碍——直线移动，不绕障
+  const blocked = opts.ignoreFullObstacles
+    ? new Map<string, MapObstacle['kind']>()
+    : buildBlockedCells(obstacles);
   const occupancy = buildOccupancy(units, unit.id);
   const span = SIZE_META[unit.size]?.cells ?? 1;
   const canPass = (c: Cell): boolean => {

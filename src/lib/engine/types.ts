@@ -209,6 +209,17 @@ export interface ActionEconomy {
   movementUsed: number;
 }
 
+/** 移动模式（E13）：按单位拥有的速度切换；缺省步行 */
+export type MoveMode = 'walk' | 'fly' | 'climb' | 'swim';
+
+/** 全量速度（E13）：各模式速度（尺）；缺省项回退 speed 主字段（步行） */
+export interface UnitSpeeds {
+  walk?: number;
+  fly?: number;
+  climb?: number;
+  swim?: number;
+}
+
 /** 战斗单位 */
 export interface BattleUnit {
   /** 协议 UnitId（唯一标识） */
@@ -225,6 +236,10 @@ export interface BattleUnit {
   tempHp: number;
   ac: number;
   speed: number;
+  /** 全量速度（E13）：飞行/攀爬/游泳等；缺省回退 speed（旧档兼容，无此字段行为不变） */
+  speeds?: UnitSpeeds;
+  /** 当前移动模式（E13）：缺省 walk；飞行移动忽略 full 障碍（直线移动） */
+  moveMode?: MoveMode;
   pos: { x: number; y: number };
   attitude: Attitude;
   statuses: string[];

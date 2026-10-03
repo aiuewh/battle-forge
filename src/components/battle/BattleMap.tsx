@@ -104,7 +104,9 @@ export function BattleMap({ compact = false }: { compact?: boolean }) {
     if (!selectedUnit || tool !== 'select') return null;
     const mv = remainingMovement(selectedUnit);
     if (mv <= 0) return null;
-    return reachableCells(selectedUnit, units, obstacles, mv, mapConfig.diagonal);
+    // E13：飞行模式忽略完全阻挡地形（直线移动）
+    return reachableCells(selectedUnit, units, obstacles, mv, mapConfig.diagonal,
+      { ignoreFullObstacles: selectedUnit.moveMode === 'fly' });
   }, [selectedUnit, units, obstacles, mapConfig.diagonal, tool]);
 
   // ---- AoE 命中预览 ----

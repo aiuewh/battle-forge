@@ -8,7 +8,7 @@
  */
 import type {
   Abilities, AbilityKey, AIProfile, AiAbility, AiAbilityKind, AoeShapeKind,
-  BattleUnit, DamageType, LairActionDef, LegendaryActionDef, ReactionDef, Size,
+  BattleUnit, DamageType, LairActionDef, LegendaryActionDef, ReactionDef, Size, UnitSpeeds,
 } from './types';
 import { AI_PROFILE_META, SIZE_META } from './types';
 import { resolveStatus, normalizeWidth } from './protocol';
@@ -94,6 +94,8 @@ export interface StatblockDef {
   ac: number;
   hp: number;
   speed: number;
+  /** 全量速度（E13）：速度 字段为嵌套对象 {步行,飞行,攀爬,游泳} 时装配；主 speed 恒取步行 */
+  speeds?: UnitSpeeds;
   abilities: Abilities;
   attacks: AiAbility[];
   resistances: DamageType[];
@@ -147,6 +149,7 @@ export function statblockFromUnit(u: BattleUnit): StatblockDef {
     ac: u.ac,
     hp: u.maxHp,
     speed: u.speed,
+    speeds: u.speeds ? { ...u.speeds } : undefined,
     abilities: u.abilities ?? { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
     attacks: (u.aiAbilities ?? []).map(a => ({ ...a })),
     resistances: [...u.resistances],
@@ -172,6 +175,7 @@ export function unitFromStatblock(def: StatblockDef, idx = 0, hostile = true, po
     tempHp: 0,
     ac: def.ac,
     speed: def.speed,
+    speeds: def.speeds ? { ...def.speeds } : undefined,
     pos,
     attitude: hostile ? 2 : 0,
     statuses: [],
@@ -212,6 +216,8 @@ export function applyStatblockToUnit(unit: BattleUnit, def: StatblockDef): Battl
     immunities: unit.immunities.length > 0 ? unit.immunities : [...def.immunities],
     vulnerabilities: unit.vulnerabilities.length > 0 ? unit.vulnerabilities : [...def.vulnerabilities],
     speed: unit.speed === 30 ? def.speed : unit.speed,
+    // E13：已有单位保留其 speeds；瘦单位（AI 解析/新建）从敌卡补全
+    speeds: unit.speeds ?? (def.speeds ? { ...def.speeds } : undefined),
     aiProfile: unit.aiProfile ?? def.aiProfile,
     aiAbilities: def.attacks.map(a => ({ ...a })),
     reactions: def.reactions ? def.reactions.map(r => ({ ...r })) : unit.reactions,
@@ -307,6 +313,35 @@ function toNum(v: unknown, fallback: number): number {
     if (m) return parseFloat(m[0]);
   }
   return fallback;
+}
+
+/** 速度字段解析（E13）：纯数字/字符串（"30尺"）→ 主速度；嵌套对象 {步行,飞行,攀爬,游泳}
+ *  （中英键、值可带"尺"）→ 主速度取步行（缺省 30），有飞行/攀爬/游泳任一值时装配 speeds */
+function parseSpeedField(raw: unknown): { speed: number; speeds?: UnitSpeeds } {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>;
+    const pick = (...keys: string[]): number | undefined => {
+      for (const k of keys) {
+        const v = o[k];
+        if (typeof v === 'number' && Number.isFinite(v)) return v;
+        if (typeof v === 'string') {
+          const m = v.match(/-?\d+(?:\.\d+)?/);
+          if (m) return parseFloat(m[0]);
+        }
+      }
+      return undefined;
+    };
+    const walk = pick('walk', '步行', 'walking', '地面') ?? 30;
+    const fly = pick('fly', '飞行', 'flying');
+    const climb = pick('climb', '攀爬', 'climbing');
+    const swim = pick('swim', '游泳', 'swimming');
+    const speeds: UnitSpeeds | undefined =
+      fly !== undefined || climb !== undefined || swim !== undefined
+        ? { walk, fly, climb, swim }
+        : undefined;
+    return { speed: walk, speeds };
+  }
+  return { speed: toNum(raw, 30) };
 }
 
 function toDamageType(v: unknown): DamageType | undefined {
@@ -666,6 +701,9 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
     if (parsedA.length) lairActions = parsedA;
   }
 
+  // E13 速度：主字段取步行；嵌套对象时全量装配 speeds
+  const speedParsed = parseSpeedField(o.speed ?? o['速度'] ?? 30);
+
   return {
     id: `sb-${name}`,
     name,
@@ -673,7 +711,8 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
     cr,
     ac: toNum(o.ac ?? o.AC ?? o['护甲等级'] ?? o['护甲'] ?? 13, 13),
     hp,
-    speed: toNum(o.speed ?? o['速度'] ?? 30, 30),
+    speed: speedParsed.speed,
+    speeds: speedParsed.speeds,
     abilities: parseAbilities(o.abilities ?? o['属性'] ?? o['六维']),
     attacks,
     resistances: toDamageList(o.resistances ?? o['抗性']),
@@ -731,7 +770,15 @@ export function generateEncounterBlock(defs: StatblockDef[]): string {
     cr: d.cr,
     ac: d.ac,
     hp: d.hp,
-    speed: d.speed,
+    // E13：嵌套速度导出（有飞行/攀爬/游泳时），再解析可还原 speeds
+    speed: d.speeds
+      ? {
+          步行: d.speeds.walk ?? d.speed,
+          ...(d.speeds.fly !== undefined ? { 飞行: d.speeds.fly } : {}),
+          ...(d.speeds.climb !== undefined ? { 攀爬: d.speeds.climb } : {}),
+          ...(d.speeds.swim !== undefined ? { 游泳: d.speeds.swim } : {}),
+        }
+      : d.speed,
     abilities: { 力量: d.abilities.str, 敏捷: d.abilities.dex, 体质: d.abilities.con, 智力: d.abilities.int, 感知: d.abilities.wis, 魅力: d.abilities.cha },
     attacks: d.attacks.map(a => {
       const out: Record<string, unknown> = { name: a.name, kind: a.kind, range: a.range };

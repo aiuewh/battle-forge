@@ -1,7 +1,7 @@
 /**
  * D&D 2024 规则计算：属性调整值、熟练加值、被动数值
  */
-import type { Abilities, AbilityKey, BattleUnit, RulesConfig } from './types';
+import type { Abilities, AbilityKey, BattleUnit, MoveMode, RulesConfig } from './types';
 import { DEFAULT_RULES, normalizeRules } from './types';
 import { aggregateEffects, exhaustionSpeedLoss } from './conditions';
 
@@ -40,11 +40,20 @@ export function getSaveBonus(unit: BattleUnit, key: AbilityKey): number {
   return getAbilityMod(unit, key);
 }
 
-/** 单位有效速度（考虑条件；slow_time=时光缓速锁速度为0；2024 力竭 -5 尺/级） */
-export function effectiveSpeed(unit: BattleUnit): number {
+/** 取单位某移动模式的裸速度（E13）：mode 缺省按 unit.moveMode（再回退 walk）；
+ *  fly/climb/swim 未装配时回退 speed 主字段——旧档（无 speeds）行为完全不变 */
+export function unitSpeedFor(unit: BattleUnit, mode: MoveMode = unit.moveMode ?? 'walk'): number {
+  if (mode === 'walk') return unit.speed;
+  return unit.speeds?.[mode] ?? unit.speed;
+}
+
+/** 单位有效速度（考虑条件；slow_time=时光缓速锁速度为0；2024 力竭 -5 尺/级）
+ *  E13：mode 缺省按 unit.moveMode 取对应速度（缺省回退 walk），既有修正（力竭/擒抱等）全部保留 */
+export function effectiveSpeed(unit: BattleUnit, mode?: MoveMode): number {
   if (unit.statuses.includes('slow_time')) return 0;
   const agg = aggregateEffects(unit.statuses);
-  return Math.max(0, Math.floor(unit.speed * agg.speedMultiplier) - exhaustionSpeedLoss(unit.statuses));
+  const base = unitSpeedFor(unit, mode ?? unit.moveMode ?? 'walk');
+  return Math.max(0, Math.floor(base * agg.speedMultiplier) - exhaustionSpeedLoss(unit.statuses));
 }
 
 /** 本回合剩余移动力 */
@@ -168,6 +177,7 @@ export const RULES_2024_NOTES = [
   '重击(2024)：攻击的全部伤害骰翻倍（含神能/偷袭/猎人印记等附加伤害骰），修正值不翻倍',
   '力竭(2024)：每级 -2 全部 d20 检定、速度 -5 尺（叠加）；10 级死亡',
   '突袭(2024)：被突袭单位先攻检定劣势',
+  '飞行移动（E13）：地图上忽略完全阻挡地形直线移动，但借机攻击照常触发（简化口径）',
 ];
 
 let activeRules: RulesConfig = { ...DEFAULT_RULES };
