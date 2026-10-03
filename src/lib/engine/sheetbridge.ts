@@ -750,7 +750,8 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
       range: w.range,
       multiAttack: multiAttacks,
       mastery: w.mastery,
-      masteryMod: abMod + w.magicBonus,
+      // 2024：精通词条的豁免 DC 与 Graze 擦伤只用属性调整值，不含武器魔法加值
+      masteryMod: abMod,
       note: [
         w.versatile ? `两用：${w.versatile}` : '',
         w.equipped ? '已装备' : '',

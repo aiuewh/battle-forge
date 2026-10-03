@@ -797,6 +797,25 @@ check('角色单位: 武器命中=属性+熟练+魔法', longsword?.attackBonus 
 check('角色单位: 武器伤害公式', longsword?.dice === '1d8+2', `实际 ${longsword?.dice}`);
 check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name === '治疗真言' && a.spellLevel === 1) === true);
 
+// E4：精通词条的 masteryMod 只含属性调整值（2024），不含武器魔法加值
+{
+  const mTree: Record<string, unknown> = {
+    '角色列表': {
+      '剑士': {
+        '姓名': '剑士', '等级': 3,
+        '属性': { '力量': 12, '敏捷': 12 },
+        '熟练加值': 2,
+        '物品': { '武器': { '+1摔绊短剑': { '伤害公式': '1d6', '伤害类型': '穿刺', '映射属性': '敏捷', '魔法加值': 1, '熟练': true, '已装备': true, '专精特质': '摔绊(Topple)', '已掌握': true } } },
+      },
+    },
+  };
+  const mUnit = unitFromCharSheet(charSheetsFromTree(mTree)[0], { isPlayer: true, pos: { x: 0, y: 0 } });
+  const mw = mUnit.aiAbilities?.find(a => a.name === '+1摔绊短剑');
+  // 敏捷12→+1；魔法+1 只进命中/伤害，不进 masteryMod
+  check('精通: masteryMod=纯属性调整值(不含魔法+1)', mw?.mastery === 'Topple' && mw?.masteryMod === 1, `实际 mastery=${mw?.mastery} masteryMod=${mw?.masteryMod}`);
+  check('精通: 命中仍含魔法加值', mw?.attackBonus === 4, `实际 ${mw?.attackBonus}`);
+}
+
 // E1 玩家额外攻击：职业字段查 2024 职业表 + 额外攻击 变量字段优先
 {
   const mkClassTree = (name: string, classStr: string | undefined, extraAttacks?: number): Record<string, unknown> => ({
