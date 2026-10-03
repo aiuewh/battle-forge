@@ -343,23 +343,23 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['治疗真言', 'healing word'], level: 1,
-    build: (mod) => ({ name: '治疗真言', kind: 'heal', dice: `2d4${formatMod(mod)}`, range: 60, spellLevel: 1, bonusAction: true }),
+    build: (mod) => ({ name: '治疗真言', kind: 'heal', dice: `2d4${formatMod(mod)}`, range: 60, spellLevel: 1, bonusAction: true, upcast: { perLevel: '1d8', kind: 'heal' } }),
   },
   {
     keys: ['治疗术', 'cure wounds'], level: 1,
-    build: (mod) => ({ name: '治疗术', kind: 'heal', dice: `2d8${formatMod(mod)}`, range: 5, spellLevel: 1 }),
+    build: (mod) => ({ name: '治疗术', kind: 'heal', dice: `2d8${formatMod(mod)}`, range: 5, spellLevel: 1, upcast: { perLevel: '1d8', kind: 'heal' } }),
   },
   {
     keys: ['魔法飞弹', 'magic missile'], level: 1,
-    build: () => ({ name: '魔法飞弹', kind: 'save', dice: '3d4+3', damageType: 'force', range: 120, spellLevel: 1, note: '自动命中，无需攻击检定' }),
+    build: () => ({ name: '魔法飞弹', kind: 'save', dice: '3d4+3', damageType: 'force', range: 120, spellLevel: 1, upcast: { perLevel: '1d4+1', kind: 'damage' }, note: '自动命中，无需攻击检定' }),
   },
   {
     keys: ['雷鸣波', 'thunderwave'], level: 1,
-    build: (_mod, dc) => ({ name: '雷鸣波', kind: 'save-aoe', dice: '2d8', damageType: 'thunder', range: 15, saveAbility: 'con', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'cube', size: 15 }, spellLevel: 1, note: '豁免失败被推开10尺' }),
+    build: (_mod, dc) => ({ name: '雷鸣波', kind: 'save-aoe', dice: '2d8', damageType: 'thunder', range: 15, saveAbility: 'con', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'cube', size: 15 }, spellLevel: 1, upcast: { perLevel: '1d8', kind: 'damage' }, note: '豁免失败被推开10尺' }),
   },
   {
     keys: ['燃烧之手', 'burning hands'], level: 1,
-    build: (_mod, dc) => ({ name: '燃烧之手', kind: 'save-aoe', dice: '3d6', damageType: 'fire', range: 15, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'cone', size: 15 }, spellLevel: 1 }),
+    build: (_mod, dc) => ({ name: '燃烧之手', kind: 'save-aoe', dice: '3d6', damageType: 'fire', range: 15, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'cone', size: 15 }, spellLevel: 1, upcast: { perLevel: '1d6', kind: 'damage' } }),
   },
   {
     keys: ['妖火', 'faerie fire'], level: 1,
@@ -387,15 +387,15 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['马友夫箭', 'melf'], level: 2,
-    build: (mod) => ({ name: '马友夫强酸箭', kind: 'ranged', attackBonus: mod, dice: '4d4', damageType: 'acid', range: 90, spellLevel: 2 }),
+    build: (mod) => ({ name: '马友夫强酸箭', kind: 'ranged', attackBonus: mod, dice: '4d4', damageType: 'acid', range: 90, spellLevel: 2, upcast: { perLevel: '1d4', kind: 'damage' } }),
   },
   {
     keys: ['闪电束', 'lightning bolt'], level: 3,
-    build: (_mod, dc) => ({ name: '闪电束', kind: 'save-aoe', dice: '8d6', damageType: 'lightning', range: 100, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'line', size: 100 }, spellLevel: 3 }),
+    build: (_mod, dc) => ({ name: '闪电束', kind: 'save-aoe', dice: '8d6', damageType: 'lightning', range: 100, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'line', size: 100 }, spellLevel: 3, upcast: { perLevel: '1d8', kind: 'damage' } }),
   },
   {
     keys: ['火球术', 'fireball'], level: 3,
-    build: (_mod, dc) => ({ name: '火球术', kind: 'save-aoe', dice: '8d6', damageType: 'fire', range: 150, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'sphere', size: 20 }, spellLevel: 3 }),
+    build: (_mod, dc) => ({ name: '火球术', kind: 'save-aoe', dice: '8d6', damageType: 'fire', range: 150, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'sphere', size: 20 }, spellLevel: 3, upcast: { perLevel: '1d6', kind: 'damage' } }),
   },
   {
     keys: ['飞行术', 'fly'], level: 3,
@@ -403,7 +403,7 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['冰风暴', 'ice storm'], level: 4,
-    build: (_mod, dc) => ({ name: '冰风暴', kind: 'save-aoe', dice: '2d8+4d6', damageType: 'bludgeoning', range: 300, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'sphere', size: 40 }, spellLevel: 4, note: '含 4d6 冷冻伤害' }),
+    build: (_mod, dc) => ({ name: '冰风暴', kind: 'save-aoe', dice: '2d8+4d6', damageType: 'bludgeoning', range: 300, saveAbility: 'dex', saveDc: dc, halfOnSuccess: true, aoe: { kind: 'sphere', size: 40 }, spellLevel: 4, upcast: { perLevel: '1d8', kind: 'damage' }, note: '含 4d6 冷冻伤害' }),
   },
   {
     keys: ['石肤术', 'stoneskin'], level: 4,
@@ -415,7 +415,7 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['群体治疗真言', 'mass healing word'], level: 3,
-    build: (mod) => ({ name: '群体治疗真言', kind: 'heal', dice: `2d4${formatMod(mod)}`, range: 60, spellLevel: 3, bonusAction: true }),
+    build: (mod) => ({ name: '群体治疗真言', kind: 'heal', dice: `2d4${formatMod(mod)}`, range: 60, spellLevel: 3, bonusAction: true, upcast: { perLevel: '1d8', kind: 'heal' } }),
   },
 ];
 

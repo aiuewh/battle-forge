@@ -27,9 +27,10 @@ import {
 } from '../src/lib/engine/combat';
 import {
   abilityMod, proficiencyBonus, getSaveBonus, attackRollModeAgainst, coverBonus,
-  concentrationDc, fallDamage, effectiveSpeed,
+  concentrationDc, fallDamage, effectiveSpeed, resolveCastSlot,
 } from '../src/lib/engine/rules';
 import { aggregateEffects, conditionName, CONDITIONS } from '../src/lib/engine/conditions';
+import { applyUpcast } from '../src/lib/engine/dice';
 import { snapshotFromUnits, diffSnapshots } from '../src/lib/engine/snapshot';
 import type { BattleUnit, MapObstacle, RulesConfig } from '../src/lib/engine/types';
 import { DEFAULT_RULES, SIZE_META } from '../src/lib/engine/types';
@@ -834,6 +835,31 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('未准备: 火球术 spellPrepared=false', ab('火球术')?.spellPrepared === false);
   check('未准备: 已准备法术 spellPrepared=true', ab('治疗真言')?.spellPrepared === true);
   check('未准备: 无准备中字段视为未准备(false)', ab('燃烧之手')?.spellPrepared === false);
+}
+
+// E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加
+{
+  const mk = (slots: Record<number, { current: number; max: number }>) => ({ name: '法系', spellSlots: slots });
+  const r1 = resolveCastSlot(mk({ 2: { current: 0, max: 3 }, 3: { current: 2, max: 3 } }), 2);
+  check('升环: 2环耗尽→以3环代打(upcast)', r1.ok === true && r1.level === 3 && r1.upcast === true);
+  const r2 = resolveCastSlot(mk({ 1: { current: 1, max: 4 } }), 1);
+  check('升环: 本环有余→本环不升环', r2.ok === true && r2.level === 1 && r2.upcast === false);
+  const r3 = resolveCastSlot(mk({ 1: { current: 0, max: 4 } }), 1);
+  check('升环: 全部不足→ok:false+原因', r3.ok === false && (r3.reason ?? '').includes('环法术位均不足'));
+  const r4 = resolveCastSlot(mk({}), 0);
+  check('升环: 戏法不耗位直接过', r4.ok === true && r4.level === 0);
+  const r5 = resolveCastSlot(mk({ 3: { current: 1, max: 1 } }), 2, 3);
+  check('升环: 显式请求高环按请求环', r5.ok === true && r5.level === 3 && r5.upcast === true);
+  const r6 = resolveCastSlot({ name: '天生施法者', spellSlots: undefined }, 3);
+  check('升环: 无法术位模型→ok:false(不炸)', r6.ok === false && r6.level === 3);
+  const u1 = applyUpcast('8d6', 3, 5, { perLevel: '1d6', kind: 'damage' });
+  check('升环: 火球术8d6 五环施放→8d6+2d6', u1 === '8d6+2d6', `实际 ${u1}`);
+  const u2 = applyUpcast('2d4', 1, 4, { perLevel: '1d4', kind: 'heal' });
+  check('升环: 治疗真言2d4 四环施放→2d4+3d4', u2 === '2d4+3d4', `实际 ${u2}`);
+  const u3 = applyUpcast('2d4', 1, 1, { perLevel: '1d4', kind: 'heal' });
+  check('升环: 未升环原样返回', u3 === '2d4');
+  const u4 = applyUpcast('2d8', 1, 3, undefined);
+  check('升环: 无upcast字段原样返回', u4 === '2d8');
 }
 
 // E1 玩家额外攻击：职业字段查 2024 职业表 + 额外攻击 变量字段优先

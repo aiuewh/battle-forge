@@ -182,6 +182,31 @@ export function formatDice(d: DiceResult): string {
   return s;
 }
 
+// ---------- 升环骰式代入（D-2） ----------
+
+/**
+ * 升环拼骰：每高 1 环在原公式后追加一段骰（rollFormula 已支持多段公式）。
+ * - '8d6' + 基础3环/实际5环 + 每环 1d6 → '8d6+2d6'
+ * - 治疗同构：'2d4+3' + 1 环 → '2d4+3+1d8'
+ * - perLevel 允许带常数（魔法飞弹 1d4+1 → 每环 '1d4+1'，两环追加 '+2d4+2'）
+ * upcast 缺失 / 未升环 / perLevel 非法时原样返回。
+ */
+export function applyUpcast(
+  dice: string,
+  baseLevel: number,
+  castLevel: number,
+  up?: { perLevel: string; kind: 'damage' | 'heal' },
+): string {
+  if (!up) return dice;
+  const steps = Math.floor(castLevel) - Math.floor(baseLevel);
+  if (!Number.isFinite(steps) || steps <= 0) return dice;
+  const m = /^(\d+)d(\d+)([+-]\d+)?$/.exec(up.perLevel.replace(/\s+/g, ''));
+  if (!m) return dice;
+  const count = parseInt(m[1], 10) * steps;
+  const extra = `${count}d${m[2]}${m[3] ? `${parseInt(m[3], 10) * steps >= 0 ? '+' : ''}${parseInt(m[3], 10) * steps}` : ''}`;
+  return `${dice}+${extra}`;
+}
+
 // ---------- 结果判定 ----------
 
 export function judgeCheck(d20: DiceResult, target: number | null): {

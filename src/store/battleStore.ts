@@ -47,14 +47,14 @@ import {
   snapshotFromParsed, snapshotFromUnits, diffSnapshots, appendHistory, loadHistory,
   findPrevSnapshot,
 } from '@/lib/engine/snapshot';
-import { rollFormula, judgeCheck } from '@/lib/engine/dice';
+import { rollFormula, judgeCheck, applyUpcast } from '@/lib/engine/dice';
 import type { RollMode } from '@/lib/engine/types';
 import { unitFromPreset, buildDemoBattle, MONSTER_PRESETS, type MonsterPreset } from '@/lib/engine/presets';
 import {
   inMeleeRange, posToCell, gridDistanceFeet, buildBlockedCells, estimateCover, cellToFeet,
   aoeCells, unitDistance, cellCenter,
 } from '@/lib/engine/geometry';
-import { coverBonus, effectiveSpeed, abilityMod, proficiencyBonus, setRules as engineSetRules } from '@/lib/engine/rules';
+import { coverBonus, effectiveSpeed, abilityMod, proficiencyBonus, resolveCastSlot, type CastSlotResolution, setRules as engineSetRules } from '@/lib/engine/rules';
 import {
   planTurn, validateStep, isAiControlled, unitAbilities, opportunityAttackers,
   type AiContext, type AiStep,
@@ -160,6 +160,22 @@ function applyMasteryEffects(store: BattleStore, unit: BattleUnit, target: Battl
 }
 
 /**
+ * AI 施法环阶解析：升环向上代打（E7）。
+ * 无 spellSlots 模型的天生施法者不设限（保持既有行为，spend=false 不扣位）。
+ */
+function resolveAiCast(unit: BattleUnit, ability: AiAbility): CastSlotResolution & { spend: boolean } {
+  const baseLevel = ability.spellLevel ?? 0;
+  if (baseLevel <= 0 || !unit.spellSlots) return { ok: true, level: baseLevel, upcast: false, spend: false };
+  const r = resolveCastSlot(unit, baseLevel);
+  return { ...r, spend: r.ok };
+}
+
+/** AI 施法实际骰式：按（实际环阶 - 基础环）应用升环增量（E7） */
+function aiCastDice(ability: AiAbility, cast: CastSlotResolution): string {
+  return applyUpcast(ability.dice, ability.spellLevel ?? 0, cast.level, ability.upcast);
+}
+
+/**
  * 玩家多重攻击逐刀结算：每刀前重读目标存活状态，击杀立即停手；
  * 有剩余攻击且场上还有其他敌人时挂 multiAttackQueue，由 ActionBar 重弹目标选择
  * 续打（2024 Extra Attack：击杀后剩余攻击可改选目标）。不含尸体攻击。
@@ -248,6 +264,10 @@ export interface CastOpts {
   angle?: number;
   /** 跳过动作经济检查（AI 回合 / 战斗外自由结算） */
   ignoreEconomy?: boolean;
+  /** 显式指定施放环阶（通用施法弹窗/升环选择；低于基础环时按基础环） */
+  castLevel?: number;
+  /** 动作覆盖（通用施法弹窗合成的临时能力；默认仍按 id 从 actor.aiAbilities 查找） */
+  abilityOverride?: AiAbility;
 }
 
 export type PlayerActionKind =
@@ -348,7 +368,8 @@ export interface BattleStore {
   concentrationAfterDamage: (targetId: string, damage: number) => void;
   healUnit: (id: string, amount: number) => void;
   tempHpUnit: (id: string, amount: number) => void;
-  spendSpellSlot: (id: string, level: number) => void;
+  /** 消耗一个法术位；返回实际消耗的环阶（升环向上代打时可能 > level），未消耗返回 null。旧调用不读返回值即兼容 */
+  spendSpellSlot: (id: string, level: number, opts?: { allowHigher?: boolean }) => number | null;
   restoreSpellSlots: (id: string, longRest?: boolean) => void;
   setConcentration: (id: string, spell: string | null) => void;
 
@@ -876,18 +897,35 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     persist(get());
   },
 
-  spendSpellSlot: (id, level) => {
+  spendSpellSlot: (id, level, opts) => {
     const unit = get().units.find(u => u.id === id);
-    if (!unit?.spellSlots?.[level]) return;
-    const slot = unit.spellSlots[level];
-    if (slot.current <= 0) return;
+    if (!unit) return null;
+    // 升环向上代打：精确环无余且显式 allowHigher 时，从该环起向上找首个有余的环阶
+    let target = level;
+    if (opts?.allowHigher) {
+      const r = resolveCastSlot(unit, level);
+      if (!r.ok) {
+        get().logEvent({ type: 'spell-slot', actorId: id, text: `⛔ ${unit.name} 的 ${r.reason ?? `${level} 环法术位不足`}`, level: 'info' });
+        return null;
+      }
+      target = r.level;
+    }
+    const slot = unit.spellSlots?.[target];
+    if (!slot || slot.current <= 0) return null;
     set({
       units: get().units.map(u => (u.id === id
-        ? { ...u, spellSlots: { ...u.spellSlots, [level]: { ...slot, current: slot.current - 1 } } }
+        ? { ...u, spellSlots: { ...u.spellSlots, [target]: { ...slot, current: slot.current - 1 } } }
         : u)),
     });
-    get().logEvent({ type: 'spell-slot', actorId: id, text: `${unit.name} 消耗 ${level} 环法术位（余 ${slot.current - 1}/${slot.max}）`, level: 'info' });
+    get().logEvent({
+      type: 'spell-slot', actorId: id,
+      text: target > level
+        ? `${unit.name} 消耗 ${target} 环法术位（升环施放 ${level} 环法术，余 ${slot.current - 1}/${slot.max}）`
+        : `${unit.name} 消耗 ${level} 环法术位（余 ${slot.current - 1}/${slot.max}）`,
+      level: 'info',
+    });
     persist(get());
+    return target;
   },
 
   restoreSpellSlots: (id, longRest = true) => {
@@ -1627,15 +1665,14 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         const target = get().units.find(u => u.id === step.targetId);
         if (ability && target) {
-          // 攻击法术结算法术位（此前仅 AoE/治疗结算；无 spellSlots 模型的天生施法者不设限）
-          if (ability.spellLevel && unit.spellSlots) {
-            const slot = unit.spellSlots[ability.spellLevel];
-            if (!slot || slot.current <= 0) {
-              get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${ability.spellLevel} 环法术位不足——【${ability.name}】无法施放`, level: 'info' });
-              return true;
-            }
-            get().spendSpellSlot(unit.id, ability.spellLevel);
+          // 攻击法术结算法术位：升环向上代打（此前仅 AoE/治疗结算；无 spellSlots 模型的天生施法者不设限）
+          const cast = resolveAiCast(unit, ability);
+          if (!cast.ok) {
+            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
+            return true;
           }
+          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
+          const effDice = aiCastDice(ability, cast);
           const cover = estimateCover(unit, target, s.obstacles, buildBlockedCells(s.obstacles));
           if (cover.cover === 'full') {
             get().logEvent({ type: 'attack', actorId: unit.id, targetId: target.id, text: `⛔ ${unit.name} 放弃攻击——${target.name} 处于全掩护，无法直接指定`, level: 'info' });
@@ -1643,13 +1680,13 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           }
           get().logEvent({
             type: 'attack', actorId: unit.id, targetId: target.id,
-            text: `${unit.name} 发动【${ability.name}】→ ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
+            text: `${unit.name} 发动【${ability.name}】${cast.upcast ? `（${cast.level} 环升环）` : ''}→ ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
             level: 'info',
           });
           const atkResult = get().performAttack(unit.id, target.id, {
             attackBonus: ability.attackBonus ?? 0,
             targetAc: target.ac + coverBonus(cover.cover),
-            weaponDamage: ability.dice,
+            weaponDamage: effDice,
             weaponType: ability.damageType,
             isRanged: ability.kind === 'ranged',
             coverKind: cover.cover,
@@ -1661,16 +1698,23 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       case 'aoe': {
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         if (ability && ability.aoe) {
+          // 升环向上代打：基础环不足时找更高环；全部耗尽则放弃本次施法（不进入伤害循环）
+          const cast = resolveAiCast(unit, ability);
+          if (!cast.ok) {
+            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
+            return true;
+          }
           set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
           // AI 施法同样消耗法术位（此前绕过 castAbility 导致无限火球）
-          if (ability.spellLevel) get().spendSpellSlot(unit.id, ability.spellLevel);
+          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
+          const effDice = aiCastDice(ability, cast);
           get().addAoeTemplate({
             kind: ability.aoe.kind, size: ability.aoe.size,
             origin: step.origin, angle: step.angle,
             color: 'rgba(240,120,40,0.35)', label: ability.name,
           });
-          const dmg = rollFormula(ability.dice);
-          set({ lastRoll: { id: uid(), formula: ability.dice, result: dmg, note: `${ability.name} 伤害` } });
+          const dmg = rollFormula(effDice);
+          set({ lastRoll: { id: uid(), formula: effDice, result: dmg, note: `${ability.name} 伤害${cast.upcast ? `（${cast.level} 环升环）` : ''}` } });
           get().logEvent({
             type: 'attack', actorId: unit.id,
             text: `🔥 ${unit.name} 施放【${ability.name}】！伤害 ${dmg.total} —— 波及 ${step.targets.length} 个单位`,
@@ -1701,8 +1745,13 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         const t = get().units.find(u => u.id === step.targetId);
         if (ability && t && t.hp > 0 && !t.deathSaves?.dead) {
+          const cast = resolveAiCast(unit, ability);
+          if (!cast.ok) {
+            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
+            return true;
+          }
           set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
-          if (ability.spellLevel) get().spendSpellSlot(unit.id, ability.spellLevel);
+          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
           const saveKey = ability.saveAbility ?? 'wis';
           const dc = ability.saveDc ?? 13;
           get().logEvent({
@@ -1736,18 +1785,24 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
         const t = get().units.find(u => u.id === step.targetId);
         if (ability && t) {
-          // AI 治疗法术同样消耗法术位
-          if (ability.spellLevel) get().spendSpellSlot(unit.id, ability.spellLevel);
-          const r = rollFormula(ability.dice);
+          // AI 治疗法术同样消耗法术位（升环向上代打）
+          const cast = resolveAiCast(unit, ability);
+          if (!cast.ok) {
+            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
+            return true;
+          }
+          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
+          const effDice = aiCastDice(ability, cast);
+          const r = rollFormula(effDice);
           set({
-            lastRoll: { id: uid(), formula: ability.dice, result: r, note: `${ability.name} 治疗` },
+            lastRoll: { id: uid(), formula: effDice, result: r, note: `${ability.name} 治疗${cast.upcast ? `（${cast.level} 环升环）` : ''}` },
             units: get().units.map(u => (u.id === unit.id
               ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } }
               : u)),
           });
           get().logEvent({
             type: 'heal', actorId: unit.id, targetId: t.id,
-            text: `💚 ${unit.name} 使用【${ability.name}】治疗 ${t.name} ${r.total} 点`,
+            text: `💚 ${unit.name} 使用【${ability.name}】${cast.upcast ? `（${cast.level} 环升环）` : ''}治疗 ${t.name} ${r.total} 点`,
             level: 'good',
           });
           get().healUnit(t.id, r.total);

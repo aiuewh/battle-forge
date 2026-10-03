@@ -113,6 +113,44 @@ export function concentrationDc(damage: number): number {
   return Math.max(10, Math.floor(damage / 2));
 }
 
+// ============ 法术位：升环向上代打（D-2 / E7） ============
+
+export interface CastSlotResolution {
+  /** false = 基础环与更高环均无可用法术位（或单位无法术位模型） */
+  ok: boolean;
+  /** 实际施放环阶（0=戏法，不占法术位） */
+  level: number;
+  /** level > 基础环（用于战报口径与 applyUpcast） */
+  upcast: boolean;
+  /** 不可施放原因（ok=false 时给调用方出日志） */
+  reason?: string;
+}
+
+/**
+ * 施法环阶解析（纯函数）：从 max(requested, baseLevel) 起向上找首个有余的环阶。
+ * - 0 环（戏法）直接通过，不查法术位；
+ * - 单位没有法术位模型（spellSlots 缺失）→ ok:false（旧存档/非法术单位安全兜底；
+ *   天生施法怪物的 AI 路径在调用方先行豁免，不走本函数）；
+ * - requested 为弹窗显式指定的高环（高于基础环时仍可继续向上兜底）。
+ */
+export function resolveCastSlot(
+  unit: Pick<BattleUnit, 'spellSlots' | 'name'>,
+  baseLevel: number,
+  requested?: number,
+): CastSlotResolution {
+  const base = Math.max(0, Math.floor(Number.isFinite(baseLevel) ? baseLevel : 0));
+  if (base === 0) return { ok: true, level: 0, upcast: false };
+  if (!unit.spellSlots) {
+    return { ok: false, level: base, upcast: false, reason: `${unit.name ?? '该单位'} 没有法术位模型` };
+  }
+  const from = Math.min(9, Math.max(requested !== undefined ? Math.floor(requested) : base, base));
+  for (let lv = Math.max(1, from); lv <= 9; lv++) {
+    const slot = unit.spellSlots[lv];
+    if (slot && slot.current > 0) return { ok: true, level: lv, upcast: lv > base };
+  }
+  return { ok: false, level: Math.max(1, from), upcast: false, reason: `${Math.max(1, from)} 环及更高环法术位均不足` };
+}
+
 /** 坠落伤害：每 10 尺 1d6 */
 export function fallDamage(feet: number): string {
   const dice = Math.min(Math.floor(feet / 10), 20);

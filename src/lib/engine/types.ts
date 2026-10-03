@@ -115,10 +115,14 @@ export interface AiAbility {
   multiAttack?: number;
   /** 法术环阶（0=戏法，不占法术位；undefined=非法术） */
   spellLevel?: number;
+  /** 升环增量：每高 1 环追加一段骰（2024 PHB higherLevels）；kind 区分伤害/治疗 */
+  upcast?: { perLevel: string; kind: 'damage' | 'heal' };
   /** 需要专注 */
   concentration?: boolean;
   /** 附赠动作施放 */
   bonusAction?: boolean;
+  /** 反应施放（如 护盾术/地狱反击；执行器自动触发在批次 3 E11，此处先落契约与标记） */
+  reaction?: boolean;
   /** 法术是否已准备（undefined=非法术或未知；false=未准备，UI 提示后可强施） */
   spellPrepared?: boolean;
   /** 攻击/豁免后的附加状态效果（如 麻痹/恐惧），豁免失败时施加 */

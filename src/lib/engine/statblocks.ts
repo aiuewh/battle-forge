@@ -405,11 +405,27 @@ export function parseAttack(
     }
   }
 
-  // 环阶/专注/附赠/附加状态（法术型动作）
+  // 环阶/专注/附赠/反应/升环/附加状态（法术型动作）
   const spellLevel = o.spellLevel !== undefined ? toNum(o.spellLevel, 0)
     : o['环阶'] !== undefined ? toNum(o['环阶'], 0) : undefined;
   const concentration = o.concentration === true || o['专注'] === true || o['需要专注'] === true;
   const bonusAction = o.bonusAction === true || o['附赠动作'] === true;
+  const reaction = o.reaction === true || o['反应'] === true;
+  // 升环增量：对象 {每环:"1d6", 类型:"伤害"|"治疗"}（卡内 _battle 契约）或字符串 "1d6/环"
+  const upRaw = o.upcast ?? o['升环'];
+  let upcast: AiAbility['upcast'] | undefined;
+  if (upRaw && typeof upRaw === 'object') {
+    const uo = upRaw as Record<string, unknown>;
+    const perLevel = String(uo['每环'] ?? uo.perLevel ?? '').trim();
+    if (perLevel) {
+      upcast = { perLevel, kind: (uo['类型'] === '治疗' || uo.kind === 'heal') ? 'heal' : 'damage' };
+    }
+  } else if (typeof upRaw === 'string') {
+    const dm = upRaw.match(/(\d+\s*d\s*\d+)/);
+    if (dm) {
+      upcast = { perLevel: dm[1].replace(/\s+/g, ''), kind: /治疗|heal/i.test(upRaw) ? 'heal' : 'damage' };
+    }
+  }
   // 附加状态：英文键直用；中文名（倒地/麻痹/力竭…）归一为引擎键，未知值原样保留（至少可见）
   const applyStatusRaw = typeof o.applyStatus === 'string' ? o.applyStatus
     : Array.isArray(o.applyStatus) && typeof o.applyStatus[0] === 'string' ? o.applyStatus[0]
@@ -452,8 +468,10 @@ export function parseAttack(
     halfOnSuccess,
     multiAttack,
     spellLevel,
+    upcast,
     concentration,
     bonusAction,
+    reaction,
     applyStatus,
     note: typeof o.note === 'string' ? o.note : typeof o['描述'] === 'string' ? o['描述'] : undefined,
   };
