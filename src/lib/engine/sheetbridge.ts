@@ -384,16 +384,44 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
 ];
 
+/** 法术名归一：去空白/括号注音/分隔符，用于跨译名与复合键匹配（「定身类人(Hold Person)」→「定身类人」） */
+function normalizeSpellKey(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, '')
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/[’'`·・]/g, '');
+}
+
+/** 译名别名：升级面板法术 DB 口径 → 模板规范名（精确键查表，修复「治愈真言/疗伤术/定身类人」等断匹配） */
+const SPELL_KEY_ALIASES: Record<string, string> = {
+  '治愈真言': '治疗真言',
+  '群体治愈真言': '群体治疗真言',
+  '冷冻射线': '冰冻射线',
+  '定身类人': '人类定身术',
+  '定身怪物': '怪物定身术',
+  '疗伤术': '治疗术',
+  '群体疗伤术': '群体治疗术',
+  '马友夫强酸箭': '马友夫箭',
+  '雪雨暴': '冰风暴',
+  '圣火术': '神圣火花',
+};
+
 function matchSpell(name: string): SpellTemplate | undefined {
   const lower = name.toLowerCase();
+  const norm = normalizeSpellKey(name);
   // 最长关键词优先：避免「治疗真言」劫持「群体治疗真言」这类子串匹配
   let best: { tpl: SpellTemplate; keyLen: number } | null = null;
   for (const tpl of COMMON_SPELLS) {
     for (const k of tpl.keys) {
-      if (lower.includes(k) && (!best || k.length > best.keyLen)) {
-        best = { tpl, keyLen: k.length };
+      const nk = normalizeSpellKey(k);
+      if (lower.includes(k) || (nk.length > 1 && norm.includes(nk))) {
+        const len = Math.max(k.length, nk.length);
+        if (!best || len > best.keyLen) best = { tpl, keyLen: len };
       }
     }
+  }
+  if (!best) {
+    const canonical = SPELL_KEY_ALIASES[norm];
+    if (canonical) return matchSpell(canonical);
   }
   return best?.tpl;
 }

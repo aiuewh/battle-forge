@@ -711,6 +711,44 @@ check('名单: 法术书', elma.spells.length === 2);
 check('名单: 治疗真言匹配机制', elma.spells.some(s => s.name === '治疗真言' && s.matched && s.ability?.bonusAction === true));
 check('名单: 火球术匹配机制', elma.spells.some(s => s.name === '火球术' && s.matched && s.ability?.spellLevel === 3));
 
+// 法术译名别名（升级面板 DB 口径 → 模板规范名）：修复「治愈真言/疗伤术/定身类人」等断匹配
+{
+  const aliasTree: Record<string, unknown> = {
+    '角色列表': {
+      '薇拉': {
+        '姓名': '薇拉', '等级': 5,
+        '施法': {
+          '关键属性': '智力',
+          '法术位': { '1环': { '当前': 4, '最大': 4 }, '2环': { '当前': 2, '最大': 3 } },
+          '法术书': {
+            '治愈真言': { '准备中': true },        // DB 译名 → 治疗真言
+            '疗伤术': { '准备中': true },          // DB 译名 → 治疗术
+            '定身类人': { '准备中': true },        // DB 译名 → 人类定身术
+            '定身怪物(Hold Monster)': { '准备中': true }, // 括号注音复合键 → 怪物定身术
+            '马友夫强酸箭': { '准备中': true },    // DB 译名 → 马友夫箭
+            '雪雨暴': { '准备中': false },         // 并存译名 → 冰风暴
+            '云雾术': { '准备中': true },          // 无模板：仍应保持未匹配（不误命中）
+          },
+        },
+      },
+    },
+  };
+  const aliasSheets = charSheetsFromTree(aliasTree);
+  const sp = (n: string) => aliasSheets[0].spells.find(s => s.name === n);
+  check('别名: 治愈真言→治疗真言模板(附赠)', sp('治愈真言')?.matched === true && sp('治愈真言')?.ability?.bonusAction === true);
+  check('别名: 疗伤术→治疗术模板', sp('疗伤术')?.matched === true && sp('疗伤术')?.ability?.spellLevel === 1);
+  check('别名: 定身类人→人类定身术模板', sp('定身类人')?.matched === true && sp('定身类人')?.ability?.spellLevel === 2);
+  check('别名: 括号注音复合键→怪物定身术', sp('定身怪物(Hold Monster)')?.matched === true && sp('定身怪物(Hold Monster)')?.ability?.spellLevel === 5);
+  check('别名: 马友夫强酸箭→马友夫箭模板', sp('马友夫强酸箭')?.matched === true);
+  check('别名: 雪雨暴→冰风暴模板', sp('雪雨暴')?.matched === true && sp('雪雨暴')?.ability?.spellLevel === 4);
+  check('别名: 云雾术不误命中', sp('云雾术')?.matched === false && !sp('云雾术')?.ability);
+  check('别名: 群体治愈真言不劫持为单体', (() => {
+    const t2: Record<string, unknown> = { '角色列表': { '甲': { '姓名': '甲', '施法': { '法术书': { '群体治愈真言': { '准备中': true } } } } } };
+    const s2 = charSheetsFromTree(t2)[0].spells.find(s => s.name === '群体治愈真言');
+    return s2?.matched === true && s2?.ability?.spellLevel === 3;
+  })());
+}
+
 // 角色卡 → 战斗单位（武器数学）
 const elmaUnit = unitFromCharSheet(elma, { isPlayer: true, pos: { x: 10, y: 10 } });
 check('角色单位: 基础字段', elmaUnit.ac === 15 && elmaUnit.hp === 20 && elmaUnit.maxHp === 28);
