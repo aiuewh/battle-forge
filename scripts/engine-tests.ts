@@ -919,6 +919,11 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('预备: readyAction 字段可挂载', rUnit.readyAction?.abilityName === '长剑' && rUnit.readyAction?.triggerText === '地精露头');
 }
 
+// E14 非致命：引擎状态表含 unconscious（昏迷·稳定），供击倒路径挂接
+{
+  check('非致命: unconscious 状态键存在', CONDITIONS['unconscious']?.key === 'unconscious' && /昏迷/.test(CONDITIONS['unconscious']?.name ?? ''));
+}
+
 // E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加
 {
   const mk = (slots: Record<number, { current: number; max: number }>) => ({ name: '法系', spellSlots: slots });

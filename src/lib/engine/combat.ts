@@ -32,6 +32,8 @@ export interface AttackOptions {
   distanceFeet?: number;
   /** 攻击者 5 尺内是否存在敌对生物（2024：远程攻击检定劣势） */
   hostileWithin5Ft?: boolean;
+  /** 非致命击倒（E14）：近战可选——致死一击改为昏迷+稳定，不入死亡流程 */
+  nonLethal?: boolean;
   /** 房规：重击模式（优先级高于全局 rules.critMode；旧参 critWeaponDiceOnly=true 视为 weapon-dice-only） */
   critMode?: 'full-double' | 'weapon-dice-only' | 'max-plus-roll';
   /** 兼容旧参：重击仅翻倍武器骰（One D&D 试玩版房规）；新代码请传 critMode */

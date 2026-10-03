@@ -187,6 +187,7 @@ function runMultiAttackSequence(
   ability: AiAbility,
   targetId: string,
   times: number,
+  nonLethal = false,
 ) {
   let remaining = times;
   for (; remaining > 0; remaining--) {
@@ -202,6 +203,7 @@ function runMultiAttackSequence(
       weaponType: ability.damageType,
       isRanged: ability.kind === 'ranged',
       coverKind: cover.cover,
+      nonLethal,
     });
     applyMasteryEffects(get(), actor, target, ability, atkResult);
   }
@@ -268,6 +270,8 @@ export interface CastOpts {
   castLevel?: number;
   /** false = 叙事施放：不检查也不消耗法术位（通用施法弹窗取消勾选时） */
   consumeSlot?: boolean;
+  /** 非致命击倒（E14）：近战武器攻击可选——致死一击改为昏迷+稳定 */
+  nonLethal?: boolean;
   /** 动作覆盖（通用施法弹窗合成的临时能力；默认仍按 id 从 actor.aiAbilities 查找） */
   abilityOverride?: AiAbility;
 }
@@ -367,7 +371,7 @@ export interface BattleStore {
   moveUnit: (id: string, pos: { x: number; y: number }, recordEvent?: boolean) => void;
   toggleStatus: (id: string, status: string) => void;
   /** 应用伤害并落账，返回类型修正+临时HP吸收后实际扣除的 HP（无此单位返回 0）；攻击路径传 skipTypeMods 防二次结算 */
-  damageUnit: (id: string, amount: number, opts?: { isCrit?: boolean; type?: DamageType; source?: string; skipTypeMods?: boolean }) => number;
+  damageUnit: (id: string, amount: number, opts?: { isCrit?: boolean; type?: DamageType; source?: string; skipTypeMods?: boolean; nonLethal?: boolean }) => number;
   /** 伤害落账后检查专注（法术/AoE/巢穴等非攻击路径统一调用；攻击路径在 performAttack 内处理） */
   concentrationAfterDamage: (targetId: string, damage: number) => void;
   healUnit: (id: string, amount: number) => void;
@@ -827,7 +831,17 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     const newHp = unit.hp - remaining;
     let deathSaves = unit.deathSaves;
     let killed = false;
-    if (newHp <= 0 && unit.hp > 0) {
+    let knockedOut = false;
+    if (newHp <= 0 && unit.hp > 0 && opts.nonLethal === true && !unit.legendary) {
+      // 非致命击倒（E14）：留活口——0 HP 昏迷且稳定，不入死亡流程（大伤害即死仍优先）
+      if (remaining - unit.hp >= unit.maxHp) {
+        killed = true;
+        deathSaves = { successes: 0, failures: 3, stable: false, dead: true };
+      } else {
+        knockedOut = true;
+        deathSaves = { successes: 0, failures: 3, stable: true, dead: false };
+      }
+    } else if (newHp <= 0 && unit.hp > 0) {
       // 跌至 0：巨额伤害即死（2024：剩余伤害 = 伤害 - 受伤前当前 HP ≥ 生命值上限才立即死亡）；
       // 敌方小怪归零即死（2024 惯例，传奇单位除外）；友方进入死亡豁免
       if (remaining - unit.hp >= unit.maxHp) {
@@ -852,7 +866,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
     set({
       units: get().units.map(u => (u.id === id
-        ? { ...u, hp: Math.max(0, newHp), tempHp: u.tempHp - absorbed, deathSaves, statuses: killed ? u.statuses : u.statuses }
+        ? { ...u, hp: Math.max(0, newHp), tempHp: u.tempHp - absorbed, deathSaves, statuses: knockedOut ? [...new Set([...u.statuses, 'unconscious'])] : u.statuses }
         : u)),
     });
     const hpNote = absorbed > 0 ? `（临时HP吸收${absorbed}）` : '';
@@ -860,7 +874,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     get().logEvent({
       type: 'damage',
       actorId: id,
-      text: `${unit.name} 受到 ${amount}${opts.type ? ' [' + opts.type + ']' : ''}${typedNote} 伤害${hpNote} → HP ${Math.max(0, newHp)}/${unit.maxHp}${killed ? ' ☠️死亡' : newHp <= 0 ? ' 濒死！' : ''}`,
+      text: `${unit.name} 受到 ${amount}${opts.type ? ' [' + opts.type + ']' : ''}${typedNote} 伤害${hpNote} → HP ${Math.max(0, newHp)}/${unit.maxHp}${killed ? ' ☠️死亡' : knockedOut ? ' 😵 被击倒（非致命·昏迷且稳定）' : newHp <= 0 ? ' 濒死！' : ''}`,
       level: killed ? 'crit' : 'bad',
       data: { amount, type: opts.type, killed },
     });
@@ -1326,6 +1340,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         type: opts.weaponType,
         source: attackerId,
         skipTypeMods: true, // resolveAttack 内已应用类型修正，避免二次结算
+        nonLethal: opts.nonLethal === true && !opts.isRanged, // 非致命仅近战可用（E14）
       });
       // 专注豁免
       if (result.damage.concentrationDc) {
@@ -2451,7 +2466,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           text: `${actor.name} 发动【${ability.name}】${times > 1 ? `×${times}（多重攻击）` : ''} → ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
           level: 'info',
         });
-        runMultiAttackSequence(get, set, actorId, ability, target.id, times);
+        runMultiAttackSequence(get, set, actorId, ability, target.id, times, opts.nonLethal === true);
         break;
       }
       case 'heal': {

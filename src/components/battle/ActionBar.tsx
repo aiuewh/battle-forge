@@ -47,6 +47,8 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const [readyTrigger, setReadyTrigger] = useState('');
   // 预备触发：目标选择
   const [readyTriggerTarget, setReadyTriggerTarget] = useState('');
+  // 非致命击倒（E14）：近战攻击确认时可选留活口
+  const [nonLethal, setNonLethal] = useState(false);
   const [shoveEffect, setShoveEffect] = useState<'prone' | 'push5'>('prone');
 
   // 行动者：战斗中 = 当前玩家操控单位；非战斗 = 选中的友方单位
@@ -608,13 +610,21 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
               <HelpingHand className="h-3.5 w-3.5" />确认协助
             </Button>
           ) : pending ? (
-            <Button
-              size="sm" className="h-8 gap-1 bg-red-800 text-[11px] text-white hover:bg-red-700"
-              disabled={!effectiveTargetId}
-              onClick={execute}
-            >
+            <>
+              {pending.ability.kind === 'melee' && (
+                <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <input type="checkbox" checked={nonLethal} onChange={e => setNonLethal(e.target.checked)} />
+                  非致命（留活口）
+                </label>
+              )}
+              <Button
+                size="sm" className="h-8 gap-1 bg-red-800 text-[11px] text-white hover:bg-red-700"
+                disabled={!effectiveTargetId}
+                onClick={execute}
+              >
               <Zap className="h-3.5 w-3.5" />执行
-            </Button>
+              </Button>
+            </>
           ) : (
             <Button
               size="sm" className="h-8 gap-1 bg-red-800 text-[11px] text-white hover:bg-red-700"
