@@ -2370,15 +2370,18 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       }
     }
 
-    // 法术位检查
+    // 法术位检查：升环向上代打（本环不足时找更高环；可显式指定施放环阶）
     const slotLevel = ability.spellLevel ?? 0;
+    let cast: CastSlotResolution = { ok: true, level: slotLevel, upcast: false };
     if (slotLevel > 0) {
-      const slot = actor.spellSlots?.[slotLevel];
-      if (!slot || slot.current <= 0) {
-        get().logEvent({ type: 'note', text: `⛔ ${actor.name} 的 ${slotLevel} 环法术位不足`, level: 'bad' });
+      cast = resolveCastSlot(actor, slotLevel, opts.castLevel);
+      if (!cast.ok) {
+        get().logEvent({ type: 'note', text: `⛔ ${actor.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'bad' });
         return;
       }
     }
+    // 升环骰量：按（实际环阶 - 基础环）追加 perLevel 骰
+    const effDice = applyUpcast(ability.dice, slotLevel, cast.level, ability.upcast);
 
     // 目标与射程
     const needsTarget = ability.kind === 'melee' || ability.kind === 'ranged' || ability.kind === 'save' || ability.kind === 'heal';
@@ -2424,8 +2427,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       }
       case 'heal': {
         if (!target) return;
-        const r = rollFormula(ability.dice);
-        set({ lastRoll: { id: uid(), formula: ability.dice, result: r, note: `${ability.name} 治疗` } });
+        const r = rollFormula(effDice);
+        set({ lastRoll: { id: uid(), formula: effDice, result: r, note: `${ability.name} 治疗${cast.upcast ? `（${cast.level} 环升环）` : ''}` } });
         get().logEvent({
           type: 'heal', actorId, targetId: target.id,
           text: `💚 ${actor.name} 施放【${ability.name}】治疗 ${target.name} ${r.total} 点`,
@@ -2436,10 +2439,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       }
       case 'save': {
         if (!target) return;
-        const dmgRoll = rollFormula(ability.dice);
+        const dmgRoll = rollFormula(effDice);
         if (!ability.saveAbility) {
           // 自动命中型（如魔法飞弹）
-          set({ lastRoll: { id: uid(), formula: ability.dice, result: dmgRoll, note: ability.name } });
+          set({ lastRoll: { id: uid(), formula: effDice, result: dmgRoll, note: ability.name } });
           get().logEvent({
             type: 'attack', actorId, targetId: target.id,
             text: `🔮 ${actor.name} 施放【${ability.name}】—— 自动命中 ${target.name}，伤害 ${dmgRoll.total}`,
@@ -2482,8 +2485,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const template: AoeTemplate = { id: uid(), kind: ability.aoe.kind, size: ability.aoe.size, origin, angle, color: 'rgba(240,120,40,0.35)', label: ability.name };
         const affected = aoeCells(template, get().units).affectedUnitIds.filter(id => id !== actorId);
         get().addAoeTemplate({ kind: template.kind, size: template.size, origin: template.origin, angle: template.angle, color: template.color, label: template.label });
-        const dmgRoll = rollFormula(ability.dice);
-        set({ lastRoll: { id: uid(), formula: ability.dice, result: dmgRoll, note: `${ability.name} 伤害` } });
+        const dmgRoll = rollFormula(effDice);
+        set({ lastRoll: { id: uid(), formula: effDice, result: dmgRoll, note: `${ability.name} 伤害${cast.upcast ? `（${cast.level} 环升环）` : ''}` } });
         get().logEvent({
           type: 'attack', actorId,
           text: `🔥 ${actor.name} 施放【${ability.name}】！伤害 ${dmgRoll.total} —— 波及 ${affected.length} 个单位`,
@@ -2535,10 +2538,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           }
           next.actionEconomy = eco;
         }
-        if (slotLevel > 0 && next.spellSlots?.[slotLevel] && next.spellSlots[slotLevel].current > 0) {
+        if (cast.ok && cast.level > 0 && next.spellSlots?.[cast.level] && next.spellSlots[cast.level].current > 0) {
           next.spellSlots = {
             ...next.spellSlots,
-            [slotLevel]: { ...next.spellSlots[slotLevel], current: next.spellSlots[slotLevel].current - 1 },
+            [cast.level]: { ...next.spellSlots[cast.level], current: next.spellSlots[cast.level].current - 1 },
           };
         }
         if (ability.kind === 'melee' || ability.kind === 'ranged') {
@@ -2555,10 +2558,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       }
       get().logEvent({ type: 'concentration', actorId, text: `${actor.name} 开始专注：${ability.name}`, level: 'info' });
     }
-    if (slotLevel > 0) {
+    if (cast.ok && cast.level > 0) {
       const u2 = get().units.find(u => u.id === actorId);
-      if (u2?.spellSlots?.[slotLevel]) {
-        get().logEvent({ type: 'spell-slot', actorId, text: `${actor.name} 消耗 ${slotLevel} 环法术位（余 ${u2.spellSlots[slotLevel].current}/${u2.spellSlots[slotLevel].max}）`, level: 'info' });
+      if (u2?.spellSlots?.[cast.level]) {
+        get().logEvent({ type: 'spell-slot', actorId, text: `${actor.name} 消耗 ${cast.level} 环法术位${cast.upcast ? '（升环施放）' : ''}（余 ${u2.spellSlots[cast.level].current}/${u2.spellSlots[cast.level].max}）`, level: 'info' });
       }
     }
     if (actor.attitude === 0 && target && (ability.kind === 'melee' || ability.kind === 'ranged')) {
