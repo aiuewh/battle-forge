@@ -4,7 +4,7 @@
  */
 import type {
   BattleUnit, DamageType, RollMode, CheckResult, DamageResult,
-  AttackResult, DieRoll, DeathSaves,
+  AttackResult, DieRoll, DeathSaves, AbilityKey, Size,
 } from './types';
 import { rollFormula, judgeCheck, rollDie } from './dice';
 import {
@@ -422,37 +422,72 @@ export function resolveConcentration(unit: BattleUnit, damage: number, forcedRol
   };
 }
 
-// ---------- 擒抱 / 推撞（2024：武装打击选项） ----------
+// ---------- 擒抱 / 推撞（2024：徒手打击选项，单次豁免对抗） ----------
 
 export interface UnarmedStrikeResult {
+  /** 目标豁免结算（2024：无攻击检定，目标直接进行 STR/DEX 豁免） */
   check: CheckResult;
+  /** 目标实际使用的豁免属性（自选 STR/DEX——引擎取加值高者，理性目标必然择优） */
+  saveAbility: AbilityKey;
+  /** DC = 8 + 发起者力量调整值 + 熟练 */
+  dc: number;
+  /** 擒抱：目标豁免失败 → 挂 grappled */
   grappled: boolean;
+  /** 推撞：目标豁免失败 → prone（击倒）或 push5（推离 5 尺）；擒抱恒为 'none' */
   shoved: 'none' | 'prone' | 'push5';
 }
 
-/** 擒抓：攻击检定 vs 目标 AC；逃脱 DC = 8 + 力量调整 + 熟练 */
+export type UnarmedStrikeKind = 'grapple' | 'shove';
+
+/** 体型序数（擒抱/推撞守卫用）：微型 < 小型 < 中型 < 大型 < 巨型 < 超巨型 */
+const SIZE_ORDER: Size[] = ['tiny', 'small', 'medium', 'large', 'huge', 'gargantuan'];
+
+/** 擒抱逃脱 DC = 8 + 擒抱者力量调整 + 熟练（2024 与发起 DC 同式，逃脱=检定对抗此值） */
 export function escapeDc(grappler: BattleUnit): number {
   return 8 + getAbilityMod(grappler, 'str') + proficiencyBonus(grappler.level ?? grappler.cr);
 }
 
-export function grappleAttack(grappler: BattleUnit, target: BattleUnit, bonus: number, forcedRoll?: number): UnarmedStrikeResult {
-  // 攻击检定：2024 力竭 -2/级、祝福 +1d4
-  const dice = rollFormula('1d20', {
-    bonus: bonus - exhaustionPenalty(grappler.statuses),
-    mode: 'normal',
-    forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined,
-  });
-  const bless = blessDie(grappler, dice.rolls);
-  dice.total += bless;
-  const success = (dice.rawD20 === 20) || (dice.rawD20 !== 1 && dice.total >= target.ac);
+/** 徒手打击（擒抱/推撞）发起 DC：8 + 发起者力量调整值 + 熟练 */
+export function unarmedStrikeDc(initiator: BattleUnit): number {
+  return escapeDc(initiator);
+}
+
+/** 2024 体型守卫：擒抱/推撞目标至多比发起者大一级（大 2 级直接拒绝）；未知体型不拦截 */
+export function canUnarmedStrikeTarget(initiator: BattleUnit, target: BattleUnit): boolean {
+  const a = SIZE_ORDER.indexOf(initiator.size);
+  const t = SIZE_ORDER.indexOf(target.size);
+  if (a < 0 || t < 0) return true;
+  return t - a <= 1;
+}
+
+/** 目标自选 STR/DEX 豁免：取加值更高的一项（自选豁免的理性选择） */
+export function unarmedStrikeSave(target: BattleUnit, dc: number, forcedRoll?: number): { ability: AbilityKey; result: SaveResult } {
+  const strBonus = getSaveBonus(target, 'str');
+  const dexBonus = getSaveBonus(target, 'dex');
+  const ability: AbilityKey = dexBonus > strBonus ? 'dex' : 'str';
+  return { ability, result: resolveSave(target, { ability, dc, forcedRoll }) };
+}
+
+/**
+ * 2024 徒手打击（擒抱/推撞）：无攻击检定——由目标直接进行 STR 或 DEX 豁免（自选）
+ * 对抗 DC 8 + 发起者力量调整值 + 熟练；失败分别附加 grappled / prone（推撞可选击倒或推离 5 尺）。
+ * 调用方负责体型守卫（canUnarmedStrikeTarget）与触及/存活检查，并按结果应用状态。
+ */
+export function unarmedStrike(
+  kind: UnarmedStrikeKind,
+  initiator: BattleUnit,
+  target: BattleUnit,
+  opts: { forcedRoll?: number; shoveEffect?: 'prone' | 'push5' } = {},
+): UnarmedStrikeResult {
+  const dc = unarmedStrikeDc(initiator);
+  const { ability, result } = unarmedStrikeSave(target, dc, opts.forcedRoll);
+  const failed = result.check.outcome.includes('failure');
   return {
-    check: {
-      dice, target: target.ac, total: dice.total,
-      outcome: dice.rawD20 === 20 ? 'critical-success' : dice.rawD20 === 1 ? 'critical-failure' : success ? 'success' : 'failure',
-      label: `擒抱检定 vs AC${target.ac}`,
-    },
-    grappled: success,
-    shoved: 'none',
+    check: result.check,
+    saveAbility: ability,
+    dc,
+    grappled: kind === 'grapple' && failed,
+    shoved: kind === 'shove' && failed ? (opts.shoveEffect ?? 'prone') : 'none',
   };
 }
 

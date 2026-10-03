@@ -23,6 +23,7 @@ import {
 import {
   resolveAttack, applyDamageModifiers, resolveSave, resolveDeathSave,
   resolveConcentration, escapeDc, encounterDifficulty, damageAtZeroHp,
+  unarmedStrike, canUnarmedStrikeTarget,
 } from '../src/lib/engine/combat';
 import {
   abilityMod, proficiencyBonus, getSaveBonus, attackRollModeAgainst, coverBonus,
@@ -491,6 +492,41 @@ check('专注豁免成功', cc2.broken === false);
 // 擒抱逃脱 DC
 const grappler = mkUnit({ abilities: { str: 18, dex: 10, con: 10, int: 10, wis: 10, cha: 10 }, level: 3 });
 check('逃脱DC=8+4+2=14', escapeDc(grappler) === 14, `got ${escapeDc(grappler)}`);
+
+// E3 2024 徒手打击（擒抱/推撞）：单次豁免对抗（无攻击检定）
+{
+  const striker = mkUnit({ abilities: { str: 18, dex: 10, con: 10, int: 10, wis: 10, cha: 10 }, level: 3 }); // DC 8+4+2=14
+  const weakTarget = mkUnit({ abilities: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 } });        // 豁免 +0
+  const g1 = unarmedStrike('grapple', striker, weakTarget, { forcedRoll: 1 });
+  check('擒抱: 豁免失败→grappled', g1.grappled === true && g1.shoved === 'none' && g1.check.outcome === 'failure', JSON.stringify({ g: g1.grappled, o: g1.check.outcome }));
+  check('擒抱: DC=8+力调4+熟练2=14', g1.dc === 14, `got ${g1.dc}`);
+  check('擒抱: 无攻击检定（check 即豁免）', g1.check.label.includes('豁免'), g1.check.label);
+  const g2 = unarmedStrike('grapple', striker, weakTarget, { forcedRoll: 20 });
+  check('擒抱: 豁免成功（裸20）→无状态', g2.grappled === false && g2.check.outcome === 'success');
+  const s1 = unarmedStrike('shove', striker, weakTarget, { forcedRoll: 1 });
+  check('推撞: 缺省击倒→prone', s1.shoved === 'prone' && s1.grappled === false);
+  const s2 = unarmedStrike('shove', striker, weakTarget, { forcedRoll: 1, shoveEffect: 'push5' });
+  check('推撞: 可选推离 5 尺→push5', s2.shoved === 'push5');
+  const s3 = unarmedStrike('shove', striker, weakTarget, { forcedRoll: 20 });
+  check('推撞: 豁免成功→无效果', s3.shoved === 'none' && s3.grappled === false);
+  // 目标自选 STR/DEX 豁免：引擎取加值高者（理性择优）
+  const dexyTarget = mkUnit({ abilities: { str: 8, dex: 18, con: 10, int: 10, wis: 10, cha: 10 } });
+  const g3 = unarmedStrike('grapple', striker, dexyTarget, { forcedRoll: 10 });
+  check('目标自选豁免: 敏捷更高→用 DEX', g3.saveAbility === 'dex', `got ${g3.saveAbility}`);
+  const strongTarget = mkUnit({ abilities: { str: 18, dex: 8, con: 10, int: 10, wis: 10, cha: 10 } });
+  const g4 = unarmedStrike('grapple', striker, strongTarget, { forcedRoll: 10 });
+  check('目标自选豁免: 力量更高→用 STR', g4.saveAbility === 'str', `got ${g4.saveAbility}`);
+  // 体型守卫：目标至多大一级（2024）
+  const mediumU = mkUnit({});
+  const largeU = mkUnit({ size: 'large' });
+  const hugeU = mkUnit({ size: 'huge' });
+  const tinyU = mkUnit({ size: 'tiny' });
+  check('体型: 大 2 级拒绝（中型 vs 巨型）', canUnarmedStrikeTarget(mediumU, hugeU) === false);
+  check('体型: 大 1 级允许（中型 vs 大型）', canUnarmedStrikeTarget(mediumU, largeU) === true);
+  check('体型: 小于等于自身允许（中型 vs 微型）', canUnarmedStrikeTarget(mediumU, tinyU) === true);
+  // 擒抱后状态效果：grappled 速度归 0（conditions 聚合）
+  check('擒抱状态: 速度归 0', aggregateEffects(['grappled']).speedMultiplier === 0);
+}
 
 // 治疗与坠落
 check('坠落伤害公式', fallDamage(30) === '3d6' && fallDamage(300) === '20d6' && fallDamage(5) === '0');

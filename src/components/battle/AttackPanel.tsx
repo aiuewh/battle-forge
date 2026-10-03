@@ -6,6 +6,7 @@
 import React, { useMemo, useState } from 'react';
 import { useBattleStore } from '@/store/battleStore';
 import { attackRollModeAgainst, coverBonus } from '@/lib/engine/rules';
+import { canUnarmedStrikeTarget } from '@/lib/engine/combat';
 import { ATTITUDE_META, DAMAGE_TYPE_META } from '@/lib/engine/types';
 import type { DamageType } from '@/lib/engine/types';
 import { estimateCover, inMeleeRange, unitDistance } from '@/lib/engine/geometry';
@@ -55,6 +56,13 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
   };
 
   const effectiveAc = target ? target.ac + coverBonus(autoInfo?.cover.cover ?? 'none') : 10;
+
+  // 2024 徒手打击（擒抱/推撞）就绪：存活目标 + 近战触及 + 体型差 ≤1 级
+  const strikeReady = !!attacker && !!target && attacker.id !== target.id
+    && target.hp > 0 && !target.deathSaves?.dead
+    && canUnarmedStrikeTarget(attacker, target)
+    && inMeleeRange(attacker, target, attacker.reach ?? 5, store.mapConfig.diagonal);
+  const strikeHint = '2024 徒手打击：无攻击检定——目标 STR/DEX 豁免（自选）vs DC8+力量调整+熟练，失败被擒抱/击倒或推离 5 尺';
 
   const doAttack = () => {
     if (!attacker || !target) return;
@@ -184,6 +192,18 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
         </Button>
         <Button size="sm" variant="secondary" className="h-9 gap-1 text-xs" onClick={doSave} disabled={!target}>
           敏捷豁免（半伤）
+        </Button>
+        <Button size="sm" variant="secondary" className="h-9 gap-1 text-xs" title={strikeHint}
+          disabled={!strikeReady} onClick={() => attacker && target && store.playerAction('grapple', attacker.id, target.id)}>
+          擒抱
+        </Button>
+        <Button size="sm" variant="secondary" className="h-9 gap-1 text-xs" title={strikeHint}
+          disabled={!strikeReady} onClick={() => attacker && target && store.playerAction('shove', attacker.id, target.id)}>
+          推撞·击倒
+        </Button>
+        <Button size="sm" variant="secondary" className="h-9 gap-1 text-xs" title={strikeHint}
+          disabled={!strikeReady} onClick={() => attacker && target && store.playerAction('shove-away', attacker.id, target.id)}>
+          推撞·推离
         </Button>
       </div>
 

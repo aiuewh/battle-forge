@@ -17,6 +17,7 @@ import { DEFAULT_RULES, normalizeRules, migrateRules, decidePotionCost } from '@
 import {
   resolveAttack, resolveSave, resolveDeathSave, resolveHeal, resolveConcentration,
   applyTypeModifiers,
+  unarmedStrike, canUnarmedStrikeTarget,
   type AttackOptions, type SaveOptions,
 } from '@/lib/engine/combat';
 import type { AttackResult } from '@/lib/engine/types';
@@ -249,7 +250,10 @@ export interface CastOpts {
   ignoreEconomy?: boolean;
 }
 
-export type PlayerActionKind = 'dash' | 'dodge' | 'disengage' | 'hide' | 'help' | 'ready' | 'potion';
+export type PlayerActionKind =
+  | 'dash' | 'dodge' | 'disengage' | 'hide' | 'help' | 'ready' | 'potion'
+  // 2024 徒手打击（单次豁免对抗，消耗动作）：shove=推撞·击倒 / shove-away=推撞·推离 5 尺
+  | 'grapple' | 'shove' | 'shove-away';
 
 /** 战场外圈一格（逃跑门控）：单位站在四条边的任意格即可逃离 */
 function isEdgeCell(pos: { x: number; y: number }, cfg: MapConfig): boolean {
@@ -2636,6 +2640,69 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           level: 'good',
         });
         get().healUnit(healTargetId, potionRoll.total);
+        break;
+      }
+      case 'grapple':
+      case 'shove':
+      case 'shove-away': {
+        // 2024 徒手打击（擒抱/推撞）：无攻击检定——目标直接 STR/DEX 豁免（自选）
+        // 对抗 DC 8+发起者力量调整+熟练；失败分别挂 grappled / prone（shove）或推离 5 尺（shove-away）
+        const strikeTarget = targetId ? s.units.find(u => u.id === targetId) : null;
+        if (!strikeTarget || strikeTarget.id === unitId) {
+          get().logEvent({ type: 'note', text: '⛔ 擒抱/推撞需要选择一个目标单位', level: 'bad' });
+          return;
+        }
+        if (strikeTarget.hp <= 0 || strikeTarget.deathSaves?.dead) {
+          get().logEvent({ type: 'note', text: `⛔ ${strikeTarget.name} 已倒下——擒抱/推撞需要存活目标`, level: 'bad' });
+          return;
+        }
+        // 体型守卫：目标至多比发起者大一级（2024）
+        if (!canUnarmedStrikeTarget(unit, strikeTarget)) {
+          const sizeName = (s: string) => ({ tiny: '微型', small: '小型', medium: '中型', large: '大型', huge: '巨型', gargantuan: '超巨型' } as Record<string, string>)[s] ?? s;
+          get().logEvent({
+            type: 'note', targetId: strikeTarget.id,
+            text: `⛔ 体型悬殊：${strikeTarget.name}（${sizeName(strikeTarget.size)}）比 ${unit.name}（${sizeName(unit.size)}）大超过一级——无法擒抱/推撞`,
+            level: 'bad',
+          });
+          return;
+        }
+        // 近战触及守卫（徒手 5 尺；大型+单位用自带触及）
+        if (!inMeleeRange(unit, strikeTarget, unit.reach ?? 5, s.mapConfig.diagonal)) {
+          get().logEvent({ type: 'note', text: `⛔ ${strikeTarget.name} 不在近战触及范围内——擒抱/推撞需贴近`, level: 'bad' });
+          return;
+        }
+        if (!needAction()) return;
+        const strikeRes = unarmedStrike(
+          kind === 'grapple' ? 'grapple' : 'shove',
+          unit, strikeTarget,
+          { shoveEffect: kind === 'shove-away' ? 'push5' : 'prone' },
+        );
+        const strikeSaved = !strikeRes.check.outcome.includes('failure');
+        const strikeLabel = kind === 'grapple' ? '擒抱' : kind === 'shove' ? '推撞·击倒' : '推撞·推离';
+        set({ lastRoll: { id: uid(), formula: `1d20 vs DC${strikeRes.dc}`, result: strikeRes.check.dice, note: `${strikeLabel}（${strikeRes.saveAbility.toUpperCase()}豁免）` } });
+        get().logEvent({
+          type: 'save', actorId: unitId, targetId: strikeTarget.id,
+          text: `🤼 ${unit.name} ${strikeLabel} ${strikeTarget.name}：${strikeRes.saveAbility.toUpperCase()}豁免 [${strikeRes.check.dice.rawD20}]+${strikeRes.check.dice.modifier}=${strikeRes.check.total} vs DC${strikeRes.dc} —— ${strikeSaved ? '目标撑住了' : kind === 'grapple' ? '失败，被擒抱！' : kind === 'shove' ? '失败，被击倒！' : '失败，被推离 5 尺！'}`,
+          level: strikeSaved ? 'info' : 'good',
+        });
+        if (isCurrent) consume('action');
+        if (strikeSaved) break;
+        if (strikeRes.grappled) {
+          get().toggleStatus(strikeTarget.id, 'grappled');
+        } else if (strikeRes.shoved === 'prone') {
+          get().toggleStatus(strikeTarget.id, 'prone');
+        } else if (strikeRes.shoved === 'push5') {
+          // 沿发起者→目标方向直线推离 5 尺（钳制在地图边界内）
+          const sdx = strikeTarget.pos.x - unit.pos.x;
+          const sdy = strikeTarget.pos.y - unit.pos.y;
+          const slen = Math.hypot(sdx, sdy) || 1;
+          const sMap = get().mapConfig;
+          const sDest = {
+            x: Math.min(Math.max(0, Math.round(strikeTarget.pos.x + (sdx / slen) * 5)), sMap.width * sMap.cellSize),
+            y: Math.min(Math.max(0, Math.round(strikeTarget.pos.y + (sdy / slen) * 5)), sMap.height * sMap.cellSize),
+          };
+          get().moveUnit(strikeTarget.id, sDest, true);
+        }
         break;
       }
     }

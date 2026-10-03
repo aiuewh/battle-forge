@@ -13,12 +13,13 @@ import { useBattleStore } from '@/store/battleStore';
 import type { AiAbility, BattleUnit } from '@/lib/engine/types';
 import { AI_ABILITY_KIND_META, DAMAGE_TYPE_META, SIZE_META } from '@/lib/engine/types';
 import { effectiveSpeed } from '@/lib/engine/rules';
+import { canUnarmedStrikeTarget } from '@/lib/engine/combat';
 import { unitDistance, inMeleeRange } from '@/lib/engine/geometry';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
   Swords, Wand2, Footprints, Zap, Wind, Shield, DoorOpen, EyeOff,
-  HelpingHand, Timer, FlaskConical, ChevronsRight, Bot, User, LogOut, MapPin,
+  HelpingHand, Timer, FlaskConical, ChevronsRight, Bot, User, LogOut, MapPin, Hand,
 } from 'lucide-react';
 
 interface PendingAction {
@@ -33,6 +34,9 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const [helpMode, setHelpMode] = useState(false);
   // 喂药模式：药水按钮 → 目标条选 5 尺内友方（不选 = 自己饮用），复用 help 的目标条交互
   const [potionMode, setPotionMode] = useState(false);
+  // 擒抱/推撞模式（2024 徒手打击）：目标条选近战触及内敌人；推撞可选击倒或推离 5 尺
+  const [strikeMode, setStrikeMode] = useState<null | 'grapple' | 'shove'>(null);
+  const [shoveEffect, setShoveEffect] = useState<'prone' | 'push5'>('prone');
 
   // 行动者：战斗中 = 当前玩家操控单位；非战斗 = 选中的友方单位
   const currentUnit = units.find(u => u.id === turn.currentUnitId);
@@ -61,7 +65,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
 
   // 渲染期重置：行动者 / 回合 / 待执行动作 / 余量队列变化时清空手动目标选择（React render-time 调整模式）
   const [ctxKey, setCtxKey] = useState('');
-  const resetKey = `${actor?.id ?? '-'}|${turn.round}|${pending?.ability.id ?? ''}|${multiQueue?.abilityId ?? ''}|${multiQueue?.remaining ?? ''}|${helpMode ? 'h' : ''}|${potionMode ? 'p' : ''}`;
+  const resetKey = `${actor?.id ?? '-'}|${turn.round}|${pending?.ability.id ?? ''}|${multiQueue?.abilityId ?? ''}|${multiQueue?.remaining ?? ''}|${helpMode ? 'h' : ''}|${potionMode ? 'p' : ''}|${strikeMode ?? ''}`;
   if (resetKey !== ctxKey) {
     setCtxKey(resetKey);
     setTargetId(null);
@@ -125,6 +129,22 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
       }));
   }, [potionMode, actor, units, store.mapConfig.diagonal]);
 
+  // 擒抱/推撞候选：敌对/中立存活单位 ×近战触及；体型差 >1 级（2024 守卫）保留在列表但禁用并标注
+  const strikeCands = useMemo(() => {
+    if (!strikeMode || !actor) return [];
+    return living
+      .filter(u => u.id !== actor.id && u.attitude !== actor.attitude)
+      .map(u => {
+        const sizeOk = canUnarmedStrikeTarget(actor, u);
+        return {
+          unit: u,
+          dist: unitDistance(actor, u, store.mapConfig.diagonal),
+          inRange: sizeOk && inMeleeRange(actor, u, actor.reach ?? 5, store.mapConfig.diagonal),
+          sizeOk,
+        };
+      });
+  }, [strikeMode, actor, living, store.mapConfig.diagonal]);
+
   if (!actor) return null;
 
   const canActFree = !battleActive || !actorIsCurrent; // 非当前回合/非战斗 → 自由结算（不消耗）
@@ -133,6 +153,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const startAction = (ability: AiAbility) => {
     setHelpMode(false);
     setPotionMode(false);
+    setStrikeMode(null);
     setPending({ ability });
   };
 
@@ -140,6 +161,17 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
     // targetId 为空 = 自己饮用；选友方 = 喂药（消耗施动者附赠/回退动作，目标回血）
     store.playerAction('potion', actor.id, targetId);
     setPotionMode(false);
+    setTargetId(null);
+  };
+
+  const confirmStrike = () => {
+    if (!strikeMode) return;
+    // 推撞效果二选一（2024）：击倒 prone / 推离 5 尺；擒抱失败直接挂 grappled
+    store.playerAction(
+      strikeMode === 'grapple' ? 'grapple' : shoveEffect === 'prone' ? 'shove' : 'shove-away',
+      actor.id, effectiveTargetId,
+    );
+    setStrikeMode(null);
     setTargetId(null);
   };
 
@@ -398,6 +430,8 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             ['hide', '隐藏', EyeOff, '隐匿检定，成功则攻击优势'],
             ['help', '协助', HelpingHand, '友方下次攻击优势'],
             ['ready', '预备', Timer, '记录触发条件'],
+            ['grapple', '擒抱', Hand, '2024 徒手打击：目标 STR/DEX 豁免（自选）vs DC8+力调+熟练，失败被擒抱（速度归 0）'],
+            ['shove', '推撞', Hand, '2024 徒手打击：同上豁免，失败可击倒（倒地）或推离 5 尺'],
             ['potion', '药水', FlaskConical, '2d4+2 治疗：附赠动作，可喂 5 尺内友方（附赠耗尽回退动作）'],
           ] as const).map(([kind, label, Icon, hint]) => {
             const actionUsed = battleActive && actorIsCurrent && (eco?.action ?? false);
@@ -407,14 +441,15 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
                 key={kind}
                 disabled={disabled}
                 onClick={() => {
-                  if (kind === 'help') { setHelpMode(true); setPending(null); setPotionMode(false); }
-                  else if (kind === 'potion') { setPotionMode(true); setPending(null); setHelpMode(false); }
+                  if (kind === 'help') { setHelpMode(true); setPending(null); setPotionMode(false); setStrikeMode(null); }
+                  else if (kind === 'potion') { setPotionMode(true); setPending(null); setHelpMode(false); setStrikeMode(null); }
+                  else if (kind === 'grapple' || kind === 'shove') { setStrikeMode(kind); setShoveEffect('prone'); setPending(null); setHelpMode(false); setPotionMode(false); }
                   else doPlayerAction(kind);
                 }}
                 title={hint}
                 className={cn(
                   'flex items-center gap-1 rounded-lg border border-border/40 bg-card/60 px-2 py-1.5 text-[11px] transition-all hover:border-primary/60 hover:bg-primary/10',
-                  (helpMode && kind === 'help') || (potionMode && kind === 'potion') ? 'border-primary bg-primary/20' : '',
+                  (helpMode && kind === 'help') || (potionMode && kind === 'potion') || (strikeMode && kind === strikeMode) ? 'border-primary bg-primary/20' : '',
                   disabled && 'cursor-not-allowed opacity-40',
                 )}
               >
@@ -452,24 +487,46 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
         )}
       </div>
 
-      {/* ===== 目标选择条（手动动作 / 协助 / 喂药 / 多重攻击余量续打） ===== */}
-      {(pending || helpMode || queueActive || potionMode) && (
+      {/* ===== 目标选择条（手动动作 / 协助 / 喂药 / 擒抱推撞 / 多重攻击余量续打） ===== */}
+      {(pending || helpMode || queueActive || potionMode || strikeMode) && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-2">
           <span className="text-[11px] font-semibold text-primary">
-            {potionMode
-              ? '🧪 喂药对象（5 尺内友方；不选 = 自己饮用）'
-              : helpMode
-                ? '🤝 协助对象'
-                : pending
-                  ? `${pending.ability.name} → 选择目标`
-                  : `${queuedAbility!.name} → 多重攻击剩余 ${multiQueue!.remaining} 次 · 选择新目标`}
+            {strikeMode
+              ? strikeMode === 'grapple' ? '🤼 擒抱目标（近战触及 · 体型≤大1级）' : '🤼 推撞目标（近战触及 · 体型≤大1级）'
+              : potionMode
+                ? '🧪 喂药对象（5 尺内友方；不选 = 自己饮用）'
+                : helpMode
+                  ? '🤝 协助对象'
+                  : pending
+                    ? `${pending.ability.name} → 选择目标`
+                    : `${queuedAbility!.name} → 多重攻击剩余 ${multiQueue!.remaining} 次 · 选择新目标`}
           </span>
+          {strikeMode === 'shove' && (
+            <select
+              className="h-8 rounded-md border border-border/50 bg-black/40 px-2 text-xs text-foreground focus:border-primary/50 focus:outline-none"
+              value={shoveEffect}
+              onChange={e => setShoveEffect(e.target.value as 'prone' | 'push5')}
+              title="推撞失败时的效果（2024：击倒或推离 5 尺，发起者选择）"
+            >
+              <option value="prone">击倒（倒地）</option>
+              <option value="push5">推离 5 尺</option>
+            </select>
+          )}
           <select
             className="h-8 min-w-0 flex-1 rounded-md border border-border/50 bg-black/40 px-2 text-xs text-foreground focus:border-primary/50 focus:outline-none"
             value={effectiveTargetId ?? ''}
             onChange={e => setTargetId(e.target.value || null)}
           >
-            {potionMode ? (
+            {strikeMode ? (
+              <>
+                <option value="">— 选择目标 —</option>
+                {strikeCands.map(({ unit: u, dist, inRange, sizeOk }) => (
+                  <option key={u.id} value={u.id} disabled={!inRange}>
+                    {u.name}（{dist}尺{!sizeOk ? ' · 体型悬殊不可' : !inRange ? ' · 不在触及' : ''} · AC {u.ac}）
+                  </option>
+                ))}
+              </>
+            ) : potionMode ? (
               <>
                 <option value="">— 自己饮用 —</option>
                 {potionCands.map(({ unit: u, dist, inRange }) => (
@@ -489,7 +546,15 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
               </>
             )}
           </select>
-          {potionMode ? (
+          {strikeMode ? (
+            <Button
+              size="sm" className="h-8 gap-1 bg-amber-800 text-[11px] text-white hover:bg-amber-700"
+              disabled={!effectiveTargetId}
+              onClick={confirmStrike}
+            >
+              <Hand className="h-3.5 w-3.5" />{strikeMode === 'grapple' ? '擒抱' : shoveEffect === 'prone' ? '推撞·击倒' : '推撞·推离'}
+            </Button>
+          ) : potionMode ? (
             <Button
               size="sm" className="h-8 gap-1 bg-emerald-800 text-[11px] text-white hover:bg-emerald-700"
               onClick={confirmPotion}
@@ -528,10 +593,10 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             size="sm" variant="secondary" className="h-8 text-[11px]"
             onClick={() => {
               if (!pending && queueActive) store.clearMultiAttackQueue();
-              setPending(null); setHelpMode(false); setPotionMode(false); setTargetId(null);
+              setPending(null); setHelpMode(false); setPotionMode(false); setStrikeMode(null); setTargetId(null);
             }}
           >
-            {pending ? '取消' : '放弃'}
+            {pending || strikeMode ? '取消' : '放弃'}
           </Button>
         </div>
       )}
