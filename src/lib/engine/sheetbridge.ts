@@ -179,6 +179,8 @@ export interface SpellDef {
   name: string;
   level: number;            // 0=戏法
   prepared: boolean;
+  /** 未结构化（非模板命中且非自定义结构化）：战斗面板以通用施法占位动作兜底 */
+  descriptive?: boolean;
   matched: boolean;         // 是否匹配到内置法术库（可自动结算）
   /** 自定义结构化法术：内置库未命中，但条目带结构化动作字段（伤害/命中/豁免…），按敌卡解析器结算 */
   custom?: boolean;
@@ -616,6 +618,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
             prepared,
             matched: !!tpl,
             custom: !tpl && !!customAbility,
+            descriptive: !tpl && !customAbility,
             ability: tpl ? tpl.build(castMod, dc, pb) : customAbility,
           });
         }
@@ -777,6 +780,16 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
       // 2024 戏法成长：1/5/11/17 级 → 1/2/3/4 骰（E9/T4，调整值部分不动）
       if (s.level === 0 && ab.dice) ab.dice = scaleCantripDice(ab.dice, sheet.level);
       return ab;
+    });
+  // 通用施法占位（E6/T2）：未结构化的已准备法术 → 弹窗填参施放；dice 0/kind save 仅作占位形态
+  sheet.spells
+    .filter(s => s.descriptive && s.prepared)
+    .forEach((s, i) => {
+      spellAbilities.push({
+        id: `gx${i}-${s.name}`, name: s.name, kind: 'save', dice: '0', range: 30,
+        spellLevel: s.level, genericCast: true, spellPrepared: s.prepared,
+        note: '未结构化法术：点击后在弹窗填参施放',
+      });
     });
 
   // 特性动作（自设招式，结构化解析）

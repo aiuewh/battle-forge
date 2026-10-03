@@ -83,7 +83,7 @@ export function unitProfile(unit: BattleUnit): AIProfile {
 }
 
 export function unitAbilities(unit: BattleUnit): AiAbility[] {
-  if (unit.aiAbilities && unit.aiAbilities.length > 0) return unit.aiAbilities;
+  if (unit.aiAbilities && unit.aiAbilities.length > 0) return unit.aiAbilities.filter(a => !a.genericCast); // 通用施法占位仅玩家可用（E6/T2）
   // 兜底：徒手打击
   return [{
     id: 'unarmed', name: '徒手打击', kind: 'melee',

@@ -266,6 +266,8 @@ export interface CastOpts {
   ignoreEconomy?: boolean;
   /** 显式指定施放环阶（通用施法弹窗/升环选择；低于基础环时按基础环） */
   castLevel?: number;
+  /** false = 叙事施放：不检查也不消耗法术位（通用施法弹窗取消勾选时） */
+  consumeSlot?: boolean;
   /** 动作覆盖（通用施法弹窗合成的临时能力；默认仍按 id 从 actor.aiAbilities 查找） */
   abilityOverride?: AiAbility;
 }
@@ -2370,10 +2372,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       }
     }
 
-    // 法术位检查：升环向上代打（本环不足时找更高环；可显式指定施放环阶）
+    // 法术位检查：升环向上代打（本环不足时找更高环；可显式指定施放环阶）；consumeSlot=false 叙事施放
     const slotLevel = ability.spellLevel ?? 0;
     let cast: CastSlotResolution = { ok: true, level: slotLevel, upcast: false };
-    if (slotLevel > 0) {
+    if (slotLevel > 0 && opts.consumeSlot !== false) {
       cast = resolveCastSlot(actor, slotLevel, opts.castLevel);
       if (!cast.ok) {
         get().logEvent({ type: 'note', text: `⛔ ${actor.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'bad' });
@@ -2538,7 +2540,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           }
           next.actionEconomy = eco;
         }
-        if (cast.ok && cast.level > 0 && next.spellSlots?.[cast.level] && next.spellSlots[cast.level].current > 0) {
+        if (cast.ok && cast.level > 0 && opts.consumeSlot !== false && next.spellSlots?.[cast.level] && next.spellSlots[cast.level].current > 0) {
           next.spellSlots = {
             ...next.spellSlots,
             [cast.level]: { ...next.spellSlots[cast.level], current: next.spellSlots[cast.level].current - 1 },

@@ -25,6 +25,7 @@ import {
   resolveConcentration, escapeDc, encounterDifficulty, damageAtZeroHp,
   unarmedStrike, canUnarmedStrikeTarget,
 } from '../src/lib/engine/combat';
+import { unitAbilities } from '../src/lib/engine/ai';
 import {
   abilityMod, proficiencyBonus, getSaveBonus, attackRollModeAgainst, coverBonus,
   concentrationDc, fallDamage, effectiveSpeed, resolveCastSlot,
@@ -854,6 +855,33 @@ check('角色单位: 法术动作导入', elmaUnit.aiAbilities?.some(a => a.name
   check('戏法: 3级火焰箭 1d10(+0)', abOf('学徒', '火焰箭')?.dice === '1d10+0', `实际 ${abOf('学徒', '火焰箭')?.dice}`);
   check('戏法: 17级火焰箭 4d10(+0)', abOf('大法', '火焰箭')?.dice === '4d10+0', `实际 ${abOf('大法', '火焰箭')?.dice}`);
   check('非戏法: 5级魔法飞弹保持2024三镖3d4+3', abOf('小法', '魔法飞弹')?.dice?.startsWith('3d4') === true, `实际 ${abOf('小法', '魔法飞弹')?.dice}`);
+}
+
+// E6/T2 通用施法：未结构化已准备法术 → genericCast 占位动作（AI 过滤；玩家弹窗施放）
+{
+  const gTree: Record<string, unknown> = {
+    '角色列表': {
+      '术士': {
+        '姓名': '术士', '等级': 5,
+        '施法': {
+          '关键属性': '魅力',
+          '法术位': { '3环': { '当前': 2, '最大': 3 } },
+          '法术书': {
+            '云雾术': { '准备中': true },     // 无模板/无结构 → 占位
+            '火球术': { '准备中': true },     // 模板命中 → 正常动作
+            '侦测思想': { '准备中': false },  // 未准备 → 不生成占位
+          },
+        },
+      },
+    },
+  };
+  const gUnit = unitFromCharSheet(charSheetsFromTree(gTree)[0], { isPlayer: true, pos: { x: 0, y: 0 } });
+  const gAb = gUnit.aiAbilities?.find(a => a.name === '云雾术');
+  check('通用施法: 云雾术生成占位动作(genericCast)', gAb?.genericCast === true && gAb?.spellLevel === 1);
+  check('通用施法: 未准备法术不生成占位', !gUnit.aiAbilities?.some(a => a.name === '侦测思想'));
+  check('通用施法: 模板法术不带占位标记', gUnit.aiAbilities?.find(a => a.name === '火球术')?.genericCast === undefined);
+  // AI 能力面过滤：unitAbilities 不含占位动作
+  check('通用施法: unitAbilities 过滤占位(AI 不可见)', !unitAbilities(gUnit).some(a => a.genericCast) && unitAbilities(gUnit).some(a => a.name === '火球术'));
 }
 
 // E7 升环：resolveCastSlot 向上代打 + applyUpcast 骰量追加

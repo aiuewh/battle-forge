@@ -14,6 +14,8 @@ import type { AiAbility, BattleUnit } from '@/lib/engine/types';
 import { AI_ABILITY_KIND_META, DAMAGE_TYPE_META, SIZE_META } from '@/lib/engine/types';
 import { effectiveSpeed } from '@/lib/engine/rules';
 import { canUnarmedStrikeTarget } from '@/lib/engine/combat';
+import { SpellCastDialog, type GenericCastRequest } from '@/components/battle/SpellCastDialog';
+import type { AiAbility as AiAbilityT } from '@/lib/engine/types';
 import { unitDistance, inMeleeRange } from '@/lib/engine/geometry';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -36,6 +38,8 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
   const [potionMode, setPotionMode] = useState(false);
   // 擒抱/推撞模式（2024 徒手打击）：目标条选近战触及内敌人；推撞可选击倒或推离 5 尺
   const [strikeMode, setStrikeMode] = useState<null | 'grapple' | 'shove'>(null);
+  // 通用施法（E6/T2）：未结构化法术 → 弹窗填参施放
+  const [gcRequest, setGcRequest] = useState<GenericCastRequest | null>(null);
   const [shoveEffect, setShoveEffect] = useState<'prone' | 'push5'>('prone');
 
   // 行动者：战斗中 = 当前玩家操控单位；非战斗 = 选中的友方单位
@@ -346,7 +350,7 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
             <Wand2 className="h-3 w-3" />法术
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {spells.map(a => {
+            {spells.filter(a => !a.genericCast).map(a => {
               const lvl = a.spellLevel ?? 0;
               const noSlot = !slotOk(a);
               const disabled = econDisabled(a) || !actorAlive || noSlot;
@@ -386,6 +390,27 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* ===== 通用施法（未结构化法术：弹窗填参） ===== */}
+      {spells.some(a => a.genericCast) && (
+        <div className="flex flex-wrap gap-1.5">
+          {spells.filter(a => a.genericCast).map(a => (
+            <button
+              key={a.id}
+              onClick={() => setGcRequest({ abilityId: a.id, name: a.name, baseLevel: a.spellLevel ?? 0 })}
+              title={a.note}
+              className="flex flex-col items-start rounded-lg border border-violet-400/30 bg-card/60 px-2.5 py-1.5 text-left transition-all hover:border-violet-400/60 hover:bg-violet-500/10"
+            >
+              <span className="text-xs font-semibold">
+                ◐ {a.name}
+                <span className="ml-1 rounded bg-violet-500/20 px-1 text-[9px] text-violet-300">{(a.spellLevel ?? 0) === 0 ? '戏法' : `${a.spellLevel}环`}</span>
+                <span className="ml-1 rounded bg-amber-500/15 px-1 text-[9px] text-amber-300">通用</span>
+              </span>
+              <span className="text-[10px] text-muted-foreground">点击填参施放</span>
+            </button>
+          ))}
         </div>
       )}
 
@@ -612,6 +637,30 @@ export function ActionBar({ compact = false }: { compact?: boolean }) {
         {!battleActive && <span className="text-amber-300/80">非战斗状态：自由结算，不消耗动作经济</span>}
         {canActFree && battleActive && <span className="text-amber-300/80">非本回合单位：演练结算</span>}
       </div>
+
+      {/* 通用施法弹窗（E6/T2） */}
+      <SpellCastDialog
+        open={!!gcRequest && !!actor}
+        onOpenChange={(v) => { if (!v) setGcRequest(null); }}
+        actor={actor!}
+        units={units}
+        request={gcRequest ?? { abilityId: '', name: '', baseLevel: 0 }}
+        onCast={(synth: AiAbilityT, castLevel: number, consumeSlot: boolean, targetId: string | null) => {
+          if (!actor) return;
+          // 合成动作写入单位（替换占位项），随后走 castAbility 现成结算分支
+          useBattleStore.setState((s) => ({
+            units: s.units.map(u => (u.id === actor.id
+              ? { ...u, aiAbilities: (u.aiAbilities ?? []).map(a => (a.id === synth.id ? synth : a)) }
+              : u)),
+          }));
+          const isAoe = synth.kind === 'save-aoe';
+          store.castAbility(actor.id, synth.id, targetId, {
+            castLevel,
+            consumeSlot,
+            ...(isAoe && !targetId ? { originPos: actor.pos } : {}),
+          });
+        }}
+      />
     </div>
   );
 }
