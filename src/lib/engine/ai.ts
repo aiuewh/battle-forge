@@ -20,7 +20,7 @@ import {
   buildBlockedCells, buildOccupancy, reachableCells, findPath, gridDistanceCells,
   aoeCells, estimateCover,
 } from './geometry';
-import { effectiveSpeed, getAbilityMod } from './rules';
+import { effectiveSpeed, getAbilityMod, proficiencyBonus } from './rules';
 import { aggregateEffects } from './conditions';
 import { rollFormula } from './dice';
 
@@ -87,7 +87,7 @@ export function unitAbilities(unit: BattleUnit): AiAbility[] {
   // 兜底：徒手打击
   return [{
     id: 'unarmed', name: '徒手打击', kind: 'melee',
-    attackBonus: 2 + getAbilityMod(unit, 'str'),
+    attackBonus: proficiencyBonus(unit.level ?? unit.cr) + getAbilityMod(unit, 'str'),
     dice: '1', damageType: 'bludgeoning', range: 5, multiAttack: 1,
   }];
 }
@@ -377,7 +377,15 @@ export function planTurn(ctx: AiContext, unit: BattleUnit): AiStep[] {
   // 中立单位不行动
   if (unit.attitude === 1) return [{ type: 'end-turn' }];
 
-  const abilities = unitAbilities(unit);
+  // F3：充能中/每日限次用尽的动作不进入规划
+  const abilityReady = (a: AiAbility) => {
+    const st = unit.abilityUses?.[a.id];
+    if (!st) return true;
+    if (st.max !== undefined) return st.used < st.max;
+    if (st.recharge !== undefined) return st.used === 0;
+    return true;
+  };
+  const abilities = unitAbilities(unit).filter(abilityReady);
   let remainingCells = Math.floor(Math.max(0, effectiveSpeed(unit) - unit.actionEconomy.movementUsed) / CELL);
   const hasAction = !unit.actionEconomy.action;
 

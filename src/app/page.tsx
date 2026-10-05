@@ -112,6 +112,11 @@ function BattleForgeInner() {
               {detailUnitId && <UnitDetailCard unitId={detailUnitId} compact />}
             </div>
           </div>
+          {/* F6：战报明细（嵌入模式可折叠战斗日志） */}
+          <details className="rounded-xl parchment-panel p-2.5">
+            <summary className="cursor-pointer select-none text-[11px] text-muted-foreground">📜 战斗日志明细</summary>
+            <BattleLog compact />
+          </details>
         </div>
         {driver}
       </div>

@@ -101,6 +101,8 @@ export interface StatblockDef {
   resistances: DamageType[];
   immunities: DamageType[];
   vulnerabilities: DamageType[];
+  /** 抗性含「非魔法」限定（魔法源伤害不受影响） */
+  physNonmagicRes?: boolean;
   aiProfile: AIProfile;
   note?: string;
   reactions?: ReactionDef[];
@@ -160,6 +162,16 @@ export function statblockFromUnit(u: BattleUnit): StatblockDef {
   };
 }
 
+/** F3：由敌卡动作构建充能/限次使用状态 */
+export function buildAbilityUses(attacks: AiAbility[]): BattleUnit['abilityUses'] {
+  const out: NonNullable<BattleUnit['abilityUses']> = {};
+  for (const a of attacks) {
+    if (a.recharge !== undefined) out[a.id] = { used: 0, recharge: a.recharge };
+    else if (a.usesPerDay !== undefined) out[a.id] = { used: 0, max: a.usesPerDay };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /** 敌卡 → 新战斗单位（位置由调用方摆放） */
 export function unitFromStatblock(def: StatblockDef, idx = 0, hostile = true, pos = { x: 0, y: 0 }): BattleUnit {
   const suffix = idx > 0 ? String(idx + 1) : '';
@@ -191,6 +203,8 @@ export function unitFromStatblock(def: StatblockDef, idx = 0, hostile = true, po
     hasActed: false,
     aiProfile: def.aiProfile,
     aiAbilities: def.attacks.map(a => ({ ...a })),
+    abilityUses: buildAbilityUses(def.attacks),
+    physNonmagicRes: def.physNonmagicRes,
     notes: def.note ?? '',
     reactions: def.reactions ? def.reactions.map(r => ({ ...r })) : undefined,
     reactionsPerRound: def.reactionsPerRound,
@@ -218,8 +232,13 @@ export function applyStatblockToUnit(unit: BattleUnit, def: StatblockDef): Battl
     speed: unit.speed === 30 ? def.speed : unit.speed,
     // E13：已有单位保留其 speeds；瘦单位（AI 解析/新建）从敌卡补全
     speeds: unit.speeds ?? (def.speeds ? { ...def.speeds } : undefined),
-    aiProfile: unit.aiProfile ?? def.aiProfile,
+    // F5：敌卡是战术档案权威——瘦单位的默认 tactical 不再盖掉卡面声明的 爆发/游击/懦弱
+    aiProfile: def.aiProfile ?? unit.aiProfile,
+    // F4：敌卡先攻调整值回填（平局裁决与显示一致性）
+    initMod: unit.initMod || Math.floor(((def.abilities.dex ?? 10) - 10) / 2),
     aiAbilities: def.attacks.map(a => ({ ...a })),
+    abilityUses: buildAbilityUses(def.attacks),
+    physNonmagicRes: def.physNonmagicRes || unit.physNonmagicRes,
     reactions: def.reactions ? def.reactions.map(r => ({ ...r })) : unit.reactions,
     reactionsPerRound: def.reactionsPerRound ?? unit.reactionsPerRound,
     reactionsUsedRound: 0,
@@ -354,7 +373,8 @@ function toDamageList(v: unknown): DamageType[] {
   const arr = Array.isArray(v) ? v : String(v).split(/[,，、/|]+/);
   const out: DamageType[] = [];
   for (const item of arr) {
-    const t = toDamageType(item);
+    // 「钝击(非魔法)」等限定：剥离后映射基础类型（限定语义由 physNonmagicRes 标记承载）
+    const t = toDamageType(String(item).replace(/[（(]\s*非魔法\s*[)）]/g, '').trim());
     if (t && !out.includes(t)) out.push(t);
   }
   return out;
@@ -446,6 +466,11 @@ export function parseAttack(
   const concentration = o.concentration === true || o['专注'] === true || o['需要专注'] === true;
   const bonusAction = o.bonusAction === true || o['附赠动作'] === true;
   const reaction = o.reaction === true || o['反应'] === true;
+  // F3：充能（"5-6"/"6"/5 → 回合开始 d20≥5 恢复）与每日限次（"每日2次"/2 → 长休恢复）
+  const rechargeRaw = o.recharge ?? o['充能'];
+  const rechargeNum = rechargeRaw !== undefined ? parseInt(String(rechargeRaw).match(/(\d+)/)?.[1] ?? '', 10) : NaN;
+  const usesRaw = o.usesPerDay ?? o['每日限次'] ?? o['每日次数'];
+  const usesNum = usesRaw !== undefined ? parseInt(String(usesRaw).match(/(\d+)/)?.[1] ?? '', 10) : NaN;
   // 升环增量：对象 {每环:"1d6", 类型:"伤害"|"治疗"}（卡内 _battle 契约）或字符串 "1d6/环"
   const upRaw = o.upcast ?? o['升环'];
   let upcast: AiAbility['upcast'] | undefined;
@@ -489,6 +514,9 @@ export function parseAttack(
   const multiAttack = o.multiAttack !== undefined ? toNum(o.multiAttack, 1)
     : o['多次攻击'] !== undefined ? toNum(o['多次攻击'], 1) : 1;
 
+  // F2：save-aoe 缺 范围/AoE → 默认球体20尺（[028] 契约标准形状），避免动作被整体拦截
+  if (kind === 'save-aoe' && !aoe) aoe = { kind: 'circle', size: 20 };
+
   return {
     id: `a${idx}-${name}`,
     name,
@@ -508,6 +536,9 @@ export function parseAttack(
     bonusAction,
     reaction,
     applyStatus,
+    ...(Number.isFinite(rechargeNum) ? { recharge: rechargeNum } : {}),
+    ...(Number.isFinite(usesNum) ? { usesPerDay: usesNum } : {}),
+    magic: spellLevel !== undefined || o.magic === true,
     note: typeof o.note === 'string' ? o.note : typeof o['描述'] === 'string' ? o['描述'] : undefined,
   };
 }
@@ -544,6 +575,9 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
     const [a, b] = hpRaw.match(/\d+/g)!.map(Number);
     hp = Math.round((a + b) / 2);
   }
+  // 抗性「非魔法」限定扫描：钝击/挥砍/穿刺（非魔法）
+  const physNonmagicRes = [o.resistances ?? o['抗性']].flat().some(item => item && /非魔法/.test(String(item))
+    && /^(钝击|挥砍|穿刺|bludgeoning|piercing|slashing)/i.test(String(item).replace(/[（(].*$/, '').trim()));
   const profileRaw = String(o.aiProfile ?? o['战术'] ?? o['档案'] ?? o.profile ?? '').trim();
   const aiProfile = (PROFILE_CN[profileRaw.toLowerCase()] ?? PROFILE_CN[profileRaw] ?? 'tactical') as AIProfile;
 
@@ -719,6 +753,7 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
     immunities: toDamageList(o.immunities ?? o['免疫']),
     vulnerabilities: toDamageList(o.vulnerabilities ?? o['易伤']),
     aiProfile,
+    physNonmagicRes: physNonmagicRes || undefined,
     note: typeof (o.note ?? o['备注'] ?? o['描述']) === 'string' ? String(o.note ?? o['备注'] ?? o['描述']) : undefined,
     reactions,
     reactionsPerRound: reactionsPerRound ?? (reactions && reactions.length ? 1 : undefined),

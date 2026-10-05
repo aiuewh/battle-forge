@@ -613,21 +613,22 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
         const dc = 8 + pb + castMod;
         for (const [sName, sv] of Object.entries(sbRaw as Record<string, unknown>)) {
           const prepared = !!sv && typeof sv === 'object' && (sv as Record<string, unknown>)['准备中'] === true;
-          const tpl = matchSpell(sName);
-          // 内置库未命中 → 尝试结构化解析（与敌卡动作同字段契约）：
-          // 玩家条目可写 命中:"施法"/豁免DC:"施法" 占位，由施法属性自动换算攻击加值与 DC
+          // F1：结构化自设优先——条目自带 命中/伤害公式/豁免 等字段时，不再被同名内置模板劫持
+          //（玩家自设「火球术 12d6」这类改数值法术按自设结算；纯描述性同名条目仍走内置库）
+          const structured = sv && typeof sv === 'object' && hasStructuredActionFields(sv as Record<string, unknown>);
           let customAbility: Omit<AiAbility, 'id'> | undefined;
-          if (!tpl && sv && typeof sv === 'object' && hasStructuredActionFields(sv as Record<string, unknown>)) {
-            const parsed = parseAttack(sv, 0, [], { spellAttack: pb + castMod, spellDc: dc });
+          if (structured) {
+            const parsed = parseAttack(sv as Record<string, unknown>, 0, [], { spellAttack: pb + castMod, spellDc: dc });
             if (parsed) {
               const { id: _id, ...rest } = parsed;
               // 法术名在变量键上（条目本身不带 名称 字段）
               customAbility = { ...rest, name: rest.name && !/^动作\d+$/.test(rest.name) ? rest.name : sName };
             }
           }
+          const tpl = (structured && customAbility) ? undefined : matchSpell(sName);
           spells.push({
             name: sName,
-            level: tpl?.level ?? getNum(sv, '环阶', '等级') ?? customAbility?.spellLevel ?? 1,
+            level: customAbility?.spellLevel ?? tpl?.level ?? getNum(sv, '环阶', '等级') ?? 1,
             prepared,
             matched: !!tpl,
             custom: !tpl && !!customAbility,

@@ -40,6 +40,8 @@ export interface AttackOptions {
   critWeaponDiceOnly?: boolean;
   /** 是否应用目标抗性 */
   applyResistances?: boolean;
+  /** 魔法伤害源（法术/魔法武器）：用于「非魔法物理抗性」豁免 */
+  magicSource?: boolean;
   /** 目标掩护类型：full（全掩护）→ 2024 规则禁止直接指定，攻击被拦截（不掷骰） */
   coverKind?: 'none' | 'half' | 'threeQuarters' | 'full';
   forcedAttackRoll?: number;
@@ -184,7 +186,7 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
   }
 
   const rawTotal = weaponTotal + riderTotal;
-  const damage = applyDamageModifiers(target, rawTotal, opts.weaponType ?? 'slashing', rolls, opts.applyResistances !== false);
+  const damage = applyDamageModifiers(target, rawTotal, opts.weaponType ?? 'slashing', rolls, opts.applyResistances !== false, opts.magicSource);
   return {
     attack,
     hit: true,
@@ -203,14 +205,18 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
  * minDamageOne 房规（SettingsPanel 可切换）：免疫之外，伤害经抗性/石化减至 0 时至少结算 1 点。
  */
 export function applyTypeModifiers(
-  target: Pick<BattleUnit, 'resistances' | 'immunities' | 'vulnerabilities' | 'statuses'>,
+  target: Pick<BattleUnit, 'resistances' | 'immunities' | 'vulnerabilities' | 'statuses'> & { physNonmagicRes?: boolean },
   raw: number,
   type: DamageType,
+  opts?: { magicSource?: boolean },
 ): { final: number; note: string } {
   let final = raw;
   const notes: string[] = [];
   let immune = false;
-  if (target.resistances.includes(type)) {
+  // 「非魔法」限定物理抗性：魔法源伤害（法术等）不受该抗性影响（2024）
+  const physNonmagicGuard = opts?.magicSource === true && target.physNonmagicRes === true
+    && (type === 'bludgeoning' || type === 'piercing' || type === 'slashing');
+  if (target.resistances.includes(type) && !physNonmagicGuard) {
     final = Math.floor(final / 2);
     notes.push(`${type} 抗性 ×½`);
   }
@@ -240,11 +246,12 @@ export function applyDamageModifiers(
   type: DamageType,
   rolls?: DieRoll[],
   applyMods = true,
+  magicSource?: boolean,
 ): DamageResult {
   let final = raw;
   let note = '';
   if (applyMods) {
-    const r = applyTypeModifiers(target, raw, type);
+    const r = applyTypeModifiers(target, raw, type, { magicSource });
     final = r.final;
     note = r.note;
   }
@@ -280,6 +287,8 @@ export interface SaveOptions {
   halfOnSuccess?: boolean;
   sourceDamage?: number;
   forcedRoll?: number;
+  /** 掩体对敏捷豁免的加值（+2/+5；仅 dex 豁免生效） */
+  coverBonus?: number;
 }
 
 export interface SaveResult {
@@ -313,7 +322,8 @@ export function resolveSave(target: BattleUnit, opts: SaveOptions): SaveResult {
 
   // 2024 力竭：豁免检定 -2/级（替代 2014 的 3 级劣势分级）
   const exPenalty = exhaustionPenalty(target.statuses);
-  const bonus = getSaveBonus(target, opts.ability) - exPenalty;
+  const bonus = getSaveBonus(target, opts.ability) - exPenalty
+    + (opts.ability === 'dex' ? (opts.coverBonus ?? 0) : 0);
   const dice = rollFormula('1d20', {
     mode, bonus,
     forcedRolls: opts.forcedRoll !== undefined ? [opts.forcedRoll] : undefined,

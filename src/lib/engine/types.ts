@@ -133,6 +133,12 @@ export interface AiAbility {
   mastery?: string;
   /** 武器攻击属性调整值（Graze 伤害与 Topple/Push 的 DC 用） */
   masteryMod?: number;
+  /** 充能门槛（「充能5-6」写 5）：回合开始掷 d20 ≥ 该值恢复可用（F3） */
+  recharge?: number;
+  /** 每日限次：长休恢复（F3） */
+  usesPerDay?: number;
+  /** 魔法伤害源（法术/施法类动作）——用于「非魔法物理抗性」豁免判断 */
+  magic?: boolean;
   note?: string;
 }
 
@@ -294,6 +300,10 @@ export interface BattleUnit {
   playerControlled?: boolean;
   /** AI 动作表（无则从基础攻击推导；玩家单位用它表示武器与法术） */
   aiAbilities?: AiAbility[];
+  /** 动作使用状态（充能/每日限次），key = ability.id（F3） */
+  abilityUses?: Record<string, { used: number; max?: number; recharge?: number }>;
+  /** 物理抗性带「非魔法」限定：魔法源伤害不受该抗性影响 */
+  physNonmagicRes?: boolean;
   /** 隐匿加值（隐藏动作检定用） */
   stealthBonus?: number;
 }

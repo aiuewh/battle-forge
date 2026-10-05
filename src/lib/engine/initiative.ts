@@ -75,7 +75,10 @@ export function buildInitiativeOrder(units: BattleUnit[], rules: RulesConfig, se
     if (b.init !== a.init) return b.init - a.init;
     // 平局裁决
     if (rules.tieBreak === 'modifier-then-player') {
-      if (b.initMod !== a.initMod) return b.initMod - a.initMod;
+      // F4：平局裁决与掷骰同源（initiativeBonus 含敏捷回退），敌卡 initMod=0 不再恒输
+      const ba = initiativeBonus(a);
+      const bb = initiativeBonus(b);
+      if (bb !== ba) return bb - ba;
       if (a.isPlayer !== b.isPlayer) return a.isPlayer ? -1 : 1;
     } else if (rules.tieBreak === 'player-first') {
       if (a.isPlayer !== b.isPlayer) return a.isPlayer ? -1 : 1;
