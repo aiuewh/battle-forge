@@ -537,6 +537,12 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
 
     // 法术位
     const casting = c['施法'];
+    // R3：玩家显式设定的施法攻击/DC 覆盖（状态栏编辑保存写入）；污染对（0/10，旧默认落库）视为未设置
+    const rawAtkOv = getNum(casting, '法术攻击调整值');
+    const rawDcOv = getNum(casting, '法术豁免DC');
+    const spellOverridePolluted = rawAtkOv === 0 && rawDcOv === 10;
+    const spellAtkOverride = !spellOverridePolluted && rawAtkOv !== undefined ? rawAtkOv : undefined;
+    const spellDcOverride = !spellOverridePolluted && rawDcOv !== undefined ? rawDcOv : undefined;
     let spellSlots: SpellSlots | undefined;
     if (casting && typeof casting === 'object') {
       const slotRaw = (casting as Record<string, unknown>)['法术位'];
@@ -610,7 +616,8 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       if (sbRaw && typeof sbRaw === 'object') {
         const castKey = castingAbility(abilities, casting);
         const castMod = abilityMod(abilities[castKey]);
-        const dc = 8 + pb + castMod;
+        const spellAttack = spellAtkOverride ?? pb + castMod;
+        const dc = spellDcOverride ?? 8 + pb + castMod;
         for (const [sName, sv] of Object.entries(sbRaw as Record<string, unknown>)) {
           const prepared = !!sv && typeof sv === 'object' && (sv as Record<string, unknown>)['准备中'] === true;
           // F1：结构化自设优先——条目自带 命中/伤害公式/豁免 等字段时，不再被同名内置模板劫持
@@ -618,7 +625,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
           const structured = sv && typeof sv === 'object' && hasStructuredActionFields(sv as Record<string, unknown>);
           let customAbility: Omit<AiAbility, 'id'> | undefined;
           if (structured) {
-            const parsed = parseAttack(sv as Record<string, unknown>, 0, [], { spellAttack: pb + castMod, spellDc: dc });
+            const parsed = parseAttack(sv as Record<string, unknown>, 0, [], { spellAttack, spellDc: dc });
             if (parsed) {
               const { id: _id, ...rest } = parsed;
               // 法术名在变量键上（条目本身不带 名称 字段）
@@ -648,7 +655,10 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       // 特性动作同样支持 命中:"施法"/豁免DC:"施法" 占位（自设武术/魔法特性共用一套契约）
       const castKeyT = casting && typeof casting === 'object' ? castingAbility(abilities, casting) : undefined;
       const castCtx = castKeyT
-        ? { spellAttack: pb + abilityMod(abilities[castKeyT]), spellDc: 8 + pb + abilityMod(abilities[castKeyT]) }
+        ? {
+          spellAttack: spellAtkOverride ?? pb + abilityMod(abilities[castKeyT]),
+          spellDc: spellDcOverride ?? 8 + pb + abilityMod(abilities[castKeyT]),
+        }
         : undefined;
       const cats = ['职业', '种族', '专长', 'class', 'race', 'feat'];
       for (const cat of cats) {
