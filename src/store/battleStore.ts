@@ -439,6 +439,8 @@ export interface BattleStore {
   // ---- 协议 ----
   importBattleBlock: (raw: string, source?: 'embed' | 'import' | 'manual') => { added: number; updated: number };
   importDmMessage: (text: string, source?: 'embed' | 'import' | 'manual', depth?: number | null) => ParsedCheck[];
+  /** 宿主（酒馆 bootstrap 壳）随 bp:battle 附带的角色变量快照：合并进变量树并同步名单 */
+  importHostVars: (roster: unknown) => void;
   generateExportBlock: (withNext?: boolean) => string;
   exportWarReport: () => string;
   importWarReport: (json: string) => boolean;
@@ -2229,6 +2231,33 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
     persist(get(), true); // 协议导入属权威写入，穿透只读锁
     return parsed.checks;
+  },
+
+  importHostVars: (roster) => {
+    // 宿主变量快照（P1 修复）：酒馆侧 stat_data.角色列表 直接整树合并。
+    // 不走 applyPatches：角色名可能含 '/'（JSON Pointer 转义在 parsePath 未实现），
+    // 且语义是"快照覆盖"而非增量——酒馆侧变量是持久事实的权威，
+    // 本楼 <UpdateVariable> 增量补丁在其后应用，会自然覆盖其中的过期值。
+    const chars = roster && typeof roster === 'object'
+      ? (roster as Record<string, unknown>)['角色列表']
+      : null;
+    if (!chars || typeof chars !== 'object' || Array.isArray(chars)) return;
+    const entries = Object.entries(chars as Record<string, unknown>)
+      .filter(([, v]) => v && typeof v === 'object' && !Array.isArray(v));
+    if (entries.length === 0) return;
+    const s = get();
+    const tree: VarTree = JSON.parse(JSON.stringify(s.varTree ?? {}));
+    const list = (tree['角色列表'] && typeof tree['角色列表'] === 'object' && !Array.isArray(tree['角色列表'])
+      ? tree['角色列表']
+      : (tree['角色列表'] = {})) as Record<string, unknown>;
+    for (const [name, v] of entries) list[name] = v;
+    set({ varTree: tree });
+    const names = get().syncRosterFromTree();
+    get().logEvent({
+      type: 'note',
+      text: `📥 宿主变量同步：酒馆名单 ${names.length} 人${names.length > 0 ? `（${names.join('、')}）` : ''}`,
+      level: 'info',
+    });
   },
 
   generateExportBlock: (withNext = true) => {

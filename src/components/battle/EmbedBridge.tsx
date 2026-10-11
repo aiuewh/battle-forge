@@ -110,6 +110,12 @@ export function useEmbedBridge(active: boolean) {
         if (panel && typeof msg.depth === 'number') panel.setDepth(msg.depth);
         // 全路由：battle 快照合并 + UpdateVariable 变量同步 + encounter 敌卡暂存 + 自动配装
         // 哈希链门控在 store 内部完成（重复导入/过期楼层自动跳过）
+        // 宿主角色变量摘要（P1）：先于战斗块合入名单，<battle> 同名装配即可命中完整数据
+        if (msg.roster && typeof msg.roster === 'object') {
+          try {
+            useBattleStore.getState().importHostVars(msg.roster);
+          } catch { /* 名单同步失败不阻塞战斗块导入 */ }
+        }
         const parsed = parseDmMessage(msg.payload);
         if (parsed.latestBattle || parsed.patches.length > 0 || parsed.statblockBlocks.length > 0) {
           useBattleStore.getState().importDmMessage(

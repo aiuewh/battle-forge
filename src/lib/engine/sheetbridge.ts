@@ -277,6 +277,8 @@ const STATUS_CN: Record<string, string> = {
   '隐形': 'invisible', '隐身': 'invisible', '擒抱': 'grappled', '束缚': 'restrained',
   '震慑': 'stunned', '石化': 'petrified', '魅惑': 'charmed', '失聪': 'deafened',
   '失能': 'incapacitated',
+  // 战斗协议常用别名词（协议清单与引擎映射对齐，2026-10-11）
+  '眩晕': 'stunned', '被擒': 'grappled', '受缚': 'restrained',
   // 注意：'力竭' 不入此表——它必须走下方带 等级 的分支拼出 exhaustion:N，
   // 引擎只认 exhaustion:N（conditions.ts 的 -2检定/-5尺速度 都按等级结算），纯 'exhaustion' 无减值
 };

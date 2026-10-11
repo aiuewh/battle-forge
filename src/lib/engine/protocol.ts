@@ -80,7 +80,8 @@ const STATUS_CN: Record<string, string> = {
   '中毒': 'poisoned',
   '倒地': 'prone', '俯卧': 'prone',
   '束缚': 'restrained', '受缚': 'restrained',
-  '震慑': 'stunned',
+  '震慑': 'stunned', '眩晕': 'stunned',
+  '被擒': 'grappled',
   '昏迷': 'unconscious', '失去意识': 'unconscious',
   '力竭': 'exhaustion', '枯竭': 'exhaustion',
 };
