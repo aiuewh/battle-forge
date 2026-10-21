@@ -356,8 +356,9 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
 
       // ---- AoE 模板（已放置） ----
       for (const tpl of s.aoeTemplates) {
-        const hit = new Set(aoeCells(tpl, s.units).affectedUnitIds);
-        for (const c of aoeCells(tpl, s.units).cells) {
+        const aoe = aoeCells(tpl, s.units);
+        const hit = new Set(aoe.affectedUnitIds);
+        for (const c of aoe.cells) {
           drawCellOverlay(ctx, proj, c.cx, c.cy, tpl.color, 'rgba(255,170,90,0.4)');
         }
         if (tpl.label) {
@@ -659,7 +660,8 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
       }
 
       // ---- 悬停提示（记录命中区域） ----
-      void hoverInfo;
+      // 悬停高亮由 pointermove -> wake() 驱动重绘，此处不读 hoverInfo，
+      // 避免每次悬停进出都拆装整个渲染循环（退订 store、销毁 IntersectionObserver）
       if (visibleRef.current && !reduced && (animating || floatsRef.current.length > 0 || slashesRef.current.length > 0)) wake();
     };
     invalidateRef.current = wake;
@@ -673,7 +675,7 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
     if (canvas) { io.observe(canvas); for (const event of ['pointermove','pointerdown','pointerup','wheel']) canvas.addEventListener(event, wake, { passive: true }); }
     wake();
     return () => { disposed = true; cancelAnimationFrame(raf); unsubStore(); unsubSelection(); io.disconnect(); document.removeEventListener('visibilitychange', onVisibility); if (canvas) for (const event of ['pointermove','pointerdown','pointerup','wheel']) canvas.removeEventListener(event, wake); invalidateRef.current = () => {}; };
-  }, [tool, aoePreset, hoverInfo]);
+  }, [tool, aoePreset]);
 
   useEffect(() => {
     invalidateRef.current();

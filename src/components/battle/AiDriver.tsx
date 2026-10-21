@@ -17,6 +17,7 @@ import { AI_PROFILE_META } from '@/lib/engine/types';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { ReportSendButton } from './ReportSendButton';
+import { appConfirm } from './AppConfirm';
 import { cn } from '@/lib/utils';
 import { Bot, User, ChevronRight, Gauge, Pause, Play, ClipboardList, Check, Undo2 } from 'lucide-react';
 
@@ -128,8 +129,10 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
           {!store.readOnly && playerTurn && battleActive && (
             <Button size="sm" className="h-7 gap-1 bg-primary text-[11px] text-primary-foreground" disabled={!!store.pendingReactionStep}
               onClick={() => {
-                if (store.multiAttackQueue && !window.confirm(`还有 ${store.multiAttackQueue.remaining} 次攻击，放弃并结束回合？`)) return;
-                store.nextTurn();
+                void (async () => {
+                  if (store.multiAttackQueue && !(await appConfirm(`还有 ${store.multiAttackQueue.remaining} 次攻击，放弃并结束回合？`, { title: '放弃续打', danger: true }))) return;
+                  store.nextTurn();
+                })();
               }}>
               结束回合 <ChevronRight className="h-3.5 w-3.5" />
             </Button>

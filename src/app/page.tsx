@@ -13,6 +13,7 @@ import { MonsterPicker } from '@/components/battle/MonsterPicker';
 import { ImportPanel } from '@/components/battle/ImportExportPanel';
 import { EncounterBriefing } from '@/components/battle/EncounterBriefing';
 import { useEmbedBridge, useAppRuntime, isEmbedded } from '@/components/battle/EmbedBridge';
+import { AppConfirmHost, appConfirm } from '@/components/battle/AppConfirm';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -57,7 +58,7 @@ function BattleForgeInner() {
   }
 
   // Embedded and standalone battles share the same canvas/HUD workspace.
-  if (embed) return <div className="dnd-theme battle-embed-shell"><EncounterBriefing compact /><BattleWorkspace compact />{driver}</div>;
+  if (embed) return <div className="dnd-theme battle-embed-shell"><EncounterBriefing compact /><BattleWorkspace compact />{driver}<AppConfirmHost /></div>;
 
   // ============ 独立模式（完整仪表盘） ============
   return (
@@ -86,7 +87,7 @@ function BattleForgeInner() {
             </span>
             <button
               className="flex items-center gap-1 rounded-full border border-border/50 px-2 py-0.5 transition-colors hover:border-primary/60 hover:text-primary"
-              onClick={() => { if (confirm('清空当前战斗并重新开始？')) { store.reset(); } }}
+              onClick={() => { void (async () => { if (!(await appConfirm('清空当前战斗并重新开始？', { title: '新战斗', danger: true }))) return; store.reset(); })(); }}
               title="新战斗"
             >
               <Trash2 className="h-3 w-3" />新战斗
@@ -165,6 +166,7 @@ function BattleForgeInner() {
         </div>
       </footer>
       {driver}
+      <AppConfirmHost />
     </div>
   );
 }

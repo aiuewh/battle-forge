@@ -438,6 +438,13 @@
 .hud-form-input { display: block; width: 100%; border: 1px solid #565b50; background: #2a2a26; color: var(--hud-ink); padding: 10px; margin-top: 6px; border-radius: 6px; font-size: 16px; }
 .battle-dialog { width: min(94vw, 780px); max-width: 780px; max-height: 88vh; overflow-y: auto; grid-template-columns: minmax(0, 1fr); background: rgba(36,37,34,.97); color: var(--hud-ink); }
 .battle-dialog > *, .battle-dialog [data-slot="tabs"] { min-width: 0; }
+.app-confirm { width: min(92vw, 420px); max-width: 420px; }
+.app-confirm-message { margin: 2px 0 14px; font-size: 13px; line-height: 1.65; color: var(--hud-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.app-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.app-confirm-actions button { min-height: 44px; min-width: 96px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--hud-border); background: var(--hud-raised); color: var(--hud-ink); font-size: 13px; cursor: pointer; }
+.app-confirm-actions button:focus-visible { outline: 2px solid var(--hud-gold); outline-offset: 2px; }
+.app-confirm-actions .app-confirm-primary { border-color: var(--hud-gold); color: var(--hud-gold); }
+.app-confirm-actions .app-confirm-danger { border-color: #d5453c; color: #ff9c8a; background: rgba(120,20,10,.35); }
 .battle-tool-tabs { display: flex; flex-wrap: wrap; width: 100%; height: auto; justify-content: flex-start; gap: 4px; }
 .battle-tool-tabs > button { height: 44px; flex: 0 0 auto; }
 .battle-tool-body { min-width: 0; }

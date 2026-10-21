@@ -21,6 +21,7 @@ import { ImportPanel, ExportPanel } from './ImportExportPanel';
 import { SettingsPanel } from './SettingsPanel';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { appConfirm } from './AppConfirm';
 import { ListOrdered, ScrollText, MoreHorizontal, X, Maximize2 } from 'lucide-react';
 
 export function BattleWorkspace({ compact = false }: { compact?: boolean }) {
@@ -73,7 +74,7 @@ export function BattleWorkspace({ compact = false }: { compact?: boolean }) {
             <button className="hud-list-item" disabled={store.readOnly || !store.undoStack.length} onClick={() => { store.undoTurn(); setMenu(null); }}><span>回到上一回合</span><small>独立回退历史回合</small></button>
             <div className="hud-report"><ReportSendButton copy={() => { void copyReport(); }}/><button onClick={() => { void copyReport(); }}>复制战报</button>{copyNote && <small role="status">{copyNote}</small>}</div>
             <button className="hud-list-item" onClick={() => { setMenu(null); setPanel('tools'); }}><span>规则与工具</span><small>骰子、角色、敌卡、导入导出与手动结算</small></button>
-            <button className="hud-list-item hud-danger" disabled={store.readOnly || !store.battleActive || !!store.pendingReactionStep} onClick={() => { if (window.confirm('结束当前战斗？')) { store.endCombat(); setMenu(null); } }}><span>结束战斗</span></button>
+            <button className="hud-list-item hud-danger" disabled={store.readOnly || !store.battleActive || !!store.pendingReactionStep} onClick={() => { void (async () => { if (!(await appConfirm('结束当前战斗？', { title: '结束战斗', danger: true }))) return; store.endCombat(); setMenu(null); })(); }}><span>结束战斗</span></button>
           </div>
         </HudMenu>
       </div>

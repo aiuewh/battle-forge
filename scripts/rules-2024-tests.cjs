@@ -139,7 +139,25 @@ test('急救使用当前行动者属性且唤醒击昏目标',()=>{
 });
 test('忽略护盾反应后AI可继续，不重复弹出同一窗口',()=>{
   setup([mk('hero',{aiAbilities:[{id:'shield',name:'护盾术',kind:'save',dice:'0',range:0,reaction:true,spellLevel:1}],spellSlots:{1:{current:2,max:2}}}),mk('e',{attitude:2,pos:{x:5,y:0},aiAbilities:[sword]})]);store.setState({turn:{...store.getState().turn,currentUnitId:'e'}});
-  store.getState().takeAiStep();assert.ok(store.getState().pendingReactionStep);store.getState().resolvePendingReaction(false);assert.equal(store.getState().pendingReactionStep,null);assert.ok(store.getState().units[0].hp<30);
+  store.getState().takeAiStep();assert.ok(store.getState().pendingReactionStep);const epoch=store.getState().interactionEpoch;store.getState().resolvePendingReaction(false);assert.equal(store.getState().pendingReactionStep,null);assert.ok(store.getState().units[0].hp<30);
+  assert.ok(store.getState().interactionEpoch>epoch,'解析反应后必须递增 interactionEpoch 重启 AiDriver，否则剩余 AI 步骤（续打/结束回合）无人驱动');
+});
+test('非领导者水合恢复全部持久化字段，force-persist 不清空领导者状态',()=>{
+  setup([mk('hero',{aiAbilities:[sword]}),mk('e',{attitude:2,pos:{x:5,y:0}})]);
+  store.getState().castAbility('hero','sword','e');store.getState().nextTurn(); // 攻击+推进 → turnSnap/undoStack 均非空
+  store.getState().save(); // 落盘含 aoeTemplates/escapedUnits/turnSnap/undoStack/aiAutoPlay/aiSpeed
+  const saved=JSON.parse(memory.get('dnd-battle-state-v1'));
+  saved.aoeTemplates=[{id:'tpl1',kind:'line',origin:{x:0,y:0},angle:0,size:30,color:'#fff',label:'火墙'}];
+  saved.escapedUnits=[saved.units[1]];saved.aiAutoPlay=false;saved.aiSpeed=900;
+  memory.set('dnd-battle-state-v1',JSON.stringify(saved));
+  store.setState({aoeTemplates:[],escapedUnits:[],turnSnap:null,undoStack:[],aiAutoPlay:true,aiSpeed:450});
+  assert.equal(store.getState().hydrateFromPersisted(),true);
+  assert.equal(store.getState().aoeTemplates.length,1,'aoeTemplates 未被水合恢复');
+  assert.equal(store.getState().escapedUnits.length,1,'escapedUnits 未被水合恢复');
+  assert.ok(store.getState().turnSnap,'turnSnap 未被水合恢复');
+  assert.ok(store.getState().undoStack.length>0,'undoStack 未被水合恢复');
+  assert.equal(store.getState().aiAutoPlay,false,'aiAutoPlay 未被水合恢复');
+  assert.equal(store.getState().aiSpeed,900,'aiSpeed 未被水合恢复');
 });
 test('充能用d6且只在对应行动者开始时恢复',()=>{
   setup([mk('hero',{abilityUses:{a:{used:1,recharge:5}}}),mk('e',{attitude:2,abilityUses:{a:{used:1,recharge:5}}})]);setRng(()=>.5);store.getState().restoreRecharges();assert.equal(store.getState().units[0].abilityUses.a.used,1);setRng(()=>.99);store.getState().restoreRecharges();assert.equal(store.getState().units[0].abilityUses.a.used,0);assert.equal(store.getState().units[1].abilityUses.a.used,1);

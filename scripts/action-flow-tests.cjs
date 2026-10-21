@@ -97,7 +97,10 @@ test('Movement risk is pure and honors disengage, reaction budget and revalidati
 });
 test('Reset cancels queued reactions and multiattack; snapshots survive save/load', () => {
   setup([mk('hero',{aiAbilities:[sword]}),mk('enemy',{attitude:2,isPlayer:false,pos:{x:5,y:0},hp:100})]);
-  store.getState().castAbility('hero','sword','enemy');store.getState().save();const expected=JSON.stringify(store.getState().turnSnap.units);
+  store.getState().castAbility('hero','sword','enemy');store.getState().save();
+  // load() 的 migrateUnits 会为旧档单位补 effects:[]（持续状态来源特性），
+  // 期望侧做同样归一化后再严格比较
+  const expected=JSON.stringify(store.getState().turnSnap.units.map(u=>({...u,effects:u.effects??[]})));
   store.setState({turnSnap:null,undoStack:[]});assert.equal(store.getState().load(),true);assert.ok(store.getState().turnSnap);
   store.setState({pendingReactionStep:{attackerId:'enemy',targetId:'hero',spellName:'盾',spellLevel:1},multiAttackQueue:{actorId:'hero',abilityId:'sword',remaining:1}});
   store.getState().resetCurrentTurn();assert.equal(store.getState().pendingReactionStep,null);assert.equal(store.getState().multiAttackQueue,null);assert.equal(JSON.stringify(store.getState().units),expected);

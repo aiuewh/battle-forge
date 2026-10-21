@@ -2332,6 +2332,15 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         rosterSheets: data.rosterSheets ?? get().rosterSheets,
         stagedStatblocks: data.stagedStatblocks ?? [],
         importChain: data.importChain ?? get().importChain,
+        // persist 写入的其余字段必须同步恢复：否则非领导者面板水合后处于残缺状态，
+        // 其后的 force-persist 会用内存默认值覆写共享存储，清空领导者的
+        // AoE 标记/逃离名单/撤销栈/AI 设置（领导权切换时损坏即永久化）
+        aoeTemplates: data.aoeTemplates ?? [],
+        escapedUnits: migrateUnits(data.escapedUnits ?? []),
+        turnSnap: data.turnSnap ? { ...data.turnSnap, units: migrateUnits(data.turnSnap.units ?? []) } : null,
+        undoStack: (data.undoStack ?? []).map((snap: TurnSnapshot) => ({ ...snap, units: migrateUnits(snap.units ?? []) })),
+        aiAutoPlay: data.aiAutoPlay ?? get().aiAutoPlay,
+        aiSpeed: data.aiSpeed ?? get().aiSpeed,
       });
       engineSetRules(get().rules);
       return true;
@@ -2971,6 +2980,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     set({ pendingReactionStep: null });
     // 重执行放回队首的攻击步骤（此时目标 AC 已含护盾加值）
     get().takeAiStep();
+    // 反应挂起期间 AiDriver 自调度循环已停止（takeAiStep 返回 false 后不再排程），
+    // 单步补跑无法驱动剩余步骤（续打/结束回合）——递增 interactionEpoch 令驱动器
+    // effect 重新启动；aiAutoPlay 关闭或轮到玩家时 tick 自行短路，无副作用
+    set({ interactionEpoch: get().interactionEpoch + 1 });
   },
 
   setReadyAction: (unitId, abilityId, abilityName, triggerText) => {

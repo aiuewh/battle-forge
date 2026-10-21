@@ -11,6 +11,7 @@ import { abilityDisabledReason } from './abilityGate';
 import { decidePotionCost, DAMAGE_TYPE_META, type AiAbility } from '@/lib/engine/types';
 import { unitDistance } from '@/lib/engine/geometry';
 import { isAiControlled } from '@/lib/engine/ai';
+import { appConfirm, appConfirmOpen } from './AppConfirm';
 import { HudMenu } from './HudMenu';
 import { hpColor } from './iso/isoScene';
 import { SpellCastDialog, type GenericCastRequest } from './SpellCastDialog';
@@ -49,6 +50,7 @@ export function ActionBar({ compact = false, boundary, onInspect }: {
   useEffect(() => {
     const close = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (appConfirmOpen()) return; // 确认弹窗打开时 Escape 只关弹窗，不连带清掉底层操作状态
       if (menu || generic || readyOpen || readyTrigger) { setMenu(null); return; }
       if (useActionUiStore.getState().request?.continuation) useBattleStore.getState().clearMultiAttackQueue();
       else useActionUiStore.getState().clear();
@@ -99,9 +101,9 @@ export function ActionBar({ compact = false, boundary, onInspect }: {
   function disabledReason(a: AiAbility): string | null {
     return abilityDisabledReason(actor!, a, { locked, isCurrent });
   }
-  function choose(a: AiAbility) {
+  async function choose(a: AiAbility) {
     if (!stillOwnsTurn() || disabledReason(a)) return;
-    if (a.spellPrepared === false && (a.spellLevel ?? 0) > 0 && !window.confirm(`【${a.name}】未准备，仍要使用宽松施法？`)) return;
+    if (a.spellPrepared === false && (a.spellLevel ?? 0) > 0 && !(await appConfirm(`【${a.name}】未准备，仍要使用宽松施法？`, { title: '宽松施法' }))) return;
     setMenu(null); setNonLethal(false);
     if (a.genericCast) { setGeneric({ abilityId: a.id, name: a.name, baseLevel: a.spellLevel ?? 0 }); return; }
     ui.begin({ actorId: actor!.id, ability: a });
@@ -115,7 +117,7 @@ export function ActionBar({ compact = false, boundary, onInspect }: {
     } });
   }
   function cancel() { setMenu(null); if (queue) store.clearMultiAttackQueue(); else ui.clear(); setNonLethal(false); }
-  function execute() {
+  async function execute() {
     if (!stillOwnsTurn() || !request || reason || locked || !alive) return;
     if (request.playerAction) {
       const before = useBattleStore.getState().events.at(-1)?.id;
@@ -129,7 +131,7 @@ export function ActionBar({ compact = false, boundary, onInspect }: {
       if (!useBattleStore.getState().multiAttackQueue) ui.clear(); else ui.select(null);
       return;
     }
-    if (preview?.allies.length && !window.confirm(`将波及友方：${preview.allies.map(u => u.name).join('、')}。确认施放？`)) return;
+    if (preview?.allies.length && !(await appConfirm(`将波及友方：${preview.allies.map(u => u.name).join('、')}。确认施放？`, { title: '友军误伤确认', danger: true }))) return;
     const ok = store.castAbility(actor!.id, request.ability.id, ui.targetId, { abilityOverride: request.ability,
       nonLethal: request.ability.kind === 'melee' && nonLethal, originPos: ui.originPos, angle: ui.angle,
       castLevel: request.castLevel, consumeSlot: request.consumeSlot });
@@ -209,7 +211,7 @@ export function ActionBar({ compact = false, boundary, onInspect }: {
           <button className="hud-list-item" disabled={actionDisabled} onClick={() => { setMenu(null); setReadyOpen(true); }}><span>预备动作</span><small>选择动作与触发条件</small></button>
           <button className="hud-list-item" disabled={locked || !isCurrent || !alive || !(actor.pos.x < 5 || actor.pos.y < 5 || actor.pos.x >= (store.mapConfig.width - 1) * 5 || actor.pos.y >= (store.mapConfig.height - 1) * 5)} onClick={() => { store.escapeUnit(actor.id); setMenu(null); }}><span>逃离战场</span><small>需要站在最外圈格子</small></button>
         </div>)}
-        {isCurrent && <button className="hud-shortcut hud-end-turn" disabled={store.readOnly || !!pr} onClick={() => { if (queue && !window.confirm(`放弃剩余 ${queue.remaining} 次攻击并结束回合？`)) return; store.nextTurn(); }}>结束回合</button>}
+        {isCurrent && <button className="hud-shortcut hud-end-turn" disabled={store.readOnly || !!pr} onClick={() => { void (async () => { if (queue && !(await appConfirm(`放弃剩余 ${queue.remaining} 次攻击并结束回合？`, { title: '放弃续打', danger: true }))) return; store.nextTurn(); })(); }}>结束回合</button>}
         {!alive && !actor.deathSaves?.dead && <button className="hud-shortcut" disabled={store.readOnly} onClick={() => store.rollDeathSave(actor.id)}>死亡豁免</button>}
       </div> : <div className="hud-wait"><span>{pr ? '等待反应选择' : store.readOnly ? '同步视图' : store.aiAutoPlay ? 'AI 正在行动' : 'AI 已暂停'}</span>{!store.aiAutoPlay && !store.readOnly && store.battleActive && !pr && isAiControlled(actor) && <button onClick={() => store.takeAiStep()}><Play size={16}/>AI 单步</button>}</div>}
     </div>
