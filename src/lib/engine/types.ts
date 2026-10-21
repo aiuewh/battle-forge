@@ -111,6 +111,12 @@ export interface AiAbility {
   saveDc?: number;
   /** 半伤豁免 */
   halfOnSuccess?: boolean;
+  damageOnSuccess?: 'none' | 'half' | 'full';
+  excludeSelf?: boolean;
+  ignoresCover?: boolean;
+  requiresSight?: boolean;
+  durationRounds?: number;
+  repeatSave?: { ability: AbilityKey; dc: number; timing: 'start' | 'end' };
   /** 每回合攻击次数（多重攻击） */
   multiAttack?: number;
   /** 法术环阶（0=戏法，不占法术位；undefined=非法术） */
@@ -133,7 +139,7 @@ export interface AiAbility {
   mastery?: string;
   /** 武器攻击属性调整值（Graze 伤害与 Topple/Push 的 DC 用） */
   masteryMod?: number;
-  /** 充能门槛（「充能5-6」写 5）：回合开始掷 d20 ≥ 该值恢复可用（F3） */
+  /** 充能门槛（「充能5-6」写 5）：回合开始掷 d6 ≥ 该值恢复可用（F3） */
   recharge?: number;
   /** 每日限次：长休恢复（F3） */
   usesPerDay?: number;
@@ -159,6 +165,18 @@ export interface DeathSaves {
   failures: number;
   stable: boolean;
   dead: boolean;
+}
+
+export interface ActiveEffect {
+  id: string;
+  sourceId: string;
+  abilityId: string;
+  name: string;
+  status: string;
+  concentration: boolean;
+  remainingRounds?: number;
+  repeatSave?: { ability: AbilityKey; dc: number; timing: 'start' | 'end' };
+  preserveStatus: boolean;
 }
 
 /** 法术位 */
@@ -213,6 +231,7 @@ export interface ActionEconomy {
   bonus: boolean;
   reaction: boolean;
   movementUsed: number;
+  diagonalSteps?: number;
 }
 
 /** 移动模式（E13）：按单位拥有的速度切换；缺省步行 */
@@ -257,7 +276,7 @@ export interface BattleUnit {
   /** 临时 AC 加值（反应法术如护盾术 +5）：受术者下回合开始时清除（E11） */
   tempAcBonus?: number;
   /** 2024 预备动作登记（E12）：动作 + 触发条件；触发时以反应执行并清除 */
-  readyAction?: { abilityId: string; abilityName: string; triggerText: string };
+  readyAction?: { abilityId: string; abilityName: string; triggerText: string; castLevel?: number; requiresConcentration?: boolean };
 
   // ---- 引擎扩展字段（协议外，UI 可编辑） ----
   isPlayer: boolean;
@@ -271,6 +290,9 @@ export interface BattleUnit {
   vulnerabilities: DamageType[];
   deathSaves?: DeathSaves;
   concentration?: string;
+  effects?: ActiveEffect[];
+  knockedOut?: boolean;
+  slotCastThisTurn?: boolean;
   spellSlots?: SpellSlots;
   legendary?: { points: number; max: number };
   /** 传奇动作列表（敌卡「传奇动作」字段；在其他单位回合结束后消耗点数自动执行） */
@@ -314,7 +336,7 @@ export interface Cell { cx: number; cy: number }
 
 export interface MapObstacle {
   cells: Cell[];
-  kind: 'half' | 'threeQuarters' | 'full';
+  kind: 'half' | 'threeQuarters' | 'full' | 'difficult';
   label?: string;
 }
 

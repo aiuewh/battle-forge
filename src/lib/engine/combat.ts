@@ -126,7 +126,7 @@ export function resolveAttack(attacker: BattleUnit, target: BattleUnit, opts: At
   let isCrit = raw === 20;
   const isCritMiss = raw === 1;
   // 2024：麻痹/昏迷目标被 5 尺内近战命中即重击（meleeCritOnHit）
-  if (!isCrit && !opts.isRanged) {
+  if (!isCrit && !isCritMiss && attackDice.total >= opts.targetAc) {
     const inMelee = opts.distanceFeet === undefined || opts.distanceFeet <= 5;
     if (inMelee && aggregateEffects(target.statuses).meleeCritOnHit) isCrit = true;
   }
@@ -216,9 +216,9 @@ export function applyTypeModifiers(
   // 「非魔法」限定物理抗性：魔法源伤害（法术等）不受该抗性影响（2024）
   const physNonmagicGuard = opts?.magicSource === true && target.physNonmagicRes === true
     && (type === 'bludgeoning' || type === 'piercing' || type === 'slashing');
-  if (target.resistances.includes(type) && !physNonmagicGuard) {
+  if ((target.resistances.includes(type) && !physNonmagicGuard) || target.statuses?.includes('petrified')) {
     final = Math.floor(final / 2);
-    notes.push(`${type} 抗性 ×½`);
+    notes.push(`${target.statuses?.includes('petrified') ? '石化·全伤害' : type} 抗性 ×½`);
   }
   if (target.vulnerabilities.includes(type)) {
     final = final * 2;
@@ -228,10 +228,6 @@ export function applyTypeModifiers(
     final = 0;
     immune = true;
     notes.push(`${type} 免疫`);
-  }
-  if (final > 0 && target.statuses?.includes('petrified')) {
-    final = Math.floor(final / 2);
-    notes.push('石化·全伤害抗性 ×½');
   }
   if (!immune && raw > 0 && final < 1 && getRules().minDamageOne) {
     final = 1;
@@ -262,8 +258,7 @@ export function applyDamageModifiers(
     appliedToHp = final - absorbed;
     if (absorbed > 0) note += `${note ? ' · ' : ''}临时HP吸收 ${absorbed}`;
   }
-  const willDrop = target.hp - appliedToHp <= 0;
-  const concentration = target.concentration && appliedToHp > 0 ? concentrationDc(appliedToHp) : null;
+  const concentration = target.concentration && final > 0 ? concentrationDc(final) : null;
   return {
     rawRolls: rolls ?? [],
     rawTotal: raw,
@@ -285,6 +280,8 @@ export interface SaveOptions {
   mode?: RollMode;
   /** 半伤（成功伤害减半） */
   halfOnSuccess?: boolean;
+  /** 特例：成功仍承受全部伤害；默认 false=成功免伤（halfOnSuccess=true 时半伤）。 */
+  damageOnSuccess?: 'none' | 'half' | 'full';
   sourceDamage?: number;
   forcedRoll?: number;
   /** 掩体对敏捷豁免的加值（+2/+5；仅 dex 豁免生效） */
@@ -332,18 +329,19 @@ export function resolveSave(target: BattleUnit, opts: SaveOptions): SaveResult {
   const bless = blessDie(target, dice.rolls);
   dice.total += bless;
   const judged = judgeCheck(dice, opts.dc);
-  // 普通豁免文案无大成功/大失败；但 2024 D20 Test：保留裸骰 20 自动成功、裸骰 1 自动失败（与 DC/加值无关）
+  // 普通豁免按总值判定，天然 20/1 特例只属于攻击与死亡豁免。
   const outcome = judged.outcome === 'critical-success' ? 'success'
     : judged.outcome === 'critical-failure' ? 'failure'
       : judged.outcome;
-  const natNote = dice.rawD20 === 20 ? '（裸20自动成功）' : dice.rawD20 === 1 ? '（裸1自动失败）' : '';
+  const natNote = '';
   const check: CheckResult = { dice, target: opts.dc, total: dice.total, outcome, label: `${opts.ability.toUpperCase()} 豁免 DC${opts.dc}${exPenalty ? `（力竭-${exPenalty}）` : ''}${natNote}` };
   const success = judged.outcome === 'success' || judged.outcome === 'critical-success';
   let damageTaken = opts.sourceDamage ?? 0;
   let halfApplied = false;
-  if (success && opts.halfOnSuccess && opts.sourceDamage !== undefined) {
-    damageTaken = Math.floor(opts.sourceDamage / 2);
-    halfApplied = true;
+  if (success) {
+    const effect = opts.damageOnSuccess ?? (opts.halfOnSuccess ? 'half' : 'none');
+    if (effect === 'half') { damageTaken = Math.floor(damageTaken / 2); halfApplied = true; }
+    else if (effect === 'none') damageTaken = 0;
   }
   return { check, damageTaken, halfApplied };
 }
@@ -422,13 +420,12 @@ export function resolveConcentration(unit: BattleUnit, damage: number, forcedRol
   const dice = rollFormula('1d20', { bonus, forcedRolls: forcedRoll !== undefined ? [forcedRoll] : undefined });
   const bless = blessDie(unit, dice.rolls);
   dice.total += bless;
-  const raw = dice.rawD20 ?? 0;
-  const success = raw === 20 || (raw !== 1 && dice.total >= dc);
+  const success = dice.total >= dc;
   return {
     check: {
       dice, target: dc, total: dice.total,
       outcome: success ? 'success' : 'failure',
-      label: `专注豁免 DC${dc}（伤害${damage}）${raw === 20 ? '（裸20自动成功）' : raw === 1 ? '（裸1自动失败）' : ''}`,
+      label: `专注豁免 DC${dc}（伤害${damage}）`,
     },
     broken: !success,
   };

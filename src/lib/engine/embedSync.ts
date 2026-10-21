@@ -33,6 +33,7 @@ export interface PanelEntry {
   /** 楼层深度（0=最新）；独立模式=0 */
   depth: number | null;
   at: number;
+  born?: number;
 }
 
 interface PanelsReg {
@@ -59,7 +60,7 @@ function readReg(): PanelsReg {
   const now = Date.now();
   const out: PanelsReg = {};
   for (const [id, e] of Object.entries(reg)) {
-    if (e && typeof e.at === 'number' && now - e.at < EXPIRE_MS) out[id] = e;
+    if (e && typeof e.at === 'number' && now - e.at < EXPIRE_MS) out[id] = { ...e, born: e.born ?? e.at };
   }
   return out;
 }
@@ -71,6 +72,7 @@ export class EmbedPanel {
   private timer: ReturnType<typeof setInterval> | null = null;
   private listeners = new Set<(isLeader: boolean) => void>();
   private _isLeader = false;
+  private readonly born = Date.now();
 
   constructor(depth: number | null) {
     this.id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -83,13 +85,14 @@ export class EmbedPanel {
 
   private beat(): void {
     const reg = readReg();
-    reg[this.id] = { id: this.id, depth: this.depth, at: Date.now() };
+    reg[this.id] = { id: this.id, depth: this.depth, at: Date.now(), born: this.born };
     safeSet(PANELS_KEY, reg);
     const entries = Object.values(reg).sort((a, b) => {
       const da = a.depth ?? 999;
       const db = b.depth ?? 999;
       if (da !== db) return da - db;
-      return a.at - b.at;
+      // A heartbeat proves liveness; it must not change the tie-break ordering.
+      return (b.born ?? b.at) - (a.born ?? a.at) || b.id.localeCompare(a.id);
     });
     const next = entries.length > 0 && entries[0].id === this.id;
     if (next !== this._isLeader) {
@@ -119,6 +122,7 @@ export class EmbedPanel {
   /** 更新楼层深度（bootstrap 探测成功后回填） */
   setDepth(depth: number | null): void {
     this.depth = depth;
+    this.beat();
   }
 
   onLeaderChange(fn: (isLeader: boolean) => void): () => void {

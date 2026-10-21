@@ -23,6 +23,7 @@ import {
 import { effectiveSpeed, getAbilityMod, proficiencyBonus } from './rules';
 import { aggregateEffects } from './conditions';
 import { rollFormula } from './dice';
+import { abilityPreview, abilityTargetCheck } from './actionPreview';
 
 // ============ 步骤模型 ============
 
@@ -69,7 +70,7 @@ function isHostile(a: BattleUnit, b: BattleUnit): boolean {
 }
 
 function livingEnemies(unit: BattleUnit, units: BattleUnit[]): BattleUnit[] {
-  return units.filter(u => isHostile(unit, u) && u.hp > 0 && !u.deathSaves?.dead);
+  return units.filter(u => isHostile(unit, u) && u.hp > 0 && !u.deathSaves?.dead && !u.knockedOut);
 }
 
 function livingAllies(unit: BattleUnit, units: BattleUnit[]): BattleUnit[] {
@@ -192,16 +193,14 @@ export function bestAoePlacement(ctx: AiContext, unit: BattleUnit, ability: AiAb
     const origin = cellCenter(cand.cell);
     const angleList = shapeFromSelf ? angles : [undefined];
     for (const angle of angleList) {
-      const affected = aoeCells(
-        { id: 'scan', kind: ability.aoe.kind, size: ability.aoe.size, origin, angle, color: '' },
-        ctx.units,
-      ).affectedUnitIds;
+      if (abilityTargetCheck(unit, ability, undefined, ctx.obstacles, ctx.diagonal, origin)) continue;
+      const affected = abilityPreview(unit, ability, undefined, ctx.units, ctx.obstacles, ctx.diagonal, { originPos: origin, angle }).affected.map(u => u.id);
       let foes = 0, friends = 0;
       const targets: string[] = [];
       for (const id of affected) {
         const u = ctx.units.find(x => x.id === id);
-        if (!u || u.hp <= 0 || u.deathSaves?.dead) continue;
-        if (u.id === unit.id) continue; // 自身不受伤的假设（火球自己也会炸，保守算作 -1？按规则自伤，这里允许但不鼓励）
+        if (!u || u.deathSaves?.dead) continue;
+        if (u.id === unit.id && ability.excludeSelf) continue; // 自身不受伤的假设（火球自己也会炸，保守算作 -1？按规则自伤，这里允许但不鼓励）
         if (isHostile(unit, u)) { foes++; targets.push(u.id); }
         else friends++;
       }
@@ -227,7 +226,7 @@ function planMeleeApproach(ctx: AiContext, unit: BattleUnit, target: BattleUnit,
   const reachMax = Math.max(1, Math.floor((unitAbilities(unit).find(a => a.kind === 'melee')?.range ?? 5) / CELL));
   // E13：飞行单位忽略完全阻挡地形（直线移动）
   const fly = unit.moveMode === 'fly';
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   const targetCells = unitOccupiedCells(target);
   const myCell = posToCell(unit.pos);
   let best: { cell: Cell; cost: number } | null = null;
@@ -240,7 +239,7 @@ function planMeleeApproach(ctx: AiContext, unit: BattleUnit, target: BattleUnit,
     if (best === null || cost < best.cost) best = { cell, cost };
   }
   if (!best) return null;
-  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
+  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   if (!r.reachable || r.path.length < 2) return { path: [myCell], cost: 0 };
   return { path: r.path.slice(1), cost: r.costCells };
 }
@@ -248,7 +247,7 @@ function planMeleeApproach(ctx: AiContext, unit: BattleUnit, target: BattleUnit,
 /** 无法贴脸时：向目标方向推进到最近可达格 */
 function planApproachOnly(ctx: AiContext, unit: BattleUnit, target: BattleUnit, movementCells: number): MovePlan | null {
   const fly = unit.moveMode === 'fly';
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   const myCell = posToCell(unit.pos);
   const targetCell = posToCell(target.pos);
   const curDist = gridDistanceCells(myCell, targetCell, ctx.diagonal);
@@ -264,7 +263,7 @@ function planApproachOnly(ctx: AiContext, unit: BattleUnit, target: BattleUnit, 
     }
   }
   if (!best) return null;
-  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
+  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   if (!r.reachable || r.path.length < 2) return null;
   return { path: r.path.slice(1), cost: r.costCells };
 }
@@ -273,7 +272,7 @@ function planApproachOnly(ctx: AiContext, unit: BattleUnit, target: BattleUnit, 
 function planRangedPosition(ctx: AiContext, unit: BattleUnit, target: BattleUnit, movementCells: number, abilityRange: number): MovePlan | null {
   const blocked = buildBlockedCells(ctx.obstacles);
   const fly = unit.moveMode === 'fly';
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   const myCell = posToCell(unit.pos);
   const enemies = livingEnemies(unit, ctx.units);
   const targetCell = posToCell(target.pos);
@@ -308,7 +307,7 @@ function planRangedPosition(ctx: AiContext, unit: BattleUnit, target: BattleUnit
   }
   if (!bestCell) return null;
   if (cellKey(bestCell.cell) === cellKey(myCell)) return null;      // 原地已最优
-  const r = findPath(myCell, bestCell.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
+  const r = findPath(myCell, bestCell.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   if (!r.reachable || r.path.length < 2) return null;
   return { path: r.path.slice(1), cost: r.costCells };
 }
@@ -316,7 +315,7 @@ function planRangedPosition(ctx: AiContext, unit: BattleUnit, target: BattleUnit
 /** 脱离/溃逃：向离所有敌人最远的可达格移动 */
 function planRetreat(ctx: AiContext, unit: BattleUnit, movementCells: number): MovePlan | null {
   const fly = unit.moveMode === 'fly';
-  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly });
+  const reachable = reachableCells(unit, ctx.units, ctx.obstacles, movementCells * CELL, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   const myCell = posToCell(unit.pos);
   const enemies = livingEnemies(unit, ctx.units);
   if (enemies.length === 0) return null;
@@ -332,7 +331,7 @@ function planRetreat(ctx: AiContext, unit: BattleUnit, movementCells: number): M
     }
   }
   if (!best || cellKey(best.cell) === cellKey(myCell)) return null;
-  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly });
+  const r = findPath(myCell, best.cell, ctx.units, ctx.obstacles, unit, ctx.diagonal, { ignoreFullObstacles: fly, mapWidth: ctx.mapWidth, mapHeight: ctx.mapHeight });
   if (!r.reachable || r.path.length < 2) return null;
   return { path: r.path.slice(1), cost: r.costCells };
 }
@@ -346,15 +345,15 @@ export function opportunityAttackers(ctx: AiContext, mover: BattleUnit, fromCell
   if (mover.statuses.includes('disengaging')) return [];
   const out: AooThreat[] = [];
   for (const e of livingEnemies(mover, ctx.units)) {
-    if (e.actionEconomy.reaction) continue;               // 反应已用
+    if (e.actionEconomy.reaction || e.statuses.includes('blinded') || mover.statuses.includes('invisible')) continue; // 未建模特殊感官时，不能对不可见目标借机
     const agg = aggregateEffects(e.statuses);
     if (agg.noReactions) continue;
     const melee = unitAbilities(e).find(a => a.kind === 'melee' && a.range <= (e.reach ?? 5) + 5);
     if (!melee) continue;
     const reach = Math.max(1, Math.floor(melee.range / CELL));
     const eCells = unitOccupiedCells(e);
-    const wasIn = eCells.some(ec => gridDistanceCells(ec, fromCell, ctx.diagonal) <= reach);
-    const stillIn = eCells.some(ec => gridDistanceCells(ec, toCell, ctx.diagonal) <= reach);
+    const wasIn = eCells.some(ec => unitOccupiedCells({ ...mover, pos: { x: fromCell.cx * CELL, y: fromCell.cy * CELL } }).some(mc => gridDistanceCells(ec, mc, ctx.diagonal) <= reach));
+    const stillIn = eCells.some(ec => unitOccupiedCells({ ...mover, pos: { x: toCell.cx * CELL, y: toCell.cy * CELL } }).some(mc => gridDistanceCells(ec, mc, ctx.diagonal) <= reach));
     if (wasIn && !stillIn) out.push({ unit: e, ability: melee });
   }
   return out;
@@ -656,10 +655,12 @@ export function validateStep(ctx: AiContext, unit: BattleUnit, step: AiStep): bo
       const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
       if (!ability) return false;
       const dist = gridDistanceCells(posToCell(unit.pos), posToCell(t.pos), ctx.diagonal) * CELL;
-      return dist <= ability.range + CELL; // 容差一格（规划时已计算好位置）
+      return dist <= ability.range && !abilityTargetCheck(unit, ability, t, ctx.obstacles, ctx.diagonal);
     }
     case 'aoe': {
-      return ctx.units.some(u => step.targets.includes(u.id) && u.hp > 0 && !u.deathSaves?.dead);
+      const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
+      return !!ability && !abilityTargetCheck(unit, ability, undefined, ctx.obstacles, ctx.diagonal, step.origin)
+        && ctx.units.some(u => step.targets.includes(u.id) && u.hp > 0 && !u.deathSaves?.dead);
     }
     case 'save-single': {
       const t = ctx.units.find(u => u.id === step.targetId);
@@ -667,7 +668,7 @@ export function validateStep(ctx: AiContext, unit: BattleUnit, step: AiStep): bo
       const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
       if (!ability) return false;
       const dist = gridDistanceCells(posToCell(unit.pos), posToCell(t.pos), ctx.diagonal) * CELL;
-      return dist <= ability.range + CELL; // 容差一格（同 attack）
+      return dist <= ability.range && !abilityTargetCheck(unit, ability, t, ctx.obstacles, ctx.diagonal);
     }
     case 'heal': {
       const t = ctx.units.find(u => u.id === step.targetId);
@@ -675,7 +676,7 @@ export function validateStep(ctx: AiContext, unit: BattleUnit, step: AiStep): bo
       const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
       if (!ability) return false;
       const dist = gridDistanceCells(posToCell(unit.pos), posToCell(t.pos), ctx.diagonal) * CELL;
-      return dist <= Math.max(ability.range, 5) + CELL;
+      return dist <= ability.range;
     }
     default:
       return true;

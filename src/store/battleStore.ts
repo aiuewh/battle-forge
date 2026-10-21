@@ -8,6 +8,8 @@
  * - 撤销：命令栈（最多 50 步）
  */
 import { create } from 'zustand';
+import { useActionUiStore } from './actionUiStore';
+import { abilityTargetCheck, abilityPreview, movementPreview, movementThreats } from '@/lib/engine/actionPreview';
 import type {
   BattleUnit, BattleEvent, MapObstacle, AoeTemplate, MapConfig,
   TurnState, RulesConfig, Attitude, DamageType, BattleSnapshot, SnapshotDiff, AiAbility,
@@ -47,18 +49,25 @@ import {
   snapshotFromParsed, snapshotFromUnits, diffSnapshots, appendHistory, loadHistory,
   findPrevSnapshot,
 } from '@/lib/engine/snapshot';
-import { rollFormula, judgeCheck, applyUpcast } from '@/lib/engine/dice';
+import { rollFormula, parseFormula, judgeCheck, applyUpcast } from '@/lib/engine/dice';
 import type { RollMode } from '@/lib/engine/types';
 import { unitFromPreset, buildDemoBattle, MONSTER_PRESETS, type MonsterPreset } from '@/lib/engine/presets';
 import {
   inMeleeRange, posToCell, gridDistanceFeet, buildBlockedCells, estimateCover, cellToFeet,
-  aoeCells, unitDistance, cellCenter,
+  aoeCells, unitDistance, cellCenter, findPath, movementStepCost, unitOccupiedCells, cellKey,
 } from '@/lib/engine/geometry';
-import { coverBonus, effectiveSpeed, abilityMod, proficiencyBonus, resolveCastSlot, type CastSlotResolution, setRules as engineSetRules } from '@/lib/engine/rules';
+import { coverBonus, effectiveSpeed, remainingMovement, abilityMod, proficiencyBonus, resolveCastSlot, type CastSlotResolution, setRules as engineSetRules } from '@/lib/engine/rules';
 import {
   planTurn, validateStep, isAiControlled, unitAbilities, opportunityAttackers,
   type AiContext, type AiStep,
 } from '@/lib/engine/ai';
+
+import { addAbilityEffect, endConcentrationEffects, migrateUnits, removeEffects } from '@/lib/engine/effects';
+import { ENGINE_VERSION, SAVE_VERSION, PROTOCOL_VERSION } from '@/lib/engine/version';
+
+let settlementDepth = 0;
+let pendingPersist = false;
+let resolvedReactionPair = '';
 
 const STORAGE_KEY = 'dnd-battle-state-v1';
 
@@ -154,7 +163,7 @@ function applyMasteryEffects(store: BattleStore, unit: BattleUnit, target: Battl
         x: Math.min(Math.max(0, Math.round(target.pos.x + (dx / len) * 10)), map.width * map.cellSize),
         y: Math.min(Math.max(0, Math.round(target.pos.y + (dy / len) * 10)), map.height * map.cellSize),
       };
-      store.moveUnit(target.id, dest, true);
+      store.moveUnit(target.id, dest, true, 'forced');
       return;
     }
     default:
@@ -166,18 +175,6 @@ function applyMasteryEffects(store: BattleStore, unit: BattleUnit, target: Battl
  * AI 施法环阶解析：升环向上代打（E7）。
  * 无 spellSlots 模型的天生施法者不设限（保持既有行为，spend=false 不扣位）。
  */
-function resolveAiCast(unit: BattleUnit, ability: AiAbility): CastSlotResolution & { spend: boolean } {
-  const baseLevel = ability.spellLevel ?? 0;
-  if (baseLevel <= 0 || !unit.spellSlots) return { ok: true, level: baseLevel, upcast: false, spend: false };
-  const r = resolveCastSlot(unit, baseLevel);
-  return { ...r, spend: r.ok };
-}
-
-/** AI 施法实际骰式：按（实际环阶 - 基础环）应用升环增量（E7） */
-function aiCastDice(ability: AiAbility, cast: CastSlotResolution): string {
-  return applyUpcast(ability.dice, ability.spellLevel ?? 0, cast.level, ability.upcast);
-}
-
 /**
  * 玩家多重攻击逐刀结算：每刀前重读目标存活状态，击杀立即停手；
  * 有剩余攻击且场上还有其他敌人时挂 multiAttackQueue，由 ActionBar 重弹目标选择
@@ -195,9 +192,9 @@ function runMultiAttackSequence(
   let remaining = times;
   for (; remaining > 0; remaining--) {
     const target = get().units.find(u => u.id === targetId);
-    if (!target || target.hp <= 0 || target.deathSaves?.dead) break;
+    if (!target || target.hp <= 0 || target.deathSaves?.dead || target.knockedOut) break;
     const actor = get().units.find(u => u.id === actorId);
-    if (!actor) return;
+    if (!actor || aggregateEffects(actor.statuses).noActions) return;
     const cover = estimateCover(actor, target, get().obstacles, buildBlockedCells(get().obstacles));
     const atkResult = get().performAttack(actorId, target.id, {
       attackBonus: ability.attackBonus ?? 0,
@@ -207,7 +204,7 @@ function runMultiAttackSequence(
       isRanged: ability.kind === 'ranged',
       coverKind: cover.cover,
       nonLethal,
-      magicSource: ability.magic === true,
+      magicSource: ability.magic === true || ability.spellLevel !== undefined,
     });
     applyMasteryEffects(get(), actor, target, ability, atkResult);
   }
@@ -219,7 +216,8 @@ function runMultiAttackSequence(
     get().logEvent({ type: 'note', text: `🎯 目标已被击杀——场上无其他敌人，剩余 ${remaining} 次攻击放弃`, level: 'info' });
     return;
   }
-  set({ multiAttackQueue: { actorId, abilityId: ability.id, remaining } });
+  set({ multiAttackQueue: { actorId, abilityId: ability.id, remaining, nonLethal } });
+  useActionUiStore.getState().begin({ actorId, ability, continuation: true });
   get().logEvent({ type: 'note', text: `🎯 目标已被击杀——【${ability.name}】剩余 ${remaining} 次攻击：请在行动栏选择新目标续打，或放弃`, level: 'info' });
 }
 
@@ -362,6 +360,8 @@ export interface BattleStore {
   /** 载入演示遭遇 */
   loadDemoBattle: () => void;
 
+  processEffects: (unitId: string | null, timing: 'start' | 'end') => void;
+  applyAbilityEffect: (targetId: string, sourceId: string, ability: AiAbility) => void;
   // ---- 持久化 ----
   save: () => void;
   load: () => boolean;
@@ -372,7 +372,7 @@ export interface BattleStore {
   addUnitFromPreset: (preset: MonsterPreset, hostile?: boolean) => void;
   updateUnit: (id: string, patch: Partial<BattleUnit>) => void;
   removeUnit: (id: string) => void;
-  moveUnit: (id: string, pos: { x: number; y: number }, recordEvent?: boolean) => void;
+  moveUnit: (id: string, pos: { x: number; y: number }, recordEvent?: boolean, mode?: 'voluntary' | 'forced' | 'teleport') => void;
   toggleStatus: (id: string, status: string) => void;
   /** 应用伤害并落账，返回类型修正+临时HP吸收后实际扣除的 HP（无此单位返回 0）；攻击路径传 skipTypeMods 防二次结算 */
   damageUnit: (id: string, amount: number, opts?: { isCrit?: boolean; type?: DamageType; source?: string; skipTypeMods?: boolean; nonLethal?: boolean; magicSource?: boolean }) => number;
@@ -389,7 +389,7 @@ export interface BattleStore {
   rollDeathSave: (id: string, forced?: number) => void;
   addDeathFail: (id: string, count?: number) => void;
   addDeathSuccess: (id: string) => void;
-  stabilizeUnit: (id: string) => void;
+  stabilizeUnit: (id: string, healerId?: string) => void;
   /** F3：充能/限次动作使用计数 */
   consumeAbilityUse: (unitId: string, abilityId: string) => void;
   /** F3：回合开始充能掷骰恢复 */
@@ -405,6 +405,9 @@ export interface BattleStore {
   escapeUnit: (id: string) => void;
   /** 撤回本回合：恢复到当前单位回合开始时的完整状态（可重复按） */
   undoTurn: () => void;
+  resetCurrentTurn: () => void;
+  interactionEpoch: number;
+  requestPlayerMove: (id: string, cell: { cx: number; cy: number }) => boolean;
   rollInitiativeAll: () => void;
   setSurprised: (ids: string[]) => void;
 
@@ -484,9 +487,9 @@ export interface BattleStore {
 
   // ---- 统一行动结算（玩家行动栏核心） ----
   /** 执行一个动作（武器攻击/法术/治疗/AoE/单体豁免）：自动动作经济 + 法术位 + 专注 + 掩护 + 优劣势 */
-  castAbility: (actorId: string, abilityId: string, targetId: string | null, opts?: CastOpts) => void;
+  castAbility: (actorId: string, abilityId: string, targetId: string | null, opts?: CastOpts) => boolean;
   /** 玩家多重攻击余量：目标被击杀后等待重选目标续打（换回合/重置/放弃即作废） */
-  multiAttackQueue: { actorId: string; abilityId: string; remaining: number } | null;
+  multiAttackQueue: { actorId: string; abilityId: string; remaining: number; nonLethal?: boolean } | null;
   /** 用新目标续打多重攻击余量（动作/法术位已在首发时消耗，不重复扣） */
   continueMultiAttack: (actorId: string, abilityId: string, targetId: string | null) => void;
   /** 放弃多重攻击余量 */
@@ -513,11 +516,14 @@ export interface BattleStore {
 }
 
 function persist(state: BattleStore, force = false) {
-  if (state.readOnly && !force) return; // 非领导者面板不写入共享存储
+  if (state.readOnly && !force) return;
+  if (settlementDepth > 0 && !force) { pendingPersist = true; return; } // 非领导者面板不写入共享存储
   try {
     const data = {
+      saveVersion: SAVE_VERSION, engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION,
       units: state.units,
       obstacles: state.obstacles,
+      aoeTemplates: state.aoeTemplates,
       mapConfig: state.mapConfig,
       turn: state.turn,
       events: state.events.slice(-200),
@@ -540,6 +546,7 @@ function persist(state: BattleStore, force = false) {
 }
 
 export const useBattleStore = create<BattleStore>((set, get) => ({
+  interactionEpoch: 0,
   units: [],
   escapedUnits: [],
   obstacles: [],
@@ -558,7 +565,13 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   lastRoll: null,
   embedMode: false,
   selectedId: null,
-  setSelectedId: (id) => set({ selectedId: id }),
+  setSelectedId: (id) => {
+    if (!get().battleActive && useActionUiStore.getState().request && useActionUiStore.getState().request?.actorId !== id) {
+      useActionUiStore.getState().clear();
+      set({ interactionEpoch: get().interactionEpoch + 1 });
+    }
+    set({ selectedId: id });
+  },
   aiAutoPlay: true,
   aiSpeed: 450,
   playerTargetId: null,
@@ -603,8 +616,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       // 旧存档迁移：rulesRev 缺失 = 喝药默认值变更前写入 → 按新默认重置（此后用户显式选择随 rulesRev 持久化）
       const restoredRules = migrateRules(data.rules);
       set({
-        units: data.units ?? [],
+        units: migrateUnits(data.units ?? []),
         obstacles: data.obstacles ?? [],
+        aoeTemplates: data.aoeTemplates ?? [],
+        escapedUnits: migrateUnits(data.escapedUnits ?? []),
+        turnSnap: data.turnSnap ? { ...data.turnSnap, units: migrateUnits(data.turnSnap.units ?? []) } : null,
+        undoStack: (data.undoStack ?? []).map((snap: TurnSnapshot) => ({ ...snap, units: migrateUnits(snap.units ?? []) })),
         mapConfig: data.mapConfig ?? get().mapConfig,
         turn: data.turn ?? get().turn,
         events: data.events ?? [],
@@ -629,6 +646,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
   },
   reset: () => {
+    if (get().readOnly) return;
+    useActionUiStore.getState().clear();
+    set({ interactionEpoch: get().interactionEpoch + 1 });
     clearAiPlanCache();
     set({
       units: [], obstacles: [], aoeTemplates: [], events: [],
@@ -723,71 +743,59 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     persist(get());
   },
 
-  moveUnit: (id, pos, recordEvent = true) => {
-    const unit = get().units.find(u => u.id === id);
-    if (!unit) return;
-    const fromCell = posToCell(unit.pos);
-    const toCell = posToCell(pos);
-    const dist = gridDistanceFeet(fromCell, toCell, get().mapConfig.diagonal);
-    set({
-      units: get().units.map(u =>
-        u.id === id
-          ? { ...u, pos, actionEconomy: { ...u.actionEconomy, movementUsed: u.actionEconomy.movementUsed + dist } }
-          : u,
-      ),
-    });
-    if (recordEvent && dist > 0) {
-      // E13：非步行移动模式在战报标注
-      const modeTag = unit.moveMode === 'fly' ? '（飞行）' : unit.moveMode === 'climb' ? '（攀爬）' : unit.moveMode === 'swim' ? '（游泳）' : '';
-      get().logEvent({ type: 'move', actorId: id, text: `${unit.name} 移动 ${dist} 尺${modeTag} → (${Math.round(pos.x / 5)},${Math.round(pos.y / 5)})`, level: 'info' });
+  requestPlayerMove: (id, cell) => {
+    const s = get();
+    const unit = s.units.find(u => u.id === id);
+    if (!unit || s.readOnly || s.pendingReactionStep) return false;
+    const preview = movementPreview(unit, cell, s.units, s.obstacles, s.mapConfig, s.battleActive, s.turn.currentUnitId);
+    if (preview.reason) { useActionUiStore.getState().fail(preview.reason); return false; }
+    get().moveUnit(id, preview.pos);
+    return true;
+  },
+
+  moveUnit: (id, pos, recordEvent = true, mode = 'voluntary') => {
+    const s = get();
+    if (s.readOnly) return;
+    const unit = s.units.find(u => u.id === id);
+    if (!unit || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
+    if (mode !== 'voluntary') {
+      const dest = posToCell(pos), span = SIZE_META[unit.size]?.cells ?? 1;
+      if (dest.cx < 0 || dest.cy < 0 || dest.cx + span > s.mapConfig.width || dest.cy + span > s.mapConfig.height) return;
+      const occupied = s.units.filter(u => u.id !== id).flatMap(u => unitOccupiedCells(u).map(cellKey));
+      const cells = unitOccupiedCells({ ...unit, pos }).map(cellKey);
+      const blocked = buildBlockedCells(s.obstacles);
+      if (cells.some(c => occupied.includes(c) || blocked.get(c) === 'full')) return;
+      set({ units: get().units.map(u => u.id === id ? { ...u, pos } : u) });
+      if (recordEvent) get().logEvent({ type: 'move', actorId: id, text: `${unit.name} ${mode === 'forced' ? '被推移' : '传送'} → (${dest.cx},${dest.cy})`, level: 'info' });
+      persist(get()); return;
     }
-    // 借机攻击：主动离开敌人触及范围（战斗中 & 非脱离状态）
-    // 规则修正：所有具备反应的威胁者各自借机（每人消耗自己的反应），不再只取第一个
-    if (get().battleActive && dist > 0) {
-      const ctx = currentAiCtx(get());
-      const threats = opportunityAttackers(ctx, unit, fromCell, toCell).filter(t => {
-        // 带反应定义的单位改用每轮/每回合计数判定
-        if (t.unit.reactions?.length) {
-          return (t.unit.reactionsUsedRound ?? 0) < (t.unit.reactionsPerRound ?? 1) && !t.unit.reactionUsedTurn;
-        }
-        return true;
-      });
-      // E13 注记：飞行移动不豁免借机（简化口径，规则口径见 RULES_2024_NOTES）
-      if (threats.length > 0 && unit.moveMode === 'fly') {
-        get().logEvent({ type: 'note', actorId: id, text: '🕊️ 飞行移动仍会触发借机攻击（简化口径）', level: 'info' });
+    if (s.battleActive && (unit.id !== s.turn.currentUnitId || unit.hp <= 0 || aggregateEffects(unit.statuses).noActions)) return;
+    const opts = { ignoreFullObstacles: unit.moveMode === 'fly', mapWidth: s.mapConfig.width, mapHeight: s.mapConfig.height };
+    const route = findPath(posToCell(unit.pos), posToCell(pos), s.units, s.obstacles, unit, s.mapConfig.diagonal, opts);
+    if (!route.reachable || (s.battleActive && route.costCells * 5 > remainingMovement(unit))) return;
+    let traveled = 0;
+    for (const next of route.path.slice(1)) {
+      let mover = get().units.find(u => u.id === id);
+      if (!mover || mover.hp <= 0 || mover.deathSaves?.dead || aggregateEffects(mover.statuses).noActions) break;
+      const destination = { x: next.cx * 5, y: next.cy * 5 };
+      const step = movementStepCost(posToCell(mover.pos), next, mover, get().units, get().obstacles, s.mapConfig.diagonal, mover.actionEconomy.diagonalSteps ?? 0, opts);
+      if (s.battleActive && step.feet > remainingMovement(mover)) break;
+      if (s.battleActive) for (const t of movementThreats(currentAiCtx(get()), mover, destination)) {
+        const threat = get().units.find(u => u.id === t.unit.id);
+        mover = get().units.find(u => u.id === id);
+        if (!threat || !mover || threat.hp <= 0 || threat.actionEconomy.reaction || aggregateEffects(threat.statuses).noReactions) continue;
+        const cover = estimateCover(threat, mover, get().obstacles, buildBlockedCells(get().obstacles));
+        if (cover.cover === 'full') continue;
+        set({ units: get().units.map(u => u.id === threat.id ? { ...u, actionEconomy: { ...u.actionEconomy, reaction: true }, reactionUsedTurn: true, reactionsUsedRound: (u.reactionsUsedRound ?? 0) + 1 } : u) });
+        get().logEvent({ type: 'attack', actorId: threat.id, targetId: id, text: `⚡ ${threat.name} 在 ${mover.name} 离开触及前借机攻击`, level: 'bad' });
+        get().performAttack(threat.id, id, { attackBonus: t.ability.attackBonus ?? 0, targetAc: mover.ac + coverBonus(cover.cover), weaponDamage: t.ability.dice, weaponType: t.ability.damageType, coverKind: cover.cover, isRanged: false, magicSource: t.ability.magic === true });
       }
-      for (const t of threats) {
-        set({ units: get().units.map(u => (u.id === t.unit.id
-          ? {
-              ...u,
-              actionEconomy: { ...u.actionEconomy, reaction: true },
-              ...(u.reactions?.length
-                ? { reactionsUsedRound: (u.reactionsUsedRound ?? 0) + 1, reactionUsedTurn: true }
-                : {}),
-            }
-          : u)) });
-        get().logEvent({
-          type: 'attack', actorId: t.unit.id, targetId: unit.id,
-          text: `⚡ 借机攻击 —— ${t.unit.name} 对脱离触及的 ${unit.name} 发动【${t.ability.name}】！`,
-          level: 'bad',
-        });
-        const cover = estimateCover(t.unit, unit, get().obstacles, buildBlockedCells(get().obstacles));
-        if (cover.cover === 'full') {
-          get().logEvent({
-            type: 'attack', actorId: t.unit.id, targetId: unit.id,
-            text: `⛔ 借机攻击取消 —— ${unit.name} 处于全掩护，无法被直接指定（2024 规则）`,
-            level: 'info',
-          });
-          continue;
-        }
-        get().performAttack(t.unit.id, unit.id, {
-          attackBonus: t.ability.attackBonus ?? 0,
-          targetAc: unit.ac + coverBonus(cover.cover),
-          weaponDamage: t.ability.dice,
-          weaponType: t.ability.damageType,
-        });
-      }
+      mover = get().units.find(u => u.id === id);
+      if (!mover || mover.hp <= 0 || mover.deathSaves?.dead || aggregateEffects(mover.statuses).noActions || (s.battleActive && step.feet > remainingMovement(mover))) break;
+      set({ units: get().units.map(u => u.id === id ? { ...u, pos: destination, actionEconomy: { ...u.actionEconomy, movementUsed: u.actionEconomy.movementUsed + step.feet, diagonalSteps: (u.actionEconomy.diagonalSteps ?? 0) + (step.diagonalStep ? 1 : 0) } } : u) });
+      traveled += step.feet;
     }
+    if (recordEvent && traveled > 0) get().logEvent({ type: 'move', actorId: id, text: `${unit.name} 沿路径移动，消耗 ${traveled} 尺`, level: 'info' });
     persist(get());
   },
 
@@ -796,11 +804,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     if (!unit) return;
     const has = unit.statuses.includes(status);
     const statuses = has ? unit.statuses.filter(s => s !== status) : [...unit.statuses, status];
-    // 2024：力竭达到 10 级即死亡
+    // 2024：力竭达到 6 级即死亡
     let dead = false;
     if (!has && /^exhaustion:(\d+)$/.test(status)) {
       const lv = parseInt(status.split(':')[1], 10);
-      dead = lv >= 10;
+      dead = lv >= 6;
     }
     set({
       units: get().units.map(u => (u.id === id
@@ -810,12 +818,13 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     get().logEvent({
       type: has ? 'status-remove' : 'status-add',
       actorId: id,
-      text: `${unit.name} ${has ? '解除' : '获得'}状态：${status}${dead ? ' —— 力竭 10 级，死亡' : ''}`,
+      text: `${unit.name} ${has ? '解除' : '获得'}状态：${status}${dead ? ' —— 力竭 6 级，死亡' : ''}`,
       level: dead ? 'crit' : has ? 'good' : 'bad',
     });
     if (dead) {
       get().logEvent({ type: 'death', actorId: id, text: `💀 ${unit.name} 力竭衰竭而死`, level: 'crit' });
     }
+    if (unit.concentration && (dead || aggregateEffects(statuses).noActions)) get().setConcentration(id, null);
     persist(get());
   },
 
@@ -848,15 +857,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     let deathSaves = unit.deathSaves;
     let killed = false;
     let knockedOut = false;
-    if (newHp <= 0 && unit.hp > 0 && opts.nonLethal === true && !unit.legendary) {
+    if (newHp <= 0 && unit.hp > 0 && opts.nonLethal === true) {
       // 非致命击倒（E14）：留活口——0 HP 昏迷且稳定，不入死亡流程（大伤害即死仍优先）
-      if (remaining - unit.hp >= unit.maxHp) {
-        killed = true;
-        deathSaves = { successes: 0, failures: 3, stable: false, dead: true };
-      } else {
-        knockedOut = true;
-        deathSaves = { successes: 0, failures: 3, stable: true, dead: false };
-      }
+      knockedOut = true;
+      deathSaves = { successes: 0, failures: 0, stable: false, dead: false };
     } else if (newHp <= 0 && unit.hp > 0) {
       // 跌至 0：巨额伤害即死（2024：剩余伤害 = 伤害 - 受伤前当前 HP ≥ 生命值上限才立即死亡）；
       // 敌方小怪归零即死（2024 惯例，传奇单位除外）；友方进入死亡豁免
@@ -877,12 +881,13 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const fails = opts.isCrit ? 2 : 1;
         const ds = unit.deathSaves ?? { successes: 0, failures: 0, stable: false, dead: false };
         killed = ds.failures + fails >= 3;
-        deathSaves = { ...ds, failures: ds.failures + fails, dead: killed };
+        killed = killed || remaining >= unit.maxHp;
+        deathSaves = { ...ds, failures: Math.min(3, ds.failures + fails), stable: false, dead: killed };
       }
     }
     set({
       units: get().units.map(u => (u.id === id
-        ? { ...u, hp: Math.max(0, newHp), tempHp: u.tempHp - absorbed, deathSaves, statuses: knockedOut ? [...new Set([...u.statuses, 'unconscious'])] : u.statuses }
+        ? { ...u, hp: knockedOut ? 1 : Math.max(0, newHp), tempHp: u.tempHp - absorbed, deathSaves, knockedOut: knockedOut || u.knockedOut, statuses: newHp <= 0 ? [...new Set([...u.statuses, 'unconscious', 'prone'])] : u.statuses }
         : u)),
     });
     const hpNote = absorbed > 0 ? `（临时HP吸收${absorbed}）` : '';
@@ -890,7 +895,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     get().logEvent({
       type: 'damage',
       actorId: id,
-      text: `${unit.name} 受到 ${amount}${opts.type ? ' [' + opts.type + ']' : ''}${typedNote} 伤害${hpNote} → HP ${Math.max(0, newHp)}/${unit.maxHp}${killed ? ' ☠️死亡' : knockedOut ? ' 😵 被击倒（非致命·昏迷且稳定）' : newHp <= 0 ? ' 濒死！' : ''}`,
+      text: `${unit.name} 受到 ${amount}${opts.type ? ' [' + opts.type + ']' : ''}${typedNote} 伤害${hpNote} → HP ${knockedOut ? 1 : Math.max(0, newHp)}/${unit.maxHp}${killed ? ' ☠️死亡' : knockedOut ? ' 😵 留活口（1 HP·昏迷·开始短休）' : newHp <= 0 ? ' 濒死！' : ''}`,
       level: killed ? 'crit' : 'bad',
       data: { amount, type: opts.type, killed },
     });
@@ -898,6 +903,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       get().logEvent({ type: 'death', actorId: id, text: `💀 ${unit.name} 死亡`, level: 'crit' });
     }
     persist(get());
+    get().concentrationAfterDamage(id, typed);
     return remaining;
   },
 
@@ -921,7 +927,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             ...u,
             hp: newHp,
             deathSaves: fromZero ? { successes: 0, failures: 0, stable: false, dead: false } : u.deathSaves,
-            statuses: fromZero ? u.statuses.filter(s => s !== 'unconscious') : u.statuses,
+            statuses: amount > 0 && (fromZero || u.knockedOut) ? u.statuses.filter(s => s !== 'unconscious') : u.statuses,
+            knockedOut: amount > 0 ? false : u.knockedOut,
           }
         : u)),
     });
@@ -986,7 +993,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   setConcentration: (id, spell) => {
     const unit = get().units.find(u => u.id === id);
     if (!unit) return;
-    set({ units: get().units.map(u => (u.id === id ? { ...u, concentration: spell ?? undefined } : u)) });
+    const cleared = endConcentrationEffects(get().units, id).map(u => u.id === id && u.readyAction?.requiresConcentration ? { ...u, readyAction: undefined } : u);
+    set({ units: cleared.map(u => (u.id === id ? { ...u, concentration: spell ?? undefined } : u)) });
     if (spell) {
       get().logEvent({ type: 'concentration', actorId: id, text: `${unit.name} 开始专注：${spell}`, level: 'info' });
     } else if (unit.concentration) {
@@ -998,6 +1006,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   concentrationAfterDamage: (targetId, damage) => {
     const t = get().units.find(u => u.id === targetId);
     if (!t || !t.concentration || damage <= 0) return;
+    if (t.hp <= 0 || t.deathSaves?.dead || aggregateEffects(t.statuses).noActions) { get().setConcentration(targetId, null); return; }
     const conc = resolveConcentration(t, damage);
     if (conc.broken) {
       get().setConcentration(targetId, null);
@@ -1014,7 +1023,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
 
   rollDeathSave: (id, forced) => {
     const unit = get().units.find(u => u.id === id);
-    if (!unit) return;
+    if (!unit || unit.hp > 0 || unit.deathSaves?.dead || unit.deathSaves?.stable) return;
     const r = resolveDeathSave(unit, forced);
     set({
       units: get().units.map(u => (u.id === id ? { ...u, deathSaves: r.newState } : u)),
@@ -1030,7 +1039,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     set({
       units: get().units.map(u => {
         if (u.id !== id) return u;
-        if (r.event === 'revive-1hp') return { ...u, hp: 1, deathSaves: r.newState };
+        if (r.event === 'revive-1hp') return { ...u, hp: 1, deathSaves: r.newState, statuses: u.statuses.filter(s => s !== 'unconscious') };
         if (r.event === 'dead') return { ...u, statuses: [...u.statuses, 'unconscious'] };
         return u;
       }),
@@ -1063,20 +1072,18 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     persist(get());
   },
 
-  stabilizeUnit: (id) => {
-    const unit = get().units.find(u => u.id === id);
-    if (!unit) return;
-    // 2024：稳定伤势须掷医药检定 DC10（感知调整值；技能熟练未建模），不再一键成功
-    const wisMod = Math.floor(((unit.abilities?.wis ?? 10) - 10) / 2);
-    const roll = rollFormula('1d20', { bonus: wisMod });
+  stabilizeUnit: (id, healerId) => {
+    const s = get();
+    const unit = s.units.find(u => u.id === id);
+    const healer = s.units.find(u => u.id === (healerId ?? s.turn.currentUnitId));
+    if (s.readOnly || !unit || unit.deathSaves?.dead || (!unit.knockedOut && unit.hp > 0) || !healer || healer.hp <= 0 || aggregateEffects(healer.statuses).noActions) return;
+    if (unitDistance(unit, healer, s.mapConfig.diagonal) > 5 || (s.battleActive && (healer.id !== s.turn.currentUnitId || healer.actionEconomy.action))) return;
+    const roll = rollFormula('1d20', { bonus: abilityMod(healer.abilities?.wis ?? 10) - exhaustionPenalty(healer.statuses) });
     const success = roll.total >= 10;
-    set({ lastRoll: { id: uid(), formula: '1d20+感知（医药 DC10）', result: roll, note: '稳定伤势' } });
-    set({ units: get().units.map(u => (u.id === id && success
-      ? { ...u, deathSaves: { successes: 0, failures: 0, stable: true, dead: false } }
-      : u)) });
-    get().logEvent({ type: 'stabilize', actorId: id, text: success
-      ? `${unit.name} 医药检定 [${roll.rawD20}]=${roll.total} vs DC10 —— 伤势稳定`
-      : `${unit.name} 医药检定 [${roll.rawD20}]=${roll.total} vs DC10 —— 失败，伤势仍未稳定（可再次尝试）`, level: success ? 'good' : 'bad' });
+    set({ lastRoll: { id: uid(), formula: '1d20+感知（医药 DC10）', result: roll, note: '急救' }, units: get().units.map(u => u.id === unit.id && success
+      ? { ...u, knockedOut: false, deathSaves: { successes: 0, failures: 0, stable: u.hp <= 0, dead: false }, statuses: u.knockedOut ? u.statuses.filter(st => st !== 'unconscious') : u.statuses }
+      : u.id === healer.id ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u) });
+    get().logEvent({ type: 'stabilize', actorId: healer.id, targetId: id, text: `${healer.name} 为 ${unit.name} 急救：${roll.total} vs DC10 —— ${success ? (unit.knockedOut ? '苏醒' : '伤势稳定') : '失败'}`, level: success ? 'good' : 'bad' });
     persist(get());
   },
 
@@ -1093,19 +1100,19 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   restoreRecharges: () => {
     const logs: string[] = [];
     set({ units: get().units.map(u => {
-      if (!u.abilityUses) return u;
+      if (!u.abilityUses || u.id !== get().turn.currentUnitId) return u;
       let changed = false;
       const next: NonNullable<BattleUnit['abilityUses']> = { ...u.abilityUses };
       for (const [aid, st] of Object.entries(next)) {
         if (st.recharge === undefined || st.used === 0) continue;
         const ability = (u.aiAbilities ?? []).find(a => a.id === aid);
-        const roll = rollFormula('1d20');
+        const roll = rollFormula('1d6');
         if (roll.total >= st.recharge) {
           next[aid] = { ...st, used: 0 };
           changed = true;
-          logs.push(`${u.name}【${ability?.name ?? aid}】充能恢复（d20=${roll.total} ≥ ${st.recharge}）`);
+          logs.push(`${u.name}【${ability?.name ?? aid}】充能恢复（d6=${roll.total} ≥ ${st.recharge}）`);
         } else {
-          logs.push(`${u.name}【${ability?.name ?? aid}】充能未恢复（d20=${roll.total} < ${st.recharge}）`);
+          logs.push(`${u.name}【${ability?.name ?? aid}】充能未恢复（d6=${roll.total} < ${st.recharge}）`);
         }
       }
       return changed ? { ...u, abilityUses: next } : u;
@@ -1128,6 +1135,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   // ---------------- 回合 ----------------
 
   startCombat: () => {
+    if (get().readOnly) return;
+    useActionUiStore.getState().clear();
+    set({ interactionEpoch: get().interactionEpoch + 1 });
     const { units, rules, turn: prevTurn } = get();
     if (units.length === 0) return;
     // PHB 战斗步骤③：掷先攻——全员敏捷检定 d20+敏捷调整值（2024：被惊讶者劣势）
@@ -1165,7 +1175,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     set({
       turn,
       battleActive: true,
-      units: finalUnits.map(u => ({ ...u, actionEconomy: defaultActionEconomy(), hasActed: false })),
+      units: finalUnits.map(u => ({ ...u, actionEconomy: defaultActionEconomy(), slotCastThisTurn: false, hasActed: false })),
       escapedUnits: [], turnSnap: null, undoStack: [],
     });
     const first = finalUnits.find(u => u.id === turn.currentUnitId);
@@ -1177,7 +1187,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   },
 
   nextTurn: () => {
-    const { turn, units, rules } = get();
+    if (get().readOnly || get().pendingReactionStep) return;
+    useActionUiStore.getState().clear();
+    set({ interactionEpoch: get().interactionEpoch + 1 });
+    const { turn, rules } = get();
+    get().processEffects(turn.currentUnitId, 'end');
     // 反应【回合结束时】：其他单位的回合结束，带回合结束反应的敌方单位自动执行
     if (turn.currentUnitId && get().battleActive) get().fireTurnEndReactions(turn.currentUnitId);
     // 传奇动作：其他单位的回合结束后，敌方传奇单位消耗点数执行一次
@@ -1188,6 +1202,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       const undoStack = [...st.undoStack, st.turnSnap].slice(-24);
       set({ undoStack, turnSnap: null });
     }
+    const units = get().units;
     const result = advanceTurn(turn, units, rules);
     // 标记当前已行动（清除脱离状态），重置下一单位动作经济；多重攻击余量不跨回合
     set({
@@ -1195,7 +1210,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       turn: result.state,
       units: units.map(u => {
         // 每个回合开始：所有单位的「本回合已用反应」标记刷新
-        const base = { ...u, reactionUsedTurn: false };
+        const base = { ...u, reactionUsedTurn: false, slotCastThisTurn: false };
         if (u.id === turn.currentUnitId) {
           return { ...base, hasActed: true, statuses: u.statuses.filter(s => s !== 'disengaging') };
         }
@@ -1207,6 +1222,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             statuses: u.statuses.filter(st => st !== 'dodging'),
             // 护盾术等临时 AC 加值持续到受术者下回合开始（E11）
             tempAcBonus: 0,
+            readyAction: undefined,
           };
         }
         return base;
@@ -1221,6 +1237,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     for (const dsId of result.needsDeathSave) {
       get().rollDeathSave(dsId);
     }
+    get().restoreRecharges();
+    get().processEffects(result.newUnitId, 'start');
     const nu = get().units.find(u => u.id === result.newUnitId);
     if (result.newRound) {
       // 新一轮：传奇点重置
@@ -1232,7 +1250,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         units: get().units.map(u => (u.reactions ? { ...u, reactionsUsedRound: 0 } : u)),
       });
       // F3：充能类动作回合开始掷骰恢复
-      get().restoreRecharges();
+
       get().logEvent({ type: 'round-start', text: `📍 第 ${result.state.round} 轮开始`, level: 'info' });
     }
     if (result.lairTrigger) {
@@ -1245,6 +1263,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       level: 'info',
     });
     // 「撤回本回合」：新当前单位回合开始快照（撤回恢复源）
+    const readyExpired = get().units.find(u => u.id === result.state.currentUnitId);
+    if (readyExpired?.concentration?.startsWith('预备：')) get().setConcentration(readyExpired.id, null);
     const s2 = get();
     set({ turnSnap: snapTurnStart(s2) });
     // 战斗结束检查
@@ -1269,12 +1289,18 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   },
 
   endCombat: () => {
+    if (get().readOnly) return;
+    useActionUiStore.getState().clear();
+    set({ interactionEpoch: get().interactionEpoch + 1 });
     set({ battleActive: false, turn: { ...get().turn, ended: true }, pendingReactionStep: null });
     get().logEvent({ type: 'note', text: '🏁 战斗结束', level: 'info' });
     persist(get());
   },
 
   escapeUnit: (id) => {
+    if (get().readOnly || get().pendingReactionStep) return;
+    useActionUiStore.getState().clear();
+    set({ interactionEpoch: get().interactionEpoch + 1 });
     const s = get();
     const unit = s.units.find(u => u.id === id);
     // 门控：仅玩家可逃 / 存活 / 未逃 / 必须站在战场外圈一格
@@ -1307,23 +1333,28 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     persist(get());
   },
 
+  resetCurrentTurn: () => {
+    const s = get();
+    if (s.readOnly || !s.turnSnap) return;
+    const snap = JSON.parse(JSON.stringify(s.turnSnap)) as TurnSnapshot;
+    clearAiPlanCache();
+    useActionUiStore.getState().clear();
+    set({ ...snap, turnSnap: snap, aiAutoPlay: false, pendingReactionStep: null, multiAttackQueue: null,
+      selectedId: null, playerTargetId: null, lastRoll: null, interactionEpoch: s.interactionEpoch + 1 });
+    get().logEvent({ type: 'note', text: '⏪ 已重置本回合，AI 已暂停', level: 'info' });
+    persist(get());
+  },
+
   undoTurn: () => {
     const s = get();
-    const snap = s.undoStack[s.undoStack.length - 1];
-    if (!snap) return;
-    set({
-      units: snap.units,
-      escapedUnits: snap.escapedUnits,
-      turn: snap.turn,
-      aoeTemplates: snap.aoeTemplates,
-      obstacles: snap.obstacles,
-      events: snap.events,
-      battleActive: snap.battleActive,
-      undoStack: s.undoStack.slice(0, -1),
-      // 恢复到快照对应的回合开始快照
-      turnSnap: snap,
-    });
-    get().logEvent({ type: 'note', text: `⏪ 撤回本回合 —— 已恢复到 ${snap.units.find(u => u.id === snap.turn.currentUnitId)?.name ?? '?'} 的回合开始`, level: 'info' });
+    if (s.readOnly || !s.undoStack.length) return;
+    const snap = JSON.parse(JSON.stringify(s.undoStack[s.undoStack.length - 1])) as TurnSnapshot;
+    clearAiPlanCache();
+    useActionUiStore.getState().clear();
+    set({ ...snap, undoStack: s.undoStack.slice(0, -1), turnSnap: snap, aiAutoPlay: false,
+      pendingReactionStep: null, multiAttackQueue: null, selectedId: null, playerTargetId: null,
+      lastRoll: null, interactionEpoch: s.interactionEpoch + 1 });
+    get().logEvent({ type: 'note', text: `⏪ 已回到 ${snap.units.find(u => u.id === snap.turn.currentUnitId)?.name ?? '?'} 的上一回合起点，AI 已暂停`, level: 'info' });
     persist(get());
   },
 
@@ -1404,19 +1435,6 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         skipTypeMods: true, // resolveAttack 内已应用类型修正，避免二次结算
         nonLethal: opts.nonLethal === true && !opts.isRanged, // 非致命仅近战可用（E14）
       });
-      // 专注豁免
-      if (result.damage.concentrationDc) {
-        const conc = resolveConcentration(target, result.damage.appliedToHp);
-        if (conc.broken) {
-          get().setConcentration(targetId, null);
-        } else {
-          get().logEvent({
-            type: 'concentration', actorId: targetId,
-            text: `${target.name} ${conc.check.label}：${conc.check.total} —— 维持专注`,
-            level: 'info',
-          });
-        }
-      }
       // 反应【被命中后·攻击类】（反应撕裂等）：伤害结算完毕后反击
       get().runPostHitReactions(targetId, attackerId, opts);
     }
@@ -1552,9 +1570,9 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           text: `巢穴动作波及 ${t.name}：${act.damage} → ${dmg} 点${act.damageType ?? ''}伤害${saveText}`,
           level: 'bad',
         });
-        const appliedLair = get().damageUnit(t.id, dmg, { type: act.damageType, source: caster.id });
+        get().damageUnit(t.id, dmg, { type: act.damageType, source: caster.id });
         // 专注检定用类型修正后的实际扣血（抗性减免不应抬高专注 DC）
-        get().concentrationAfterDamage(t.id, appliedLair);
+
       }
     }
   },
@@ -1686,6 +1704,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   // ---------------- AI 回合执行 ----------------
 
   takeAiStep: () => {
+    if (get().readOnly) return false;
     const s = get();
     if (!s.battleActive || s.turn.ended) return false;
     // E11 反应法术窗口挂起中：等待玩家在行动栏确认/忽略，不推进 AI
@@ -1706,7 +1725,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
 
     const step = aiPlanCache.steps[0];
     // 校验失败 → 重规划（最多 2 次），仍失败则丢弃该步
-    const needsValidation = ['move', 'attack', 'aoe', 'heal'].includes(step.type);
+    const needsValidation = ['move', 'attack', 'aoe', 'heal', 'save-single'].includes(step.type);
     if (needsValidation && !validateStep(ctx, unit, step)) {
       if (aiPlanCache.replans < 2) {
         aiPlanCache = { key: cacheKey, steps: planTurn(ctx, get().units.find(u => u.id === unit.id) ?? unit), replans: aiPlanCache.replans + 1 };
@@ -1761,8 +1780,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         const target = get().units.find(u => u.id === step.targetId);
         if (ability && target) {
           // E11 反应法术窗口：目标是玩家操控单位、反应可用、且持有可用反应法术（有环位或戏法）→ 挂起等待决策
-          const _rs = target.playerControlled && !target.actionEconomy.reaction
-            ? (target.aiAbilities ?? []).find(a => a.reaction === true
+          const _rs = resolvedReactionPair !== `${unit.id}:${target.id}` && (target.playerControlled || target.isPlayer) && !target.actionEconomy.reaction && !target.slotCastThisTurn && !aggregateEffects(target.statuses).noActions
+            ? (target.aiAbilities ?? []).find(a => a.reaction === true && /护盾|shield/i.test(a.name)
               && a.spellPrepared !== false
               && ((a.spellLevel ?? 0) === 0 || (target.spellSlots?.[a.spellLevel ?? 0]?.current ?? 0) > 0))
             : undefined;
@@ -1772,157 +1791,20 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             get().logEvent({ type: 'note', actorId: target.id, text: `⏸ ${unit.name} 即将攻击 ${target.name} —— 可反应施放【${_rs.name}】，请在行动栏确认或忽略`, level: 'info' });
             return false;
           }
-          // 攻击法术结算法术位：升环向上代打（此前仅 AoE/治疗结算；无 spellSlots 模型的天生施法者不设限）
-          const cast = resolveAiCast(unit, ability);
-          if (!cast.ok) {
-            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
-            return true;
-          }
-          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
-          const effDice = aiCastDice(ability, cast);
-          const cover = estimateCover(unit, target, s.obstacles, buildBlockedCells(s.obstacles));
-          if (cover.cover === 'full') {
-            get().logEvent({ type: 'attack', actorId: unit.id, targetId: target.id, text: `⛔ ${unit.name} 放弃攻击——${target.name} 处于全掩护，无法直接指定`, level: 'info' });
-            return true;
-          }
-          get().logEvent({
-            type: 'attack', actorId: unit.id, targetId: target.id,
-            text: `${unit.name} 发动【${ability.name}】${cast.upcast ? `（${cast.level} 环升环）` : ''}→ ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
-            level: 'info',
-          });
-          // F3：充能/限次消耗（AI 攻击路径绕过 castAbility）
-          if (ability.recharge !== undefined || ability.usesPerDay !== undefined) get().consumeAbilityUse(unit.id, ability.id);
-          const atkResult = get().performAttack(unit.id, target.id, {
-            attackBonus: ability.attackBonus ?? 0,
-            targetAc: target.ac + (target.tempAcBonus ?? 0) + coverBonus(cover.cover),
-            weaponDamage: effDice,
-            weaponType: ability.damageType,
-            isRanged: ability.kind === 'ranged',
-            coverKind: cover.cover,
-            magicSource: ability.magic === true,
-          });
-          applyMasteryEffects(get(), unit, target, ability, atkResult);
+          resolvedReactionPair = '';
+          get().castAbility(unit.id, ability.id, target.id, { abilityOverride: { ...ability, multiAttack: 1 }, consumeSlot: !!unit.spellSlots, ignoreEconomy: ability.spellLevel === undefined && unit.actionEconomy.action });
         }
         return true;
       }
       case 'aoe': {
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
-        if (ability && ability.aoe) {
-          // 升环向上代打：基础环不足时找更高环；全部耗尽则放弃本次施法（不进入伤害循环）
-          const cast = resolveAiCast(unit, ability);
-          if (!cast.ok) {
-            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
-            return true;
-          }
-          set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: ability.bonusAction ? { ...u.actionEconomy, bonus: true } : { ...u.actionEconomy, action: true } } : u)) });
-          // AI 施法同样消耗法术位（此前绕过 castAbility 导致无限火球）
-          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
-          // F3：充能/限次消耗（AI AoE 路径绕过 castAbility）
-          if (ability.recharge !== undefined || ability.usesPerDay !== undefined) get().consumeAbilityUse(unit.id, ability.id);
-          const effDice = aiCastDice(ability, cast);
-          get().addAoeTemplate({
-            kind: ability.aoe.kind, size: ability.aoe.size,
-            origin: step.origin, angle: step.angle,
-            color: 'rgba(240,120,40,0.35)', label: ability.name,
-          });
-          const dmg = rollFormula(effDice);
-          set({ lastRoll: { id: uid(), formula: effDice, result: dmg, note: `${ability.name} 伤害${cast.upcast ? `（${cast.level} 环升环）` : ''}` } });
-          get().logEvent({
-            type: 'attack', actorId: unit.id,
-            text: `🔥 ${unit.name} 施放【${ability.name}】！伤害 ${dmg.total} —— 波及 ${step.targets.length} 个单位`,
-            level: 'crit',
-          });
-          for (const tid of step.targets) {
-            const t = get().units.find(u => u.id === tid);
-            if (!t || t.hp <= 0 || t.deathSaves?.dead) continue;
-            const covT = estimateCover(unit, t, s.obstacles, buildBlockedCells(s.obstacles));
-            const r = resolveSave(t, {
-              ability: (ability.saveAbility ?? 'dex'),
-              dc: ability.saveDc ?? 13,
-              halfOnSuccess: ability.halfOnSuccess,
-              sourceDamage: dmg.total,
-              coverBonus: (ability.saveAbility ?? 'dex') === 'dex' ? coverBonus(covT.cover) : 0,
-            });
-            get().logEvent({
-              type: 'save', actorId: tid,
-              text: `${t.name} ${ability.saveAbility?.toUpperCase() ?? 'DEX'} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${ability.saveDc ?? 13} —— ${r.check.outcome.includes('success') ? '成功（半伤）' : '失败（全额伤害）'}`,
-              level: r.check.outcome.includes('success') ? 'good' : 'bad',
-            });
-            const applied = get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: unit.id, magicSource: ability.magic === true });
-            // 专注检定用类型修正后的实际扣血（抗性减免不应抬高专注 DC）
-            get().concentrationAfterDamage(tid, applied);
-          }
-        }
+        if (ability) get().castAbility(unit.id, ability.id, null, { abilityOverride: ability, originPos: step.origin, angle: step.angle, consumeSlot: !!unit.spellSlots });
         return true;
       }
-      case 'save-single': {
-        const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
-        const t = get().units.find(u => u.id === step.targetId);
-        if (ability && t && t.hp > 0 && !t.deathSaves?.dead) {
-          const cast = resolveAiCast(unit, ability);
-          if (!cast.ok) {
-            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
-            return true;
-          }
-          set({ units: get().units.map(u => (u.id === unit.id ? { ...u, actionEconomy: ability.bonusAction ? { ...u.actionEconomy, bonus: true } : { ...u.actionEconomy, action: true } } : u)) });
-          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
-          // F3：充能/限次消耗（AI 单体豁免路径绕过 castAbility）
-          if (ability.recharge !== undefined || ability.usesPerDay !== undefined) get().consumeAbilityUse(unit.id, ability.id);
-          const saveKey = ability.saveAbility ?? 'wis';
-          const dc = ability.saveDc ?? 13;
-          get().logEvent({
-            type: 'attack', actorId: unit.id, targetId: t.id,
-            text: `🌀 ${unit.name} 施放【${ability.name}】→ ${t.name}（DC${dc} ${saveKey.toUpperCase()} 豁免）`,
-            level: 'crit',
-          });
-          const r = resolveSave(t, { ability: saveKey, dc });
-          const success = r.check.outcome.includes('success');
-          get().logEvent({
-            type: 'save', actorId: t.id,
-            text: `${t.name} ${saveKey.toUpperCase()} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${dc} —— ${success ? '成功（效果无效）' : '失败（中招）'}`,
-            level: success ? 'good' : 'bad',
-          });
-          if (!success) {
-            const status = ability.applyStatus;
-            const def = status ? getCondition(status) : undefined;
-            if (status) {
-              set({ units: get().units.map(u => (u.id === t.id ? { ...u, statuses: [...new Set([...u.statuses, status])] } : u)) });
-            }
-            get().logEvent({
-              type: 'note', actorId: t.id, targetId: t.id,
-              text: def ? `⚡ ${t.name} 陷入【${def.name}】` : (status ? `⚡ ${t.name} 受到【${status}】影响（自定义状态，仅记录）` : `⚡ ${t.name} 受到【${ability.name}】影响`),
-              level: 'bad',
-            });
-          }
-        }
-        return true;
-      }
+      case 'save-single':
       case 'heal': {
         const ability = unitAbilities(unit).find(a => a.id === step.abilityId);
-        const t = get().units.find(u => u.id === step.targetId);
-        if (ability && t) {
-          // AI 治疗法术同样消耗法术位（升环向上代打）
-          const cast = resolveAiCast(unit, ability);
-          if (!cast.ok) {
-            get().logEvent({ type: 'note', actorId: unit.id, text: `⛔ ${unit.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'info' });
-            return true;
-          }
-          if (cast.spend) get().spendSpellSlot(unit.id, cast.level);
-          const effDice = aiCastDice(ability, cast);
-          const r = rollFormula(effDice);
-          set({
-            lastRoll: { id: uid(), formula: effDice, result: r, note: `${ability.name} 治疗${cast.upcast ? `（${cast.level} 环升环）` : ''}` },
-            units: get().units.map(u => (u.id === unit.id
-              ? { ...u, actionEconomy: ability.bonusAction ? { ...u.actionEconomy, bonus: true } : { ...u.actionEconomy, action: true } }
-              : u)),
-          });
-          get().logEvent({
-            type: 'heal', actorId: unit.id, targetId: t.id,
-            text: `💚 ${unit.name} 使用【${ability.name}】${cast.upcast ? `（${cast.level} 环升环）` : ''}治疗 ${t.name} ${r.total} 点`,
-            level: 'good',
-          });
-          get().healUnit(t.id, r.total);
-        }
+        if (ability) get().castAbility(unit.id, ability.id, step.targetId, { abilityOverride: ability, consumeSlot: !!unit.spellSlots });
         return true;
       }
       case 'flee-note': {
@@ -2003,6 +1885,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   // ---------------- 协议 ----------------
 
   importBattleBlock: (raw, source = 'import') => {
+    useActionUiStore.getState().clear();
+    set({ interactionEpoch: get().interactionEpoch + 1 });
     const parsed = parseDmMessage(raw);
     const list = parsed.latestBattle;
     if (!list || list.length === 0) return { added: 0, updated: 0 };
@@ -2278,7 +2162,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   exportWarReport: () => {
     const s = get();
     return JSON.stringify({
-      version: 1,
+      version: SAVE_VERSION, engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION,
+      battleActive: s.battleActive,
       exportedAt: new Date().toISOString(),
       battleName: s.battleName,
       units: s.units,
@@ -2291,18 +2176,23 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   },
 
   importWarReport: (json) => {
+    if (get().readOnly) return false;
     try {
       const data = JSON.parse(json);
       if (!data.units || !Array.isArray(data.units)) return false;
+      clearAiPlanCache();
+      useActionUiStore.getState().clear();
       set({
-        units: data.units,
+        interactionEpoch: get().interactionEpoch + 1,
+        pendingReactionStep: null, multiAttackQueue: null, turnSnap: null, undoStack: [],
+        units: migrateUnits(data.units),
         obstacles: data.obstacles ?? [],
         mapConfig: data.mapConfig ?? get().mapConfig,
         turn: data.turn ?? get().turn,
         events: data.events ?? [],
         rules: data.rules ? { ...get().rules, ...normalizeRules(data.rules) } : get().rules,
         battleName: data.battleName ?? '导入战报',
-        battleActive: true,
+        battleActive: data.battleActive ?? !data.turn?.ended,
       });
       engineSetRules(get().rules);
       persist(get());
@@ -2415,7 +2305,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     });
   },
 
-  setReadOnly: (v) => set({ readOnly: v }),
+  setReadOnly: (v) => {
+    if (get().readOnly !== v) {
+      useActionUiStore.getState().clear();
+      set({ readOnly: v, interactionEpoch: get().interactionEpoch + 1 });
+    }
+  },
 
   hydrateFromPersisted: () => {
     try {
@@ -2423,7 +2318,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       if (!raw) return false;
       const data = JSON.parse(raw);
       set({
-        units: data.units ?? [],
+        units: migrateUnits(data.units ?? []),
         obstacles: data.obstacles ?? [],
         mapConfig: data.mapConfig ?? get().mapConfig,
         turn: data.turn ?? get().turn,
@@ -2445,10 +2340,39 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
   },
 
+  applyAbilityEffect: (targetId, sourceId, ability) => {
+    const source = get().units.find(u => u.id === sourceId);
+    if (!source || !ability.applyStatus || (ability.concentration && source.concentration !== ability.name)) return;
+    set({ units: get().units.map(u => u.id === targetId ? addAbilityEffect(u, source, ability, uid()) : u) });
+    const target = get().units.find(u => u.id === targetId);
+    if (target?.concentration && aggregateEffects(target.statuses).noActions) get().setConcentration(targetId, null);
+  },
+
+  processEffects: (unitId, timing) => {
+    if (!unitId) return;
+    const unit = get().units.find(u => u.id === unitId);
+    if (!unit) return;
+    const expired = new Set<string>();
+    for (const effect of unit.effects ?? []) {
+      if (effect.repeatSave?.timing === timing) {
+        const result = resolveSave(unit, effect.repeatSave);
+        const passed = result.check.outcome === 'success';
+        get().logEvent({ type: 'save', actorId: unit.id, text: `${unit.name} 解除【${effect.name}】${result.check.label}：${result.check.total} —— ${passed ? '成功' : '失败'}`, level: passed ? 'good' : 'info' });
+        if (passed) expired.add(effect.id);
+      }
+      if (timing === 'end' && effect.remainingRounds !== undefined && effect.remainingRounds <= 1) expired.add(effect.id);
+    }
+    set({ units: get().units.map(u => u.id !== unitId ? u : {
+      ...removeEffects(u, e => expired.has(e.id)),
+      effects: (u.effects ?? []).filter(e => !expired.has(e.id)).map(e => timing === 'end' && e.remainingRounds !== undefined ? { ...e, remainingRounds: e.remainingRounds - 1 } : e),
+    }) });
+  },
+
   // ---------------- 统一行动结算 ----------------
 
   /** 多重攻击击杀后续打：不重复消耗动作经济/法术位；射程/全掩护守卫与 castAbility 同款 */
   continueMultiAttack: (actorId, abilityId, targetId) => {
+    if (get().readOnly || get().pendingReactionStep) return;
     const s = get();
     const queue = s.multiAttackQueue;
     if (!queue || queue.actorId !== actorId || queue.abilityId !== abilityId) return;
@@ -2461,7 +2385,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       return; // 保留队列，等待重选
     }
     const dist = unitDistance(actor, target, s.mapConfig.diagonal);
-    if (dist > ability.range + 5) {
+    if (dist > ability.range) {
       get().logEvent({ type: 'note', text: `⛔ 超出射程：${target.name} 距离 ${dist} 尺 > ${ability.range} 尺（可先移动再续打）`, level: 'bad' });
       return; // 保留队列
     }
@@ -2476,22 +2400,30 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       text: `${actor.name} 续打【${ability.name}】×${queue.remaining}（多重攻击余量） → ${target.name}${coverPre.bonus > 0 ? `（目标${coverPre.cover === 'half' ? '半身' : '3/4'}掩护 +${coverPre.bonus}）` : ''}`,
       level: 'info',
     });
-    runMultiAttackSequence(get, set, actorId, ability, target.id, queue.remaining);
+    runMultiAttackSequence(get, set, actorId, ability, target.id, queue.remaining, queue.nonLethal === true);
   },
 
-  clearMultiAttackQueue: () => set({ multiAttackQueue: null }),
+  clearMultiAttackQueue: () => {
+    if (get().readOnly) return;
+    set({ multiAttackQueue: null });
+    useActionUiStore.getState().clear();
+  },
 
   castAbility: (actorId, abilityId, targetId, opts = {}) => {
     const s = get();
+    if (s.readOnly || s.pendingReactionStep) return false;
     const actor = s.units.find(u => u.id === actorId);
-    if (!actor) return;
-    const ability = (actor.aiAbilities ?? []).find(a => a.id === abilityId);
+    if (!actor) return false;
+    const ability = opts.abilityOverride ?? (actor.aiAbilities ?? []).find(a => a.id === abilityId);
     if (!ability) {
       get().logEvent({ type: 'note', text: `⚠️ 未找到动作：${abilityId}`, level: 'bad' });
-      return;
+      return false;
     }
     const target = targetId ? s.units.find(u => u.id === targetId) : undefined;
+    const targetReason = abilityTargetCheck(actor, ability, target, s.obstacles, s.mapConfig.diagonal, opts.originPos);
+    if (targetReason) { useActionUiStore.getState().fail(targetReason); return false; }
     const isCurrentActor = s.battleActive && s.turn.currentUnitId === actorId;
+    if (s.battleActive && !isCurrentActor && !opts.ignoreEconomy && !ability.reaction) return false;
 
     // F3：充能中/每日限次用尽的动作不可用
     const ust = actor.abilityUses?.[ability.id];
@@ -2499,8 +2431,8 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       const exhausted = (ust.max !== undefined && ust.used >= ust.max)
         || (ust.recharge !== undefined && ust.used > 0);
       if (exhausted) {
-        get().logEvent({ type: 'note', text: `⛔【${ability.name}】${ust.max !== undefined ? `今日次数已用尽（${ust.max} 次，长休恢复）` : `充能冷却中（回合开始 d20≥${ust.recharge} 恢复）`}`, level: 'bad' });
-        return;
+        get().logEvent({ type: 'note', text: `⛔【${ability.name}】${ust.max !== undefined ? `今日次数已用尽（${ust.max} 次，长休恢复）` : `充能冷却中（回合开始 d6≥${ust.recharge} 恢复）`}`, level: 'bad' });
+        return false;
       }
     }
 
@@ -2508,22 +2440,27 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     const agg = aggregateEffects(actor.statuses);
     if (agg.noActions) {
       get().logEvent({ type: 'note', text: `⛔ ${actor.name} 失能，无法行动`, level: 'bad' });
-      return;
+      return false;
     }
 
     // 动作经济
-    const cost: 'action' | 'bonus' = ability.bonusAction ? 'bonus' : 'action';
+    const cost: 'action' | 'bonus' | 'reaction' = ability.reaction ? 'reaction' : ability.bonusAction ? 'bonus' : 'action';
     if (isCurrentActor && !opts.ignoreEconomy) {
       if (cost === 'action' && actor.actionEconomy.action) {
         get().logEvent({ type: 'note', text: `⛔ ${actor.name} 的动作已用尽`, level: 'bad' });
-        return;
+        return false;
       }
       if (cost === 'bonus' && actor.actionEconomy.bonus) {
         get().logEvent({ type: 'note', text: `⛔ ${actor.name} 的附赠动作已用尽`, level: 'bad' });
-        return;
+        return false;
       }
     }
 
+    if (!opts.ignoreEconomy && cost === 'reaction' && actor.actionEconomy.reaction) return false;
+    if (s.battleActive && (ability.spellLevel ?? 0) > 0 && opts.consumeSlot !== false && actor.slotCastThisTurn) {
+      get().logEvent({ type: 'note', text: '本回合已消耗过法术位施法，可选择戏法或不消耗法术位的能力', level: 'bad' });
+      return false;
+    }
     // 法术位检查：升环向上代打（本环不足时找更高环；可显式指定施放环阶）；consumeSlot=false 叙事施放
     const slotLevel = ability.spellLevel ?? 0;
     let cast: CastSlotResolution = { ok: true, level: slotLevel, upcast: false };
@@ -2531,35 +2468,39 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       cast = resolveCastSlot(actor, slotLevel, opts.castLevel);
       if (!cast.ok) {
         get().logEvent({ type: 'note', text: `⛔ ${actor.name} 的 ${cast.reason}——【${ability.name}】无法施放`, level: 'bad' });
-        return;
+        return false;
       }
     }
     // 升环骰量：按（实际环阶 - 基础环）追加 perLevel 骰
     const effDice = applyUpcast(ability.dice, slotLevel, cast.level, ability.upcast);
+    try { parseFormula(effDice); } catch {
+      useActionUiStore.getState().fail(`【${ability.name}】骰子公式无效，请先修正能力数据`);
+      return false;
+    }
 
     // 目标与射程
     const needsTarget = ability.kind === 'melee' || ability.kind === 'ranged' || ability.kind === 'save' || ability.kind === 'heal';
     if (needsTarget && !target) {
       get().logEvent({ type: 'note', text: `⛔【${ability.name}】需要选择目标`, level: 'bad' });
-      return;
+      return false;
     }
     if (needsTarget && target) {
       const dist = unitDistance(actor, target, s.mapConfig.diagonal);
       if (dist > ability.range) {
         get().logEvent({ type: 'note', text: `⛔ 超出射程：${target.name} 距离 ${dist} 尺 > ${ability.range} 尺`, level: 'bad' });
-        return;
+        return false;
       }
     }
     if (ability.kind === 'save-aoe' && !target && !opts.originPos) {
       get().logEvent({ type: 'note', text: `⛔【${ability.name}】需要选择 AoE 落点目标`, level: 'bad' });
-      return;
+      return false;
     }
     // 2024 全掩护：目标不能被攻击或伤害法术直接指定（借机/传奇/AI 攻击路径有同款守卫）
-    if (target && (ability.kind === 'melee' || ability.kind === 'ranged')) {
+    if (target && !ability.ignoresCover) {
       const coverPre = estimateCover(actor, target, s.obstacles, buildBlockedCells(s.obstacles));
       if (coverPre.cover === 'full') {
         get().logEvent({ type: 'note', text: `⛔ ${target.name} 处于全掩护——无法被直接指定为攻击目标（2024 规则）`, level: 'bad' });
-        return;
+        return false;
       }
     }
 
@@ -2569,11 +2510,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
 
     const prevActionUsed = actor.actionEconomy.action;
+    if (ability.concentration) get().setConcentration(actorId, ability.name);
 
     switch (ability.kind) {
       case 'melee':
       case 'ranged': {
-        if (!target) return;
+        if (!target) return false;
         const times = Math.max(1, ability.multiAttack ?? 1);
         const cover = estimateCover(actor, target, s.obstacles, buildBlockedCells(s.obstacles));
         get().logEvent({
@@ -2581,11 +2523,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           text: `${actor.name} 发动【${ability.name}】${times > 1 ? `×${times}（多重攻击）` : ''} → ${target.name}${cover.bonus > 0 ? `（目标${cover.cover === 'half' ? '半身' : '3/4'}掩护 +${cover.bonus}）` : ''}`,
           level: 'info',
         });
-        runMultiAttackSequence(get, set, actorId, ability, target.id, times, opts.nonLethal === true);
+        runMultiAttackSequence(get, set, actorId, { ...ability, dice: effDice }, target.id, times, opts.nonLethal === true);
         break;
       }
       case 'heal': {
-        if (!target) return;
+        if (!target) return false;
         const r = rollFormula(effDice);
         set({ lastRoll: { id: uid(), formula: effDice, result: r, note: `${ability.name} 治疗${cast.upcast ? `（${cast.level} 环升环）` : ''}` } });
         get().logEvent({
@@ -2597,7 +2539,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         break;
       }
       case 'save': {
-        if (!target) return;
+        if (!target) return false;
         const dmgRoll = rollFormula(effDice);
         if (!ability.saveAbility) {
           // 自动命中型（如魔法飞弹）
@@ -2607,15 +2549,16 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             text: `🔮 ${actor.name} 施放【${ability.name}】—— 自动命中 ${target.name}，伤害 ${dmgRoll.total}`,
             level: 'crit',
           });
-          const appliedAuto = get().damageUnit(target.id, dmgRoll.total, { type: ability.damageType, source: actorId, magicSource: ability.magic === true });
+          if (ability.applyStatus) get().applyAbilityEffect(target.id, actorId, ability);
+          get().damageUnit(target.id, dmgRoll.total, { type: ability.damageType, source: actorId, magicSource: ability.magic === true || ability.spellLevel !== undefined });
           // 受伤专注检定（法术伤害同样打断专注；用类型修正后的实际扣血）
-          get().concentrationAfterDamage(target.id, appliedAuto);
+
         } else {
           const coverS = estimateCover(actor, target, s.obstacles, buildBlockedCells(s.obstacles));
           const r = resolveSave(target, {
             ability: ability.saveAbility,
             dc: ability.saveDc ?? 13,
-            halfOnSuccess: ability.halfOnSuccess,
+            halfOnSuccess: ability.halfOnSuccess, damageOnSuccess: ability.damageOnSuccess,
             sourceDamage: dmgRoll.total,
             coverBonus: ability.saveAbility === 'dex' ? coverBonus(coverS.cover) : 0,
           });
@@ -2626,12 +2569,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             text: `${actor.name} 施放【${ability.name}】→ ${target.name} ${ability.saveAbility.toUpperCase()} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${ability.saveDc ?? 13} —— ${passed ? (r.halfApplied ? `成功（半伤 ${r.damageTaken}）` : '成功（完全抵抗）') : `失败！${r.damageTaken > 0 ? `受到 ${r.damageTaken} 伤害` : ''}${ability.applyStatus ? `，获得【${ability.applyStatus}】` : ''}`}`,
             level: passed ? 'info' : 'bad',
           });
-          const appliedSave = r.damageTaken > 0
-            ? get().damageUnit(target.id, r.damageTaken, { type: ability.damageType, source: actorId, magicSource: ability.magic === true })
-            : 0;
-          get().concentrationAfterDamage(target.id, appliedSave);
+          if (r.damageTaken > 0) get().damageUnit(target.id, r.damageTaken, { type: ability.damageType, source: actorId, magicSource: ability.magic === true || ability.spellLevel !== undefined });
+
           if (!passed && ability.applyStatus) {
-            set({ units: get().units.map(u => (u.id === target.id ? { ...u, statuses: [...new Set([...u.statuses, ability.applyStatus!])] } : u)) });
+            get().applyAbilityEffect(target.id, actorId, ability);
           }
         }
         break;
@@ -2639,12 +2580,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       case 'save-aoe': {
         if (!ability.aoe) {
           get().logEvent({ type: 'note', text: `⚠️【${ability.name}】缺少 AoE 定义`, level: 'bad' });
-          return;
+          return false;
         }
         const origin = opts.originPos ?? target?.pos ?? actor.pos;
         const angle = opts.angle ?? (target ? Math.atan2(target.pos.y - actor.pos.y, target.pos.x - actor.pos.x) : 0);
         const template: AoeTemplate = { id: uid(), kind: ability.aoe.kind, size: ability.aoe.size, origin, angle, color: 'rgba(240,120,40,0.35)', label: ability.name };
-        const affected = aoeCells(template, get().units).affectedUnitIds.filter(id => id !== actorId);
+        const affected = abilityPreview(actor, ability, target, get().units, s.obstacles, s.mapConfig.diagonal, { originPos: origin, angle }).affected.map(u => u.id);
         get().addAoeTemplate({ kind: template.kind, size: template.size, origin: template.origin, angle: template.angle, color: template.color, label: template.label });
         const dmgRoll = rollFormula(effDice);
         set({ lastRoll: { id: uid(), formula: effDice, result: dmgRoll, note: `${ability.name} 伤害${cast.upcast ? `（${cast.level} 环升环）` : ''}` } });
@@ -2655,14 +2596,14 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
         });
           for (const tid of affected) {
             const t = get().units.find(u => u.id === tid);
-            if (!t || t.hp <= 0 || t.deathSaves?.dead) continue;
+            if (!t || t.deathSaves?.dead) continue;
             if (ability.saveAbility) {
             // 掩体对敏捷豁免同样 +2/+5（相对施放者位置估算）
-            const covT = estimateCover(actor, t, s.obstacles, buildBlockedCells(s.obstacles));
+            const covT = estimateCover({ ...actor, pos: origin }, t, s.obstacles, buildBlockedCells(s.obstacles));
             const r = resolveSave(t, {
               ability: ability.saveAbility,
               dc: ability.saveDc ?? 13,
-              halfOnSuccess: ability.halfOnSuccess,
+              halfOnSuccess: ability.halfOnSuccess, damageOnSuccess: ability.damageOnSuccess,
               sourceDamage: dmgRoll.total,
               coverBonus: ability.saveAbility === 'dex' ? coverBonus(covT.cover) : 0,
             });
@@ -2671,16 +2612,15 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
               text: `${t.name} ${ability.saveAbility.toUpperCase()} 豁免 [${r.check.dice.rawD20}]=${r.check.total} vs DC${ability.saveDc ?? 13} —— ${r.check.outcome.includes('success') ? (r.halfApplied ? `成功（半伤 ${r.damageTaken}）` : '成功') : `失败（受到 ${r.damageTaken} 伤害）`}`,
               level: r.check.outcome.includes('success') ? 'good' : 'bad',
             });
-            const appliedAoeSave = r.damageTaken > 0
-              ? get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: actorId })
-              : 0;
-            get().concentrationAfterDamage(tid, appliedAoeSave);
+            if (r.damageTaken > 0) get().damageUnit(tid, r.damageTaken, { type: ability.damageType, source: actorId, magicSource: ability.magic === true || ability.spellLevel !== undefined });
+
             if (!r.check.outcome.includes('success') && ability.applyStatus) {
-              set({ units: get().units.map(u => (u.id === tid ? { ...u, statuses: [...new Set([...u.statuses, ability.applyStatus!])] } : u)) });
+              get().applyAbilityEffect(tid, actorId, ability);
             }
-          } else if (dmgRoll.total > 0) {
-            const appliedAoeAuto = get().damageUnit(tid, dmgRoll.total, { type: ability.damageType, source: actorId });
-            get().concentrationAfterDamage(tid, appliedAoeAuto);
+          } else {
+            if (ability.applyStatus) get().applyAbilityEffect(tid, actorId, ability);
+            get().damageUnit(tid, dmgRoll.total, { type: ability.damageType, source: actorId, magicSource: ability.magic === true || ability.spellLevel !== undefined });
+
           }
         }
         break;
@@ -2692,9 +2632,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       units: get().units.map(u => {
         if (u.id !== actorId) return u;
         let next: BattleUnit = { ...u };
-        if (isCurrentActor && !opts.ignoreEconomy) {
+        if ((isCurrentActor || cost === 'reaction') && !opts.ignoreEconomy) {
           const eco = { ...next.actionEconomy };
-          if (cost === 'bonus') {
+          if (cost === 'reaction') {
+            eco.reaction = true;
+            eco.action = prevActionUsed;
+          } else if (cost === 'bonus') {
             eco.bonus = true;
             if (!prevActionUsed) eco.action = false; // performAttack 误置动作 → 附赠动作恢复
           } else {
@@ -2703,6 +2646,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           next.actionEconomy = eco;
         }
         if (cast.ok && cast.level > 0 && opts.consumeSlot !== false && next.spellSlots?.[cast.level] && next.spellSlots[cast.level].current > 0) {
+          next.slotCastThisTurn = true;
           next.spellSlots = {
             ...next.spellSlots,
             [cast.level]: { ...next.spellSlots[cast.level], current: next.spellSlots[cast.level].current - 1 },
@@ -2712,7 +2656,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
           // 攻击暴露隐藏位置 / 消耗协助优势
           next.statuses = next.statuses.filter(st => st !== 'hiding' && st !== 'helped');
         }
-        if (ability.concentration) next.concentration = ability.name;
+
         return next;
       }),
     });
@@ -2732,9 +2676,11 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       set({ playerTargetId: target.id });
     }
     persist(get());
+    return true;
   },
 
   playerAction: (kind, unitId, targetId) => {
+    if (get().readOnly || get().pendingReactionStep) return;
     const s = get();
     const unit = s.units.find(u => u.id === unitId);
     if (!unit || unit.hp <= 0) return;
@@ -2923,7 +2869,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             x: Math.min(Math.max(0, Math.round(strikeTarget.pos.x + (sdx / slen) * 5)), sMap.width * sMap.cellSize),
             y: Math.min(Math.max(0, Math.round(strikeTarget.pos.y + (sdy / slen) * 5)), sMap.height * sMap.cellSize),
           };
-          get().moveUnit(strikeTarget.id, sDest, true);
+          get().moveUnit(strikeTarget.id, sDest, true, 'forced');
         }
         break;
       }
@@ -2989,9 +2935,10 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   resolvePendingReaction: (cast) => {
     const pending = get().pendingReactionStep;
     if (!pending) return;
+    resolvedReactionPair = `${pending.attackerId}:${pending.targetId}`;
     if (cast) {
       const target = get().units.find(u => u.id === pending.targetId);
-      if (target) {
+      if (target && target.hp > 0 && !aggregateEffects(target.statuses).noActions && !target.actionEconomy.reaction && !target.slotCastThisTurn && (pending.spellLevel === 0 || (target.spellSlots?.[pending.spellLevel]?.current ?? 0) > 0)) {
         // E11：按反应法术模板分支——带伤害公式的（地狱反击类）对攻击者结算伤害；无伤害的（护盾术类）AC+5
         const rb = pending.ability;
         const rebukeStyle = !!(rb && rb.dice && rb.dice !== '0' && rb.dice !== '1'
@@ -3007,12 +2954,12 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
             }
             : u)),
         });
-        if (pending.spellLevel > 0) get().spendSpellSlot(target.id, pending.spellLevel);
+        if (pending.spellLevel > 0) { get().spendSpellSlot(target.id, pending.spellLevel); get().updateUnit(target.id, { slotCastThisTurn: true }); }
         if (rebukeStyle && attacker) {
           const roll = rollFormula(rb!.dice);
           set({ lastRoll: { id: uid(), formula: rb!.dice, result: roll, note: `${pending.spellName}（反应）` } });
           const applied = get().damageUnit(attacker.id, roll.total, { type: rb!.damageType, source: target.id, magicSource: true });
-          if (applied > 0) get().concentrationAfterDamage(attacker.id, applied);
+
           get().logEvent({ type: 'damage', actorId: target.id, targetId: attacker.id, text: `🔥 ${target.name} 反应施放【${pending.spellName}】——${attacker.name} 受 ${applied} 伤害（反应+${pending.spellLevel}环位已消耗）`, level: 'good' });
         } else {
           get().logEvent({ type: 'save', actorId: target.id, text: `🛡 ${target.name} 反应施放【${pending.spellName}】——AC +5 至其下回合开始（反应+${pending.spellLevel}环位已消耗）`, level: 'good' });
@@ -3027,35 +2974,35 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
   },
 
   setReadyAction: (unitId, abilityId, abilityName, triggerText) => {
-    const unit = get().units.find(u => u.id === unitId);
-    if (!unit) return;
-    set({
-      units: get().units.map(u => (u.id === unitId
-        ? { ...u, readyAction: { abilityId, abilityName, triggerText: triggerText || '触发条件（自定）' } }
-        : u)),
-    });
-    // 消耗动作（仅当前回合且战斗中）
-    if (get().battleActive && get().turn.currentUnitId === unitId) {
-      set({ units: get().units.map(u => (u.id === unitId ? { ...u, actionEconomy: { ...u.actionEconomy, action: true } } : u)) });
+    const s = get(), unit = s.units.find(u => u.id === unitId);
+    const ability = unit?.aiAbilities?.find(a => a.id === abilityId);
+    if (s.readOnly || !unit || !ability || unit.hp <= 0 || aggregateEffects(unit.statuses).noActions || ability.bonusAction || ability.reaction || ability.kind === 'save-aoe') return;
+    if (s.battleActive && (unit.id !== s.turn.currentUnitId || unit.actionEconomy.action)) return;
+    const isSpell = ability.spellLevel !== undefined;
+    const cast = resolveCastSlot(unit, ability.spellLevel ?? 0);
+    if (isSpell && (!cast.ok || ((ability.spellLevel ?? 0) > 0 && unit.slotCastThisTurn))) return;
+    if (isSpell) {
+      if (cast.level > 0) { get().spendSpellSlot(unitId, cast.level); get().updateUnit(unitId, { slotCastThisTurn: true }); }
+      get().setConcentration(unitId, `预备：${abilityName}`);
     }
-    get().logEvent({ type: 'note', actorId: unitId, text: `⏳ ${unit.name} 预备【${abilityName}】—— 触发条件：${triggerText || '（自定）'}（触发时消耗反应）`, level: 'info' });
+    set({ units: get().units.map(u => u.id === unitId ? { ...u,
+      readyAction: { abilityId, abilityName, triggerText: triggerText || '触发条件（自定）', castLevel: isSpell ? cast.level : undefined, requiresConcentration: isSpell },
+      actionEconomy: { ...u.actionEconomy, action: true } } : u) });
+    get().logEvent({ type: 'note', actorId: unitId, text: `${unit.name} 预备【${abilityName}】${isSpell ? `（已消耗${cast.level}环位·维持专注）` : ''}，等待 ${triggerText || '自定条件'}`, level: 'info' });
     persist(get());
   },
 
   triggerReadyAction: (unitId, targetId) => {
-    const unit = get().units.find(u => u.id === unitId);
-    if (!unit?.readyAction) return;
-    if (unit.actionEconomy.reaction || unit.reactionUsedTurn) {
-      get().logEvent({ type: 'note', actorId: unitId, text: `⛔ ${unit.name} 的反应已用尽——预备动作无法触发`, level: 'bad' });
-      return;
-    }
-    const ra = unit.readyAction;
-    // 反应消耗 + 清除登记（castAbility 走现成结算；ignoreEconomy：触发不占动作）
-    set({ units: get().units.map(u => (u.id === unitId
-      ? { ...u, readyAction: undefined, actionEconomy: { ...u.actionEconomy, reaction: true }, reactionUsedTurn: true }
-      : u)) });
-    get().logEvent({ type: 'note', actorId: unitId, text: `▶ ${unit.name} 触发预备【${ra.abilityName}】（触发：${ra.triggerText}）—— 以反应执行`, level: 'info' });
-    get().castAbility(unitId, ra.abilityId, targetId, { ignoreEconomy: true });
+    const unit = get().units.find(u => u.id === unitId), ra = unit?.readyAction;
+    if (get().readOnly || !unit || !ra || unit.actionEconomy.reaction || unit.reactionUsedTurn || (ra.requiresConcentration && unit.concentration !== `预备：${ra.abilityName}`)) return;
+    const ability = unit.aiAbilities?.find(a => a.id === ra.abilityId);
+    if (!ability) return;
+    const released = { ...ability, multiAttack: 1, dice: applyUpcast(ability.dice, ability.spellLevel ?? 0, ra.castLevel ?? ability.spellLevel ?? 0, ability.upcast), concentration: ability.concentration, upcast: undefined };
+    if (!get().castAbility(unitId, ra.abilityId, targetId, { abilityOverride: released, ignoreEconomy: true, consumeSlot: false })) return;
+    set({ units: get().units.map(u => u.id === unitId ? { ...u, readyAction: undefined, actionEconomy: { ...u.actionEconomy, reaction: true }, reactionUsedTurn: true } : u) });
+    if (ra.requiresConcentration && !ability.concentration) get().setConcentration(unitId, null);
+    get().logEvent({ type: 'note', actorId: unitId, text: `${unit.name} 以反应释放预备【${ra.abilityName}】`, level: 'info' });
+    persist(get());
   },
   clearHistory: () => {
     try { localStorage.removeItem('dnd-battle-history'); } catch { /* noop */ }
@@ -3070,3 +3017,18 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     }
   },
 }));
+
+// Nested actions persist once at the outer settlement boundary, including reactions/effects.
+const transactional = ['castAbility', 'continueMultiAttack', 'damageUnit', 'moveUnit', 'performAttack', 'nextTurn', 'takeAiStep', 'playerAction', 'toggleStatus', 'setReadyAction', 'triggerReadyAction', 'resolvePendingReaction', 'stabilizeUnit'] as const;
+for (const key of transactional) {
+  const original = useBattleStore.getState()[key] as (...args: unknown[]) => unknown;
+  const wrapped = (...args: unknown[]) => {
+    settlementDepth++;
+    try { return original(...args); }
+    finally {
+      settlementDepth--;
+      if (settlementDepth === 0 && pendingPersist) { pendingPersist = false; persist(useBattleStore.getState()); }
+    }
+  };
+  useBattleStore.setState({ [key]: wrapped } as Partial<BattleStore>);
+}

@@ -5,24 +5,14 @@
  * 独立模式：完整仪表盘（地图 + 先攻 + 引擎工具）
  * 嵌入模式（?embed=1）：紧凑战斗面板（酒馆 iframe 嵌入）
  */
-import React, { useEffect, useMemo, useState, Suspense } from 'react';
+import React, { useEffect, Suspense } from 'react';
 import { useBattleStore } from '@/store/battleStore';
-import { BattleMapIso } from '@/components/battle/BattleMapIso';
-import { AiDriver, BattleControls } from '@/components/battle/AiDriver';
-import { InitiativeBar } from '@/components/battle/InitiativeBar';
-import { UnitDetailCard } from '@/components/battle/UnitDetailCard';
-import { DiceRoller } from '@/components/battle/DiceRoller';
-import { BattleLog } from '@/components/battle/BattleLog';
+import { BattleWorkspace } from '@/components/battle/BattleWorkspace';
+import { AiDriver } from '@/components/battle/AiDriver';
 import { MonsterPicker } from '@/components/battle/MonsterPicker';
-import { ImportPanel, ExportPanel } from '@/components/battle/ImportExportPanel';
-import { AttackPanel } from '@/components/battle/AttackPanel';
-import { SettingsPanel } from '@/components/battle/SettingsPanel';
-import { ActionBar } from '@/components/battle/ActionBar';
-import { RosterPanel } from '@/components/battle/RosterPanel';
-import { EnemyDesigner } from '@/components/battle/EnemyDesigner';
+import { ImportPanel } from '@/components/battle/ImportExportPanel';
 import { EncounterBriefing } from '@/components/battle/EncounterBriefing';
 import { useEmbedBridge, useAppRuntime, isEmbedded } from '@/components/battle/EmbedBridge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -49,25 +39,14 @@ function BattleForgeInner() {
     s.load();
   }, []);
 
-  useEmbedBridge(store.embedMode);
-
   // 多面板运行时：领导者选举（AI 驱动与存储写入仅限领导者；其余为同步视图）
   const runtime = useAppRuntime(store.embedMode);
+  // Register the panel before announcing readiness to the host.
+  useEmbedBridge(store.embedMode);
 
   // AI 回合驱动器（独立/嵌入两模式共用，仅领导者驱动）
   const embed = store.embedMode;
   const driver = <AiDriver leader={runtime.isLeader} />;
-
-  // 非领导者同步视图徽标（多面板共存时提示操作入口在最新楼层面板）
-  const followerBadge = runtime.ready && !runtime.isLeader ? (
-    <div className="flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-1.5 text-[11px] text-sky-200">
-      <Eye className="h-3.5 w-3.5" />
-      同步视图 —— 本楼面板为只读镜像，战斗操作与 AI 驱动由最新楼层面板执行
-    </div>
-  ) : null;
-
-  // 选中单位：用户点选 > 当前回合行动者
-  const detailUnitId = store.selectedId ?? store.turn.currentUnitId;
 
   if (!hydrated) {
     return (
@@ -77,51 +56,8 @@ function BattleForgeInner() {
     );
   }
 
-  // ============ 嵌入模式 ============
-  if (embed) {
-    return (
-      <div className="dnd-theme embed-compact p-2 md:p-3">
-        <div className="flex flex-col gap-2.5">
-          {/* 非领导者同步视图徽标 */}
-          {followerBadge}
-          {/* 战前敌情简报（暂存敌卡 + 未开战） */}
-          <EncounterBriefing compact />
-          {/* 顶部条 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-display text-sm font-bold gold-text">⚔ 战斗面板</span>
-            <span className="rounded-md border border-border/50 bg-black/30 px-2 py-0.5 text-[11px] text-muted-foreground">
-              第 {store.turn.round} 轮 · {store.units.filter(u => u.attitude === 2 && !u.deathSaves?.dead).length} 敌
-            </span>
-            <div className="grow" />
-            {store.battleActive && (
-              <Button size="sm" className="h-7 gap-1 bg-primary text-[11px] text-primary-foreground" onClick={() => store.nextTurn()}>
-                下一回合
-              </Button>
-            )}
-          </div>
-          {/* 地图通栏（宽度 2 倍） */}
-          <BattleControls />
-          <BattleMapIso compact />
-          {/* 行动栏 + 先攻 + 详情 */}
-          <div className="grid gap-2.5 md:grid-cols-[1fr_260px]">
-            <div className="rounded-xl parchment-panel p-2.5">
-              <ActionBar compact />
-            </div>
-            <div className="flex flex-col gap-2.5">
-              <InitiativeBar compact />
-              {detailUnitId && <UnitDetailCard unitId={detailUnitId} compact />}
-            </div>
-          </div>
-          {/* F6：战报明细（嵌入模式可折叠战斗日志） */}
-          <details className="rounded-xl parchment-panel p-2.5">
-            <summary className="cursor-pointer select-none text-[11px] text-muted-foreground">📜 战斗日志明细</summary>
-            <BattleLog compact />
-          </details>
-        </div>
-        {driver}
-      </div>
-    );
-  }
+  // Embedded and standalone battles share the same canvas/HUD workspace.
+  if (embed) return <div className="dnd-theme battle-embed-shell"><EncounterBriefing compact /><BattleWorkspace compact />{driver}</div>;
 
   // ============ 独立模式（完整仪表盘） ============
   return (
@@ -216,110 +152,7 @@ function BattleForgeInner() {
             </div>
           </div>
         ) : (
-          /* 战斗仪表盘 */
-          <div className="flex flex-col gap-3">
-            {followerBadge}
-            <EncounterBriefing />
-            {/* 地图通栏（宽度 2 倍） */}
-            <BattleControls />
-            <BattleMapIso />
-            <div className="grid gap-3 lg:grid-cols-[280px_1fr_300px]">
-            {/* 左列：先攻 + 单位详情 */}
-            <div className="flex flex-col gap-3 order-2 lg:order-1">
-              <div className="rounded-xl parchment-panel p-3">
-                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-                  <MapIcon className="h-3.5 w-3.5" />先攻条
-                </div>
-                <InitiativeBar />
-              </div>
-              <div className="hidden lg:block">
-                <UnitDetailCard unitId={detailUnitId} />
-              </div>
-            </div>
-
-            {/* 中列：行动栏 + 日志 */}
-            <div className="flex flex-col gap-3 order-1 lg:order-2">
-              <div className="rounded-xl parchment-panel p-3">
-                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-                  <UserCog className="h-3.5 w-3.5" />行动栏
-                </div>
-                <ActionBar />
-              </div>
-              <div className="rounded-xl parchment-panel p-3">
-                <BattleLog />
-              </div>
-              <div className="lg:hidden">
-                <UnitDetailCard unitId={detailUnitId} compact />
-              </div>
-            </div>
-
-            {/* 右列：工具 Tabs */}
-            <div className="order-3">
-              <Tabs defaultValue="attack" className="flex flex-col gap-2">
-                <TabsList className="grid h-auto w-full grid-cols-3 gap-1 rounded-lg bg-black/40 p-1">
-                  <TabsTrigger value="attack" className="gap-1 py-1.5 text-[11px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                    <Zap className="h-3.5 w-3.5" />攻击
-                  </TabsTrigger>
-                  <TabsTrigger value="dice" className="gap-1 py-1.5 text-[11px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                    <Dices className="h-3.5 w-3.5" />骰子
-                  </TabsTrigger>
-                  <TabsTrigger value="add" className="gap-1 py-1.5 text-[11px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                    <Users className="h-3.5 w-3.5" />单位
-                  </TabsTrigger>
-                  <TabsTrigger value="roster" className="gap-1 py-1.5 text-[11px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                    <UserCog className="h-3.5 w-3.5" />角色
-                  </TabsTrigger>
-                  <TabsTrigger value="enemy" className="gap-1 py-1.5 text-[11px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                    <Skull className="h-3.5 w-3.5" />敌卡
-                  </TabsTrigger>
-                  <TabsTrigger value="io" className="gap-1 py-1.5 text-[11px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                    <Share2 className="h-3.5 w-3.5" />导入导出
-                  </TabsTrigger>
-                  <TabsTrigger value="settings" className="col-span-3 gap-1 py-1.5 text-[11px] data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                    <Settings2 className="h-3.5 w-3.5" />规则与设置
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="attack" className="mt-0">
-                  <div className="rounded-xl parchment-panel p-3">
-                    <AttackPanel defaultAttackerId={store.turn.currentUnitId} />
-                  </div>
-                </TabsContent>
-                <TabsContent value="dice" className="mt-0">
-                  <div className="rounded-xl parchment-panel p-3">
-                    <DiceRoller />
-                  </div>
-                </TabsContent>
-                <TabsContent value="add" className="mt-0">
-                  <div className="rounded-xl parchment-panel p-3">
-                    <MonsterPicker />
-                  </div>
-                </TabsContent>
-                <TabsContent value="roster" className="mt-0">
-                  <div className="rounded-xl parchment-panel p-3">
-                    <RosterPanel />
-                  </div>
-                </TabsContent>
-                <TabsContent value="enemy" className="mt-0">
-                  <div className="rounded-xl parchment-panel p-3">
-                    <EnemyDesigner />
-                  </div>
-                </TabsContent>
-                <TabsContent value="io" className="mt-0">
-                  <div className="flex flex-col gap-4 rounded-xl parchment-panel p-3">
-                    <ImportPanel />
-                    <ExportPanel />
-                  </div>
-                </TabsContent>
-                <TabsContent value="settings" className="mt-0">
-                  <div className="rounded-xl parchment-panel p-3">
-                    <SettingsPanel />
-                  </div>
-                </TabsContent>
-              </Tabs>
-            </div>
-          </div>
-          </div>
+          <BattleWorkspace />
         )}
       </main>
 

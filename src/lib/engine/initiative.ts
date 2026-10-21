@@ -216,7 +216,7 @@ export function checkLairSlot(state: TurnState, units: BattleUnit[]): boolean {
 
 /** 战斗结束判定：一方全灭/全倒 */
 export function checkBattleEnd(units: BattleUnit[]): { ended: boolean; winner: 0 | 1 | 2 | null } {
-  const active = units.filter(u => !u.deathSaves?.dead && u.hp > 0);
+  const active = units.filter(u => !u.deathSaves?.dead && u.hp > 0 && !u.knockedOut);
   if (active.length === 0) return { ended: true, winner: null };
   const attitudes = new Set(active.map(u => u.attitude));
   // 只剩一种态度 → 结束；中立(1)单独存在时结束但无胜者

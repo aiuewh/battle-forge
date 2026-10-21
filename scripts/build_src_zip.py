@@ -5,25 +5,15 @@
 """
 import os
 import zipfile
+from pathlib import Path
 
-BASE = "/home/z/my-project"
+BASE = str(Path(__file__).resolve().parent.parent)
 OUT = os.path.join(BASE, "download", "battle-forge-app-src.zip")
 
 INCLUDE_DIRS = [
     "src",
     "public",
-    "scripts/ai-probe.ts",
-    "scripts/build-embed-harness.py",
-    "scripts/e2e-datalayer.sh",
-    "scripts/e2e-initiative.sh",
-    "scripts/test-fixtures/dmmsg.txt",
-    "scripts/engine-tests.ts",
-    "scripts/adversarial-tests.ts",
-    "scripts/semantics-tests.ts",
-    "scripts/st-pipeline-sim.mjs",
-    "scripts/plan-probe.ts",
-    "scripts/generate_st_package.py",
-    "scripts/build_src_zip.py",
+    "scripts",
     ".github",
     "st-integration",
     "prisma",
@@ -31,6 +21,9 @@ INCLUDE_DIRS = [
 ]
 INCLUDE_FILES = [
     "package.json",
+    "package-lock.json",
+    "AGENTS.md",
+    "CLAUDE.md",
     "README.md",
     ".gitignore",
     "next.config.ts",
@@ -42,6 +35,7 @@ INCLUDE_FILES = [
 ]
 
 EXCLUDE_PARTS = {"node_modules", ".next", "__pycache__", ".git"}
+EXCLUDE_FILES = {"public/action-flow-harness.html", "public/test-bootstrap.html", "scripts/prepare-baseline-preview.py", "scripts/serve-baseline-preview.py"}
 
 def main() -> None:
     entries: list[str] = []
@@ -54,7 +48,8 @@ def main() -> None:
             dirs[:] = [d for d in dirs if d not in EXCLUDE_PARTS]
             for f in files:
                 rel = os.path.relpath(os.path.join(root, f), BASE)
-                entries.append(rel)
+                if Path(rel).as_posix() not in EXCLUDE_FILES and not f.startswith('upgrade-'):
+                    entries.append(rel)
     for f in INCLUDE_FILES:
         if os.path.exists(os.path.join(BASE, f)):
             entries.append(f)
@@ -62,12 +57,13 @@ def main() -> None:
     with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for rel in sorted(set(entries)):
             src = os.path.join(BASE, rel)
-            z.write(src, os.path.join("battle-forge", rel))
+            z.write(src, 'battle-forge/' + Path(rel).as_posix())
 
     size = os.path.getsize(OUT)
     with zipfile.ZipFile(OUT) as z:
+        assert z.testzip() is None
         n = len([x for x in z.namelist() if not x.endswith("/")])
-    print(f"✅ {OUT} ({size/1024:.0f} KB, {n} files)")
+    print(f"Built {OUT} ({size/1024:.0f} KB, {n} files)")
 
 if __name__ == "__main__":
     main()

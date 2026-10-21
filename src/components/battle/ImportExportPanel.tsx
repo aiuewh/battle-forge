@@ -9,7 +9,7 @@
 import React, { useState } from 'react';
 import { useBattleStore } from '@/store/battleStore';
 import { generateDicePool } from '@/lib/engine/protocol';
-import { sendReportToHost } from '@/components/battle/EmbedBridge';
+import { ReportSendButton } from './ReportSendButton';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
@@ -75,7 +75,7 @@ export function ImportPanel() {
 export function ExportPanel() {
   const store = useBattleStore();
   const [copied, setCopied] = useState<string | null>(null);
-  const [sentReport, setSentReport] = useState(false);
+
   const { toast } = useToast();
 
   const battleBlock = store.generateExportBlock(true);
@@ -91,16 +91,6 @@ export function ExportPanel() {
     } catch {
       toast({ title: '复制失败', description: '请手动选择文本复制', variant: 'destructive' });
     }
-  };
-
-  const sendReport = () => {
-    if (sendReportToHost(battleResult)) {
-      setSentReport(true);
-      setTimeout(() => setSentReport(false), 1800);
-      toast({ title: '战报已送回对话', description: 'DM 将据此叙述战后并同步变量' });
-      return;
-    }
-    copy(battleResult, 'result');
   };
 
   const download = (content: string, filename: string) => {
@@ -136,10 +126,7 @@ export function ExportPanel() {
         <pre className="log-scroll max-h-44 overflow-auto rounded-lg border border-border/50 bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed text-foreground/85">
           {battleResult || '<!-- 场上没有单位 -->'}
         </pre>
-        <Button size="sm" className="h-8 gap-1 bg-amber-600/90 text-xs text-white hover:bg-amber-600" onClick={sendReport} disabled={!battleResult}>
-          {sentReport ? <Check className="h-3.5 w-3.5" /> : <ClipboardList className="h-3.5 w-3.5" />}
-          {sentReport ? '已送回对话' : '战报送回对话'}
-        </Button>
+        <ReportSendButton text={battleResult} copy={() => { void copy(battleResult, 'result'); }} />
         <Button size="sm" variant="secondary" className="h-8 gap-1 text-xs" onClick={() => copy(battleResult, 'result')}>
           {copied === 'result' ? <Check className="h-3.5 w-3.5 text-green-400" /> : <ClipboardList className="h-3.5 w-3.5" />}
           复制战报

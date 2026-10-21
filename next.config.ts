@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
     : { output: "standalone" as const }),
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
   },
   reactStrictMode: false,
 };

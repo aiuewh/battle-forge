@@ -122,7 +122,7 @@ export const CONDITIONS: Record<string, ConditionDef> = {
   // ---- 扩展条件（协议外，引擎内部） ----
   exhaustion: {
     key: 'exhaustion', name: '力竭', en: 'Exhaustion', icon: '🥀', color: '#8c6b5a',
-    brief: '2024：每级力竭使所有 d20 检定（攻击/属性/豁免）-2、速度 -5 尺（均叠加）；10 级死亡。长休恢复 1 级。',
+    brief: '2024：每级力竭使所有 d20 检定（攻击/属性/豁免）-2、速度 -5 尺（均叠加）；6 级死亡。长休恢复 1 级。',
     effect: {},
   },
   concentration: {
@@ -201,7 +201,7 @@ export function conditionIcon(key: string): string {
   return CONDITIONS[key]?.icon ?? '❓';
 }
 
-/** 2024 力竭等级：所有 d20 检定 -2/级、速度 -5 尺/级；10 级死亡 */
+/** 2024 力竭等级：所有 d20 检定 -2/级、速度 -5 尺/级；6 级死亡 */
 export function exhaustionLevels(statuses: string[]): number {
   let max = 0;
   for (const s of statuses) {
@@ -250,7 +250,7 @@ export function aggregateEffects(statuses: string[]): {
     let key = s;
     if (key.startsWith('exhaustion:')) {
       // 2024：每级 -2 全 d20 检定、-5 尺速度（见 exhaustionPenalty / exhaustionSpeedLoss）；
-      // 10 级死亡——死亡事件由 store 在状态写入/等级提升时结算，此处只表达数值减值
+      // 6 级死亡——死亡事件由 store 在状态写入/等级提升时结算，此处只表达数值减值
       key = 'exhaustion';
     }
     const def = CONDITIONS[key];

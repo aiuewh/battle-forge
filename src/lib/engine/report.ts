@@ -28,13 +28,14 @@ export interface SuggestedPatch {
 /** 单位存活状态描述 */
 function unitState(u: BattleUnit): string {
   if (u.deathSaves?.dead) return '阵亡';
+  if (u.knockedOut) return '留活口（1 HP·昏迷·短休中）';
   if (u.hp <= 0) return u.deathSaves?.stable ? '伤势稳定（昏迷）' : '倒地（死亡豁免中）';
   return '存活';
 }
 
 /** 判定胜负：以在场存活单位的态度分布为准 */
 export function judgeOutcome(units: BattleUnit[]): { text: string; winner: 0 | 1 | 2 | null } {
-  const alive = units.filter(u => u.hp > 0 && !u.deathSaves?.dead);
+  const alive = units.filter(u => u.hp > 0 && !u.deathSaves?.dead && !u.knockedOut);
   const friendly = alive.filter(u => u.attitude !== 2);
   const hostile = alive.filter(u => u.attitude === 2);
   if (hostile.length === 0 && friendly.length > 0) return { text: '玩家方胜利（敌人已全部倒下/溃逃）', winner: 0 };

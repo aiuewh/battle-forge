@@ -37,7 +37,7 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
     if (!attacker || !target) return null;
     const mode = attackRollModeAgainst(attacker, target);
     const blockedCells = new Map<string, 'half' | 'threeQuarters' | 'full'>();
-    for (const o of obstacles) for (const c of o.cells) blockedCells.set(`${c.cx},${c.cy}`, o.kind);
+    for (const o of obstacles) if (o.kind !== 'difficult') for (const c of o.cells) blockedCells.set(`${c.cx},${c.cy}`, o.kind);
     const cover = estimateCover(attacker, target, obstacles, blockedCells);
     const dist = unitDistance(attacker, target, store.mapConfig.diagonal);
     const melee = inMeleeRange(attacker, target, attacker.reach ?? 5, store.mapConfig.diagonal);

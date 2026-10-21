@@ -56,3 +56,8 @@ server.log
 # Engine regression-test build output
 /.engtest/
 /.engtest_run/
+
+# 本地静态导出构建产物
+/.next-export/
+# 本地测试页（仅本地验证，不部署）
+/public/action-flow-harness.html

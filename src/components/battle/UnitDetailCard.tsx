@@ -169,6 +169,8 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
             <Shield className="h-3.5 w-3.5" />临时
           </Button>
         </div>
+        {unit.knockedOut && <div className="rounded-lg border border-amber-500/40 p-2 text-xs">留活口 · 1 HP 昏迷 · 已开始短休。恢复 HP 或由身旁当前行动者急救可唤醒。<Button size="sm" variant="secondary" onClick={() => store.stabilizeUnit(unit.id)}>急救唤醒</Button></div>}
+        {unit.effects?.length ? <div className="rounded-lg border border-border/40 p-2 text-xs"><strong>持续效果</strong>{unit.effects.map(effect => <p key={effect.id}>{effect.name} · 来源 {store.units.find(u => u.id === effect.sourceId)?.name ?? effect.sourceId}{effect.remainingRounds !== undefined ? ` · 余${effect.remainingRounds}轮` : ''}{effect.repeatSave ? ` · ${effect.repeatSave.timing === 'end' ? '回合结束' : '回合开始'}豁免` : ''}</p>)}</div> : null}
         {/* 死亡豁免 */}
         {unit.hp <= 0 && (
           <div className="flex flex-col gap-1.5 rounded-lg border border-red-500/40 bg-red-950/30 p-2">

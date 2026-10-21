@@ -118,172 +118,90 @@ export interface PathResult {
  *  单位占位（敌方可穿不可停）校验保持不变 */
 export interface MoveOptions {
   ignoreFullObstacles?: boolean;
+  mapWidth?: number;
+  mapHeight?: number;
 }
 
-/** A* 寻路：可穿己方、不可穿敌方（敌人格需绕行），阻挡格不可通行 */
-export function findPath(
-  from: Cell,
-  to: Cell,
-  units: BattleUnit[],
-  obstacles: MapObstacle[],
-  movingUnit: BattleUnit,
-  diagonal: 'equal' | 'alt' = 'equal',
-  opts: MoveOptions = {},
-): PathResult {
-  if (cellKey(from) === cellKey(to)) return { path: [from], costCells: 0, reachable: true };
-  const blocked = opts.ignoreFullObstacles
-    ? new Map<string, MapObstacle['kind']>()
-    : buildBlockedCells(obstacles);
-  const occupancy = buildOccupancy(units, movingUnit.id);
-  // 目标格被其他单位占据 → 不可达（D&D 不允许同格）
-  if (occupancy.has(cellKey(to))) return { path: [], costCells: Infinity, reachable: false };
-  // 目标格是阻挡地形（墙）→ 不可达
-  if (blocked.get(cellKey(to)) === 'full') return { path: [], costCells: Infinity, reachable: false };
-  // 大型单位：终点整体摆放空间不能被完全阻挡
-  const endSpan = SIZE_META[movingUnit.size]?.cells ?? 1;
-  if (endSpan > 1) {
-    let endBlocked = false;
-    for (let dx = 0; dx < endSpan && !endBlocked; dx++) {
-      for (let dy = 0; dy < endSpan; dy++) {
-        if (blocked.get(cellKey({ cx: to.cx + dx, cy: to.cy + dy })) === 'full') { endBlocked = true; break; }
-      }
-    }
-    if (endBlocked) return { path: [], costCells: Infinity, reachable: false };
-  }
-
-  const span = SIZE_META[movingUnit.size]?.cells ?? 1;
-  const canStand = (c: Cell): boolean => {
-    for (let dx = 0; dx < span; dx++) {
-      for (let dy = 0; dy < span; dy++) {
-        const k = cellKey({ cx: c.cx + dx, cy: c.cy + dy });
-        if (blocked.get(k) === 'full') return false;
-        const occ = occupancy.get(k);
-        if (occ !== undefined) {
-          // 敌对单位阻挡通行；友方可通过但不能停留（停留已在上面排除）
-          const other = units.find(u => u.id === occ);
-          if (other && other.attitude !== movingUnit.attitude) return false;
-        }
-      }
-    }
-    return true;
-  };
-
-  const heuristic = (c: Cell) => gridDistanceCells(c, to, diagonal);
-  // 反 DoS 第一层：起终点距离超过 1000 格（5000尺）直接判不可达——
-  // 恶意坐标（如 100000,100000）在 O(1) 内快速失败，不进入 A* 循环
-  if (heuristic(from) > 1000) {
-    return { path: [], costCells: Infinity, reachable: false };
-  }
-  // 反 DoS：搜索节点预算（合法战场 ≤ 60×60=3600 格，30000 已是 8 倍余量；
-  // 大范围内被障碍物困死时在此预算内放弃，而不是冻结 UI）
-  const MAX_EXPANSIONS = 30000;
-  let expansions = 0;
-  const open: Array<{ cell: Cell; f: number; g: number }> = [{ cell: from, f: heuristic(from), g: 0 }];
-  const cameFrom = new Map<string, string>();
-  const gScore = new Map<string, number>([[cellKey(from), 0]]);
-  const closed = new Set<string>();
-  const DIAGONAL_COST = diagonal === 'equal' ? 1 : 1.5;
-
-  while (open.length > 0) {
-    if (++expansions > MAX_EXPANSIONS) {
-      return { path: [], costCells: Infinity, reachable: false };
-    }
-    open.sort((a, b) => a.f - b.f);
-    const current = open.shift()!;
-    const curKey = cellKey(current.cell);
-    if (cellKey(current.cell) === cellKey(to)) {
-      // 回溯
-      const path: Cell[] = [];
-      let k: string | undefined = curKey;
-      while (k) {
-        const [cx, cy] = k.split(',').map(Number);
-        path.unshift({ cx, cy });
-        k = cameFrom.get(k);
-      }
-      return { path, costCells: current.g, reachable: true };
-    }
-    closed.add(curKey);
-    for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-      const next = { cx: current.cell.cx + dx, cy: current.cell.cy + dy };
-      const nextKey = cellKey(next);
-      if (closed.has(nextKey)) continue;
-      // 目标格特殊：允许终点（已检查未被占用）；中间格需可通行
-      if (nextKey !== cellKey(to) && !canStand(next)) continue;
-      // 对角穿墙检查：两侧直邻格至少一格可通
-      if (dx !== 0 && dy !== 0) {
-        const side1 = { cx: current.cell.cx + dx, cy: current.cell.cy };
-        const side2 = { cx: current.cell.cx, cy: current.cell.cy + dy };
-        const b1 = blocked.get(cellKey(side1)) === 'full' || (occupancy.get(cellKey(side1)) && occupancy.get(cellKey(side1)) !== movingUnit.id);
-        const b2 = blocked.get(cellKey(side2)) === 'full' || (occupancy.get(cellKey(side2)) && occupancy.get(cellKey(side2)) !== movingUnit.id);
-        if (b1 && b2) continue;
-      }
-      const stepCost = (dx !== 0 && dy !== 0) ? DIAGONAL_COST : 1;
-      const tentative = current.g + stepCost;
-      const existing = gScore.get(nextKey);
-      if (existing !== undefined && tentative >= existing) continue;
-      cameFrom.set(nextKey, curKey);
-      gScore.set(nextKey, tentative);
-      open.push({ cell: next, g: tentative, f: tentative + heuristic(next) });
-    }
-  }
-  return { path: [], costCells: Infinity, reachable: false };
+export function movementStepCost(from: Cell, to: Cell, unit: BattleUnit, units: BattleUnit[], obstacles: MapObstacle[], diagonal: 'equal' | 'alt', diagonalSteps: number, opts: MoveOptions = {}) {
+  const diagonalStep = from.cx !== to.cx && from.cy !== to.cy;
+  const cells = unitOccupiedCells({ ...unit, pos: { x: to.cx * CELL, y: to.cy * CELL } });
+  const difficult = !opts.ignoreFullObstacles && cells.some(c => obstacles.some(o => o.kind === 'difficult' && o.cells.some(x => cellKey(x) === cellKey(c))));
+  const allySpace = units.some(u => u.id !== unit.id && unitOccupiedCells(u).some(c => cells.some(x => cellKey(x) === cellKey(c))));
+  const base = diagonalStep && diagonal === 'alt' && diagonalSteps % 2 === 1 ? 2 : 1;
+  return { feet: base * CELL * (difficult || allySpace ? 2 : 1), diagonalStep };
 }
 
-/** 单位剩余移动力可到达的所有格子（洪水填充，性能友好上限 500 格） */
-export function reachableCells(
-  unit: BattleUnit,
-  units: BattleUnit[],
-  obstacles: MapObstacle[],
-  movementFeet: number,
-  diagonal: 'equal' | 'alt' = 'equal',
-  opts: MoveOptions = {},
-): Map<string, number> {
-  const start = posToCell(unit.pos);
-  // 反 DoS：洪水填充上限 500 格（2500尺；最快单位 80尺=16格，余量 30 倍）
-  const maxCells = Math.min(Math.floor(movementFeet / CELL), 500);
-  const result = new Map<string, number>([[cellKey(start), 0]]);
-  if (maxCells <= 0) return result;
-  // E13：飞行（或显式传入）忽略 'full' 障碍——直线移动，不绕障
-  const blocked = opts.ignoreFullObstacles
-    ? new Map<string, MapObstacle['kind']>()
-    : buildBlockedCells(obstacles);
-  const occupancy = buildOccupancy(units, unit.id);
+function movementSearch(from: Cell, unit: BattleUnit, units: BattleUnit[], obstacles: MapObstacle[], diagonal: 'equal' | 'alt', budget: number, opts: MoveOptions, target?: Cell) {
+  const blocked = opts.ignoreFullObstacles ? new Map<string, MapObstacle['kind']>() : buildBlockedCells(obstacles);
+  const occupied = buildOccupancy(units, unit.id);
   const span = SIZE_META[unit.size]?.cells ?? 1;
-  const canPass = (c: Cell): boolean => {
-    for (let dx = 0; dx < span; dx++) {
-      for (let dy = 0; dy < span; dy++) {
-        const k = cellKey({ cx: c.cx + dx, cy: c.cy + dy });
-        if (blocked.get(k) === 'full') return false;
-        const occ = occupancy.get(k);
-        if (occ !== undefined) {
-          const other = units.find(u => u.id === occ);
-          if (other && other.attitude !== unit.attitude) return false;
-        }
-      }
+  const startParity = (unit.actionEconomy?.diagonalSteps ?? 0) % 2;
+  const stateKey = (c: Cell, parity: number) => `${cellKey(c)}:${parity}`;
+  const inBounds = (c: Cell) => (opts.mapWidth === undefined || (c.cx >= 0 && c.cx + span <= opts.mapWidth)) && (opts.mapHeight === undefined || (c.cy >= 0 && c.cy + span <= opts.mapHeight));
+  const canPass = (c: Cell, stop = false) => {
+    if (!inBounds(c)) return false;
+    for (const cell of unitOccupiedCells({ ...unit, pos: { x: c.cx * CELL, y: c.cy * CELL } })) {
+      const k = cellKey(cell);
+      if (blocked.get(k) === 'full') return false;
+      const id = occupied.get(k);
+      if (id && (stop || units.find(u => u.id === id)?.attitude !== unit.attitude)) return false;
     }
     return true;
   };
-  const DIAGONAL_COST = diagonal === 'equal' ? 1 : 1.5;
-  let queue: Array<{ cell: Cell; cost: number }> = [{ cell: start, cost: 0 }];
+  if (target && !canPass(target, true)) return { result: new Map<string, number>(), path: [] as Cell[] };
+  const startKey = stateKey(from, startParity);
+  const costs = new Map<string, number>([[startKey, 0]]);
+  const parents = new Map<string, string>();
+  const result = new Map<string, number>([[cellKey(from), 0]]);
+  const bestKeys = new Map<string, string>([[cellKey(from), startKey]]);
+  const queue = [{ cell: from, parity: startParity, cost: 0 }];
   let visited = 0;
-  while (queue.length > 0 && visited < 3000) {
+  while (queue.length && visited++ < 30000) {
     queue.sort((a, b) => a.cost - b.cost);
-    const { cell, cost } = queue.shift()!;
-    visited++;
-    for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-      const next = { cx: cell.cx + dx, cy: cell.cy + dy };
-      const nextKey = cellKey(next);
-      const stepCost = (dx !== 0 && dy !== 0) ? DIAGONAL_COST : 1;
-      const newCost = cost + stepCost;
-      if (newCost > maxCells) continue;
-      if (result.has(nextKey) && (result.get(nextKey) as number) <= newCost) continue;
-      // 中间经过需可通行（敌人格/墙）；停留格可以是自身起点
-      if (nextKey !== cellKey(start) && !canPass(next)) continue;
-      result.set(nextKey, newCost);
-      queue.push({ cell: next, cost: newCost });
+    const current = queue.shift()!;
+    const key = stateKey(current.cell, current.parity);
+    if (current.cost !== costs.get(key)) continue;
+    if (target && cellKey(current.cell) === cellKey(target)) break;
+    for (const [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]) {
+      const next = { cx: current.cell.cx + dx, cy: current.cell.cy + dy };
+      if (!canPass(next)) continue;
+      if (dx && dy && !canPass({ cx: next.cx, cy: current.cell.cy }) && !canPass({ cx: current.cell.cx, cy: next.cy })) continue;
+      const step = movementStepCost(current.cell, next, unit, units, obstacles, diagonal, current.parity, opts);
+      const cost = current.cost + step.feet;
+      if (cost > budget) continue;
+      const parity = diagonal === 'alt' && step.diagonalStep ? 1 - current.parity : current.parity;
+      const nextKey = stateKey(next, parity);
+      if (cost >= (costs.get(nextKey) ?? Infinity)) continue;
+      costs.set(nextKey, cost); parents.set(nextKey, key);
+      const cell = cellKey(next);
+      if (cost < (result.get(cell) ?? Infinity)) { result.set(cell, cost); bestKeys.set(cell, nextKey); }
+      queue.push({ cell: next, parity, cost });
     }
   }
-  return result;
+  const path: Cell[] = [];
+  if (target && canPass(target, true)) {
+    let key = bestKeys.get(cellKey(target));
+    while (key) {
+      const [cx, cy] = key.split(':')[0].split(',').map(Number);
+      path.unshift({ cx, cy }); key = parents.get(key);
+    }
+  }
+  return { result, path };
+}
+
+/** Path and reachable map share the same costs, terrain, footprint and alternating diagonal state. */
+export function findPath(from: Cell, to: Cell, units: BattleUnit[], obstacles: MapObstacle[], movingUnit: BattleUnit, diagonal: 'equal' | 'alt' = 'equal', opts: MoveOptions = {}): PathResult {
+  if (![from.cx, from.cy, to.cx, to.cy].every(Number.isFinite)) return { path: [], costCells: Infinity, reachable: false };
+  if (cellKey(from) === cellKey(to)) return { path: [from], costCells: 0, reachable: true };
+  if (gridDistanceCells(from, to, diagonal) > 1000) return { path: [], costCells: Infinity, reachable: false };
+  const search = movementSearch(from, movingUnit, units, obstacles, diagonal, 5000, opts, to);
+  const reachable = search.path.length > 0;
+  return { path: search.path, costCells: reachable ? search.result.get(cellKey(to))! / CELL : Infinity, reachable };
+}
+
+export function reachableCells(unit: BattleUnit, units: BattleUnit[], obstacles: MapObstacle[], movementFeet: number, diagonal: 'equal' | 'alt' = 'equal', opts: MoveOptions = {}): Map<string, number> {
+  const search = movementSearch(posToCell(unit.pos), unit, units, obstacles, diagonal, Math.min(Math.max(0, movementFeet), 2500), opts);
+  return new Map([...search.result].map(([key, cost]) => [key, cost / CELL]));
 }
 
 // ---------- 视线与掩护 ----------
@@ -327,7 +245,7 @@ export function estimateCover(
     for (const c of cells) {
       const kind = occupiedCells.get(cellKey(c));
       if (kind === 'full') { full++; blocking.push(c); }
-      else if (kind === 'half' || kind === 'threeQuarters') { half++; blocking.push(c); }
+      else if (kind === 'half' || kind === 'threeQuarters') { half += kind === 'threeQuarters' ? 2 : 1; blocking.push(c); }
     }
     let cover: 'none' | 'half' | 'threeQuarters' | 'full';
     let bonus = 0;

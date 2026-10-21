@@ -37,9 +37,9 @@ export function SettingsPanel() {
   const renderModule = (m: (typeof HOUSE_RULE_MODULES)[number]) => {
     const value = (rules as unknown as Record<string, unknown>)[m.field];
     return (
-      <div key={m.id} className="flex items-start justify-between gap-3">
+      <div key={m.id} className="settings-rule-row flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Label className="text-xs font-medium text-foreground">{m.name}</Label>
             <span className={`rounded-full border px-1.5 py-px text-[9px] leading-tight ${SOURCE_STYLE[m.source]}`}>
               {HOUSE_RULE_SOURCE_LABEL[m.source]}

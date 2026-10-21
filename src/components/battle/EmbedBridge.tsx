@@ -11,6 +11,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { useBattleStore } from '@/store/battleStore';
+import { reportDelivery } from '@/lib/engine/reportDelivery';
 import { parseDmMessage } from '@/lib/engine/protocol';
 import { EmbedPanel } from '@/lib/engine/embedSync';
 
@@ -99,15 +100,20 @@ export function useEmbedBridge(active: boolean) {
     } catch { /* noop */ }
 
     const onMessage = (ev: MessageEvent) => {
+      if (ev.source !== window.parent) return;
       const msg = ev.data;
       if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'bp:host-context' && typeof msg.contextId === 'string') reportDelivery.bind(msg.contextId);
+      if (msg.type === 'bp:report:ack') reportDelivery.acknowledge(msg);
       if (msg.type === 'bp:battle' && typeof msg.payload === 'string') {
+        if (typeof msg.contextId === 'string') reportDelivery.bind(msg.contextId);
+        // A repeated payload still carries current host metadata after a remount.
+        const panel = getEmbedPanel();
+        if (panel && typeof msg.depth === 'number') panel.setDepth(msg.depth);
         // 防重复（bootstrap 加载成功 + ready 握手可能各发一次）
         if (msg.ts && msg.ts <= lastPayloadTs.current) return;
         if (msg.ts) lastPayloadTs.current = msg.ts;
         // 楼层深度回填到面板注册表（领导者选举用）
-        const panel = getEmbedPanel();
-        if (panel && typeof msg.depth === 'number') panel.setDepth(msg.depth);
         // 全路由：battle 快照合并 + UpdateVariable 变量同步 + encounter 敌卡暂存 + 自动配装
         // 哈希链门控在 store 内部完成（重复导入/过期楼层自动跳过）
         // 宿主角色变量摘要（P1）：先于战斗块合入名单，<battle> 同名装配即可命中完整数据
@@ -166,20 +172,5 @@ export function useEmbedBridge(active: boolean) {
 export function isEmbedded(): boolean {
   if (typeof window === 'undefined') return false;
   const params = new URLSearchParams(window.location.search);
-  return params.get('embed') === '1' || (window.self !== window.top && window.location.hostname !== window.parent?.location?.hostname);
-}
-
-/**
- * 把 <battleresult> 战报回传给酒馆侧的 bootstrap 壳（壳负责 /send + /trigger）。
- * 仅在嵌入模式（iframe 内）可用；独立打开页面时返回 false，调用方降级为复制到剪贴板。
- */
-export function sendReportToHost(text: string): boolean {
-  if (typeof window === 'undefined' || !text) return false;
-  if (!isEmbedded()) return false;
-  try {
-    window.parent.postMessage({ type: 'bp:report', text, ts: Date.now() }, '*');
-    return true;
-  } catch {
-    return false;
-  }
+  return params.get('embed') === '1' || window.self !== window.top;
 }

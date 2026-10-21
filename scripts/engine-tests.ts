@@ -142,8 +142,8 @@ const r4 = rollFormula('1d20+5', { forcedRolls: [16] });
 check('forcedRolls 注入', r4.rolls[0].value === 16 && r4.total === 21);
 
 // --- 判定（含 2024 优势劣势双骰 crit 规则） ---
-check('judgeCheck 裸20大成功', judgeCheck(rollFormula('1d20', { forcedRolls: [20] }), 30).outcome === 'critical-success');
-check('judgeCheck 裸1大失败', judgeCheck(rollFormula('1d20', { forcedRolls: [1] }), 5).outcome === 'critical-failure');
+check('普通检定裸20仍不足DC30', judgeCheck(rollFormula('1d20', { forcedRolls: [20] }), 30).outcome === 'failure');
+check('普通检定裸1加值足够仍成功', judgeCheck(rollFormula('1d20', { bonus: 20, forcedRolls: [1] }), 5).outcome === 'success');
 const rj = rollFormula('1d20', { bonus: 5, forcedRolls: [10] });
 check('judgeCheck 15+5 vs DC15', judgeCheck(rj, 15).outcome === 'success');
 const rj2 = rollFormula('1d20', { bonus: 4, forcedRolls: [10] });
@@ -151,11 +151,11 @@ check('judgeCheck 14 vs DC15', judgeCheck(rj2, 15).outcome === 'failure');
 // 2024: 判定看保留骰——优势 [20,5] 保留 20 = 大成功；劣势 [1,12] 保留 1 = 大失败
 setRng(() => 0.999);
 const advNotCrit = rollFormula('1d20', { mode: 'advantage', forcedRolls: [20, 5] });
-check('优势保留骰20即大成功(2024)', judgeCheck(advNotCrit, 15).outcome === 'critical-success', judgeCheck(advNotCrit, 15).outcome);
+check('优势保留骰20即大成功(2024)', judgeCheck(advNotCrit, 15, 'attack').outcome === 'critical-success', judgeCheck(advNotCrit, 15, 'attack').outcome);
 const advCrit = rollFormula('1d20', { mode: 'advantage', forcedRolls: [20, 20] });
-check('优势双20大成功(2024)', judgeCheck(advCrit, 15).outcome === 'critical-success');
+check('优势双20大成功(2024)', judgeCheck(advCrit, 15, 'attack').outcome === 'critical-success');
 const disNotCrit = rollFormula('1d20', { mode: 'disadvantage', forcedRolls: [1, 12] });
-check('劣势保留骰1即大失败(2024)', judgeCheck(disNotCrit, 15).outcome === 'critical-failure', judgeCheck(disNotCrit, 15).outcome);
+check('劣势保留骰1即大失败(2024)', judgeCheck(disNotCrit, 15, 'attack').outcome === 'critical-failure', judgeCheck(disNotCrit, 15, 'attack').outcome);
 
 // formatDice
 const fd = rollFormula('1d20+5', { forcedRolls: [17] });

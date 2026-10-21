@@ -18,6 +18,47 @@ export interface IsoCam {
 export const TILE_W = 76;
 export const TILE_H = 38;
 
+/**
+ * 舞台色板（暖暗底 + 金强调）。CSS 侧镜像：globals.css `.battle-workspace` 的 `--hud-*` 令牌。
+ * 语义固定：金=行动/可达，青绿=治疗/恢复，蓝=选中，红=敌方/伤害，琥珀=中立。
+ */
+export const STAGE_PALETTE = {
+  bgTop: '#100d09',
+  bgBottom: '#1a1410',
+  floorInA: '#2b2318',
+  floorInB: '#251f15',
+  floorOutA: '#17130d',
+  floorOutB: '#14110c',
+  gridIn: 'rgba(216,178,122,0.26)',
+  gridOut: 'rgba(216,178,122,0.07)',
+  boundaryEdge: 'rgba(0,0,0,0.6)',
+  boundaryLine: 'rgba(229,189,125,0.5)',
+  rangeFill: 'rgba(229,189,125,0.20)',
+  rangeFillHover: 'rgba(229,189,125,0.34)',
+  rangeStroke: 'rgba(229,189,125,0.5)',
+  pathValid: 'rgba(240,205,150,0.95)',
+  pathInvalid: 'rgba(255,110,110,0.9)',
+  pathBadgeBg: 'rgba(70,55,22,0.92)',
+  selectRing: 'rgba(110,180,250,0.95)',
+  hpHigh: '#4f9d43',
+  hpMid: '#d3a13c',
+  hpLow: '#d5453c',
+  ink: '#f0e6d2',
+  plateBg: 'rgba(14,11,8,0.84)',
+  plateBorder: 'rgba(229,189,125,0.32)',
+  plateBorderCurrent: 'rgba(229,189,125,0.9)',
+  plateBorderSelected: 'rgba(110,180,250,0.8)',
+} as const;
+
+/** HP 比例 → 色梯（画布名牌与 DOM 血条共用） */
+export function hpColor(ratio: number): string {
+  const r = Math.max(0, Math.min(1, ratio));
+  return r > 0.5 ? STAGE_PALETTE.hpHigh : r > 0.25 ? STAGE_PALETTE.hpMid : STAGE_PALETTE.hpLow;
+}
+
+/** canvas 内中文字体栈：Noto Sans SC 未内嵌时按平台回退，避免掉到衬线默认 */
+const CJK_FONT = '"Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
+
 export interface Projector {
   /** 网格坐标（可为小数）→ 屏幕像素 */
   p: (gx: number, gy: number) => { x: number; y: number };
@@ -77,12 +118,12 @@ export function drawFloorTile(
   const checker = (cx + cy) % 2 === 0;
   diamondPath(ctx, proj, cx, cy, 0);
   if (inBounds) {
-    ctx.fillStyle = checker ? '#2b2318' : '#251f15';
+    ctx.fillStyle = checker ? STAGE_PALETTE.floorInA : STAGE_PALETTE.floorInB;
   } else {
-    ctx.fillStyle = checker ? '#17130d' : '#14110c';
+    ctx.fillStyle = checker ? STAGE_PALETTE.floorOutA : STAGE_PALETTE.floorOutB;
   }
   ctx.fill();
-  ctx.strokeStyle = inBounds ? 'rgba(216,178,122,0.13)' : 'rgba(216,178,122,0.05)';
+  ctx.strokeStyle = inBounds ? STAGE_PALETTE.gridIn : STAGE_PALETTE.gridOut;
   ctx.lineWidth = 1;
   ctx.stroke();
 }
@@ -319,26 +360,22 @@ export function drawHpBar(
   const r = Math.max(0, Math.min(1, ratio));
   ctx.save();
   ctx.fillStyle = 'rgba(8,8,10,0.82)';
-  ctx.strokeStyle = 'rgba(216,178,122,0.35)';
+  ctx.strokeStyle = STAGE_PALETTE.plateBorder;
   ctx.lineWidth = 1;
   roundRect(ctx, x - w / 2 - 1, y - 1, w + 2, h + 2, 2.5 * scale);
   ctx.fill();
   ctx.stroke();
-  let color: string;
-  if (r > 0.5) color = '#4f9d43';
-  else if (r > 0.25) color = '#d3a13c';
-  else color = '#d5453c';
-  ctx.fillStyle = color;
+  ctx.fillStyle = hpColor(r);
   roundRect(ctx, x - w / 2, y, Math.max(0, w * r), h, 1.8 * scale);
   ctx.fill();
   if (text) {
-    ctx.font = `bold ${Math.max(9, 10 * scale)}px "Noto Sans SC", system-ui, sans-serif`;
+    ctx.font = `bold ${Math.max(9, 10 * scale)}px ${CJK_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.strokeStyle = 'rgba(0,0,0,0.85)';
     ctx.lineWidth = 3;
     ctx.strokeText(text, x, y - 2);
-    ctx.fillStyle = '#f0e6d2';
+    ctx.fillStyle = STAGE_PALETTE.ink;
     ctx.fillText(text, x, y - 2);
   }
   ctx.restore();
@@ -368,7 +405,7 @@ export function drawLabel(
   fontSize = 11,
 ) {
   ctx.save();
-  ctx.font = `bold ${fontSize * scale}px "Noto Sans SC", system-ui, sans-serif`;
+  ctx.font = `bold ${fontSize * scale}px ${CJK_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.strokeStyle = 'rgba(0,0,0,0.9)';
@@ -376,6 +413,152 @@ export function drawLabel(
   ctx.strokeText(text, x, y);
   ctx.fillStyle = color;
   ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+// ============ 名牌卡（名字 + 常显血条 + 状态行） ============
+
+export interface NameplateStatus { icon: string; color: string }
+export interface NameplateInfo {
+  /** 已含 ★/👤/🤖 等前后的完整显示名 */
+  name: string;
+  nameColor: string;
+  hp: number;
+  maxHp: number;
+  statuses: NameplateStatus[];
+  variant: 'current' | 'selected' | 'default';
+}
+
+const PLATE_FONT = `bold 11px ${CJK_FONT}`;
+const PLATE_PAD_X = 7;
+const PLATE_PAD_Y = 5;
+const PLATE_NAME_ROW = 14;
+const PLATE_GAP = 4;
+const PLATE_BAR_W = 56;
+const PLATE_BAR_H = 7; // 槽高（含 1px 内边）= 9px
+const PLATE_STATUS_ROW = 13;
+
+/**
+ * 先量后画：布局（宽度截断长名）必须在放置避让前完成。
+ * 名牌为屏幕空间恒定尺寸，不随缩放缩小，保证低倍率下可读。
+ */
+export function plateLayout(ctx: CanvasRenderingContext2D, info: NameplateInfo): { w: number; h: number; label: string } {
+  ctx.save();
+  ctx.font = PLATE_FONT;
+  const maxTextW = 118 - PLATE_PAD_X * 2;
+  const fullW = ctx.measureText(info.name).width;
+  const w = Math.max(64, Math.min(118, Math.ceil(fullW) + PLATE_PAD_X * 2));
+  let label = info.name;
+  if (fullW > maxTextW) {
+    while (label.length > 1 && ctx.measureText(`${label}…`).width > maxTextW) label = label.slice(0, -1);
+    label = `${label}…`;
+  }
+  ctx.restore();
+  const h = PLATE_PAD_Y + PLATE_NAME_ROW + PLATE_GAP + PLATE_BAR_H + 2
+    + (info.statuses.length > 0 ? PLATE_GAP + PLATE_STATUS_ROW : 0) + PLATE_PAD_Y;
+  return { w, h, label };
+}
+
+export function drawNameplate(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  topY: number,
+  info: NameplateInfo,
+  w: number,
+  h: number,
+  label: string,
+) {
+  const x = centerX - w / 2;
+  ctx.save();
+  ctx.fillStyle = STAGE_PALETTE.plateBg;
+  roundRect(ctx, x, topY, w, h, 6);
+  ctx.fill();
+  if (info.variant === 'current') {
+    ctx.strokeStyle = STAGE_PALETTE.plateBorderCurrent;
+    ctx.shadowColor = 'rgba(229,189,125,0.45)';
+    ctx.shadowBlur = 7;
+  } else if (info.variant === 'selected') {
+    ctx.strokeStyle = STAGE_PALETTE.plateBorderSelected;
+  } else {
+    ctx.strokeStyle = STAGE_PALETTE.plateBorder;
+  }
+  ctx.lineWidth = 1;
+  roundRect(ctx, x, topY, w, h, 6);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // 名字行
+  ctx.font = PLATE_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const nameY = topY + PLATE_PAD_Y + PLATE_NAME_ROW / 2;
+  ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+  ctx.lineWidth = 3;
+  ctx.strokeText(label, centerX, nameY);
+  ctx.fillStyle = info.nameColor;
+  ctx.fillText(label, centerX, nameY);
+
+  // HP 条行（数字常显）
+  const barY = topY + PLATE_PAD_Y + PLATE_NAME_ROW + PLATE_GAP;
+  const barX = centerX - PLATE_BAR_W / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  roundRect(ctx, barX, barY, PLATE_BAR_W, PLATE_BAR_H + 2, 3);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(229,189,125,0.25)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  const ratio = info.maxHp > 0 ? Math.max(0, Math.min(1, info.hp / info.maxHp)) : 0;
+  if (ratio > 0) {
+    ctx.fillStyle = hpColor(ratio);
+    roundRect(ctx, barX + 1, barY + 1, Math.max(2, (PLATE_BAR_W - 2) * ratio), PLATE_BAR_H, 2);
+    ctx.fill();
+  }
+  ctx.font = `bold 9px ${CJK_FONT}`;
+  ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+  ctx.lineWidth = 2.5;
+  const hpText = `${Math.max(0, info.hp)}/${info.maxHp}`;
+  const barCY = barY + (PLATE_BAR_H + 2) / 2;
+  ctx.strokeText(hpText, centerX, barCY);
+  ctx.fillStyle = STAGE_PALETTE.ink;
+  ctx.fillText(hpText, centerX, barCY);
+
+  // 状态图标行
+  if (info.statuses.length > 0) {
+    const rowY = barY + PLATE_BAR_H + 2 + PLATE_GAP + PLATE_STATUS_ROW / 2;
+    ctx.font = `11px ${CJK_FONT}`;
+    const n = info.statuses.length;
+    info.statuses.forEach((st, i) => {
+      const ix = centerX + (i - (n - 1) / 2) * 15;
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(st.icon, ix, rowY);
+      ctx.fillStyle = st.color;
+      ctx.fillText(st.icon, ix, rowY);
+    });
+  }
+  ctx.restore();
+}
+
+/** 当前行动者聚光：地面金色柔光（椭圆压扁贴地，随脉冲呼吸） */
+export function drawSpotlight(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  groundY: number,
+  radius: number,
+  alpha: number,
+) {
+  if (alpha <= 0.01 || radius <= 1) return;
+  ctx.save();
+  ctx.translate(x, groundY);
+  ctx.scale(1, 0.5);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+  g.addColorStop(0, `rgba(245,197,66,${alpha})`);
+  g.addColorStop(0.55, `rgba(245,197,66,${alpha * 0.4})`);
+  g.addColorStop(1, 'rgba(245,197,66,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -452,7 +635,7 @@ export function drawFloatText(
   const dy = progress * 42;
   ctx.save();
   ctx.globalAlpha = progress < 0.7 ? 1 : Math.max(0, (1 - progress) / 0.3);
-  ctx.font = `bold ${(big ? 21 : 15)}px "Noto Sans SC", system-ui, sans-serif`;
+  ctx.font = `bold ${(big ? 21 : 15)}px ${CJK_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.strokeStyle = 'rgba(0,0,0,0.9)';
@@ -473,7 +656,7 @@ export function drawBadge(
   scale: number,
 ) {
   ctx.save();
-  ctx.font = `bold ${11 * Math.max(0.8, scale)}px "Noto Sans SC", system-ui, sans-serif`;
+  ctx.font = `bold ${11 * Math.max(0.8, scale)}px ${CJK_FONT}`;
   const w = ctx.measureText(text).width + 14;
   const h = 20;
   ctx.fillStyle = bg;

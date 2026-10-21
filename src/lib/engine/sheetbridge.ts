@@ -379,7 +379,7 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['人类定身术', 'hold person'], level: 2,
-    build: (_mod, dc) => ({ name: '人类定身术', kind: 'save', dice: '0', range: 60, saveAbility: 'wis', saveDc: dc, applyStatus: 'paralyzed', spellLevel: 2, concentration: true, note: '人形生物豁免失败则麻痹（每回合可重掷）' }),
+    build: (_mod, dc) => ({ name: '人类定身术', kind: 'save', dice: '0', range: 60, saveAbility: 'wis', saveDc: dc, applyStatus: 'paralyzed', spellLevel: 2, concentration: true, requiresSight: true, durationRounds: 10, repeatSave: { ability: 'wis', dc, timing: 'end' }, note: '人形生物豁免失败则麻痹（每回合可重掷）' }),
   },
   {
     keys: ['隐形术', 'invisibility'], level: 2,
@@ -419,7 +419,7 @@ const COMMON_SPELLS: SpellTemplate[] = [
   },
   {
     keys: ['怪物定身术', 'hold monster'], level: 5,
-    build: (_mod, dc) => ({ name: '怪物定身术', kind: 'save', dice: '0', range: 90, saveAbility: 'wis', saveDc: dc, applyStatus: 'paralyzed', spellLevel: 5, concentration: true }),
+    build: (_mod, dc) => ({ name: '怪物定身术', kind: 'save', dice: '0', range: 90, saveAbility: 'wis', saveDc: dc, applyStatus: 'paralyzed', spellLevel: 5, concentration: true, requiresSight: true, durationRounds: 10, repeatSave: { ability: 'wis', dc, timing: 'end' } }),
   },
   {
     keys: ['群体治疗真言', 'mass healing word'], level: 3,

@@ -13,7 +13,7 @@ import {
   Play, ChevronRight, ChevronLeft, Flag, RefreshCw, Skull, Hourglass, Bot, User, Dices,
 } from 'lucide-react';
 
-export function InitiativeBar({ compact = false }: { compact?: boolean }) {
+export function InitiativeBar({ compact = false, showControls = true }: { compact?: boolean; showControls?: boolean }) {
   const store = useBattleStore();
   const { units, turn, battleActive } = store;
 
@@ -28,9 +28,9 @@ export function InitiativeBar({ compact = false }: { compact?: boolean }) {
   }, [units, turn.order]);
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <fieldset disabled={store.readOnly} className="min-w-0 flex flex-col gap-2.5">
       {/* 回合控制 */}
-      <div className="flex flex-wrap items-center gap-1.5">
+      {showControls && <div className="flex flex-wrap items-center gap-1.5">
         {!battleActive ? (
           <Button
             size="sm"
@@ -44,12 +44,6 @@ export function InitiativeBar({ compact = false }: { compact?: boolean }) {
           </Button>
         ) : (
           <>
-            <Button size="sm" variant="secondary" className="h-9 w-9 p-0" onClick={() => store.prevTurn()} title="上一回合">
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button size="sm" className="h-9 gap-1.5 flex-1 bg-primary text-primary-foreground hover:bg-primary/85" onClick={() => store.nextTurn()}>
-              下一回合 <ChevronRight className="h-4 w-4" />
-            </Button>
             <Button size="sm" variant="secondary" className="h-9 gap-1.5" onClick={() => store.rollInitiativeAll()} title="全员重掷先攻">
               <RefreshCw className="h-4 w-4" />
             </Button>
@@ -61,7 +55,7 @@ export function InitiativeBar({ compact = false }: { compact?: boolean }) {
         <div className="ml-auto rounded-md border border-border/50 bg-black/30 px-2.5 py-1 text-xs text-muted-foreground">
           {battleActive ? `第 ${turn.round} 轮` : '待战'}
         </div>
-      </div>
+      </div>}
 
       {/* 先攻列表 */}
       <div className={cn('log-scroll flex flex-col gap-1.5 overflow-y-auto pr-1', compact ? 'max-h-48' : 'max-h-72')}>
@@ -185,6 +179,6 @@ export function InitiativeBar({ compact = false }: { compact?: boolean }) {
           );
         })}
       </div>
-    </div>
+    </fieldset>
   );
 }

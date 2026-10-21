@@ -16,7 +16,7 @@ import { isAiControlled } from '@/lib/engine/ai';
 import { AI_PROFILE_META } from '@/lib/engine/types';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { sendReportToHost } from '@/components/battle/EmbedBridge';
+import { ReportSendButton } from './ReportSendButton';
 import { cn } from '@/lib/utils';
 import { Bot, User, ChevronRight, Gauge, Pause, Play, ClipboardList, Check, Undo2 } from 'lucide-react';
 
@@ -25,6 +25,7 @@ export function AiDriver({ leader = true }: { leader?: boolean }) {
   const aiSpeed = useBattleStore(s => s.aiSpeed);
   const battleActive = useBattleStore(s => s.battleActive);
   const currentUnitId = useBattleStore(s => s.turn.currentUnitId);
+  const interactionEpoch = useBattleStore(s => s.interactionEpoch);
 
   useEffect(() => {
     // 多面板共存：仅领导者驱动 AI，其余面板为同步视图（leader 由 page.tsx 从运行时传入）
@@ -49,7 +50,7 @@ export function AiDriver({ leader = true }: { leader?: boolean }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [leader, aiAutoPlay, aiSpeed, battleActive, currentUnitId]);
+  }, [leader, aiAutoPlay, aiSpeed, battleActive, currentUnitId, interactionEpoch]);
 
   return null;
 }
@@ -67,7 +68,7 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
   const current = units.find(u => u.id === turn.currentUnitId);
   const playerTurn = !!current && !isAiControlled(current);
   const [copied, setCopied] = useState(false);
-  const [sent, setSent] = useState(false);
+
 
   const copyReport = async () => {
     const text = store.generateBattleResult();
@@ -85,21 +86,10 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
     }
   };
 
-  /** 战报送回酒馆对话：嵌入模式经 postMessage 交给壳（/send + /trigger）；独立页面降级为复制 */
-  const sendReport = () => {
-    const text = store.generateBattleResult();
-    if (sendReportToHost(text)) {
-      setSent(true);
-      setTimeout(() => setSent(false), 1800);
-    } else {
-      copyReport();
-    }
-  };
-
   return (
     <div className="flex flex-col gap-2">
       {/* 回合横幅 */}
-      {battleActive && current && (
+      {(battleActive || store.turnSnap) && current && (
         <div className={cn(
           'flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm',
           playerTurn
@@ -124,29 +114,42 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
           )}
           {playerTurn ? (
             <span className="text-[11px] text-amber-200/80">
-              轮到你了 —— 点击棋子选中、点击范围格移动 · 结算后「结束回合」
+              {compact ? '选动作后点地图目标；点选棋子可移动' : '轮到你了 —— 点击棋子选中、点击范围格移动 · 结算后「结束回合」'}
             </span>
           ) : (
-            <span className="text-[11px] text-muted-foreground">AI 行动中…</span>
+            <span className="text-[11px] text-muted-foreground">{store.pendingReactionStep ? '等待反应选择' : battleActive ? 'AI 行动中…' : '战斗已结束'}</span>
           )}
           <div className="grow" />
-          {playerTurn && store.undoStack.length > 0 && (
-            <Button size="sm" variant="outline" className="h-7 gap-1 border-amber-400/40 text-[11px] text-amber-200 hover:bg-amber-500/10" onClick={() => store.undoTurn()} title="恢复到本回合开始时（可连按多步回退）">
-              <Undo2 className="h-3.5 w-3.5" />撤回本回合
+          {!store.readOnly && store.turnSnap && (
+            <Button size="sm" variant="outline" className="h-7 gap-1 border-amber-400/40 text-[11px] text-amber-200 hover:bg-amber-500/10" onClick={() => store.resetCurrentTurn()} title="恢复当前回合起点并暂停 AI，不回退历史回合">
+              <Undo2 className="h-3.5 w-3.5" />重置本回合
             </Button>
           )}
-          {playerTurn && (
-            <Button size="sm" className="h-7 gap-1 bg-primary text-[11px] text-primary-foreground" onClick={() => store.nextTurn()}>
+          {!store.readOnly && playerTurn && battleActive && (
+            <Button size="sm" className="h-7 gap-1 bg-primary text-[11px] text-primary-foreground" disabled={!!store.pendingReactionStep}
+              onClick={() => {
+                if (store.multiAttackQueue && !window.confirm(`还有 ${store.multiAttackQueue.remaining} 次攻击，放弃并结束回合？`)) return;
+                store.nextTurn();
+              }}>
               结束回合 <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           )}
         </div>
       )}
 
+      {!store.readOnly && store.undoStack.length > 0 && <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">历史回退与回合提示</summary>
+        <Button size="sm" variant="outline" onClick={() => store.undoTurn()}>
+          回到上一回合：{store.undoStack.at(-1)?.units.find(u => u.id === store.undoStack.at(-1)?.turn.currentUnitId)?.name ?? '上一行动者'}
+        </Button>
+      </details>}
+      {playerTurn && current && !current.actionEconomy.action && <div className="text-xs text-amber-100/75">本回合动作尚未使用；可继续行动或直接结束。</div>}
       {/* AI 控制 */}
+      <details open={!compact} className="text-xs text-muted-foreground">
+      <summary className="cursor-pointer py-1">AI 托管设置 · {aiAutoPlay ? '自动' : '已暂停'}</summary>
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border/40 bg-black/30 px-3 py-2">
         <label className="flex cursor-pointer items-center gap-2 text-xs">
-          <Switch checked={aiAutoPlay} onCheckedChange={v => store.setAiAutoPlay(v)} />
+          <Switch disabled={store.readOnly} checked={aiAutoPlay} onCheckedChange={v => store.setAiAutoPlay(v)} />
           <span className="flex items-center gap-1 font-medium">
             {aiAutoPlay ? <Play className="h-3.5 w-3.5 text-emerald-400" /> : <Pause className="h-3.5 w-3.5 text-amber-400" />}
             AI 自动行动
@@ -157,6 +160,7 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
           {SPEEDS.map(sp => (
             <button
               key={sp.ms}
+              disabled={store.readOnly}
               onClick={() => store.setAiSpeed(sp.ms)}
               className={cn(
                 'rounded-md border px-2 py-0.5 transition-colors',
@@ -171,20 +175,15 @@ export function BattleControls({ compact = false }: { compact?: boolean }) {
         </div>
         <div className="grow" />
         {!aiAutoPlay && battleActive && current && !playerTurn && (
-          <Button size="sm" variant="secondary" className="h-7 gap-1 text-[11px]" onClick={() => store.takeAiStep()}>
+          <Button size="sm" variant="secondary" className="h-7 gap-1 text-[11px]" disabled={store.readOnly || !!store.pendingReactionStep}
+            onClick={() => store.takeAiStep()}>
             <Bot className="h-3.5 w-3.5" />AI 单步
           </Button>
         )}
-        <Button
-          size="sm"
-          className="h-7 gap-1 bg-amber-600/90 text-[11px] text-white hover:bg-amber-600"
-          onClick={sendReport}
-          disabled={units.length === 0}
-          title="一键把 <battleresult> 战报送回酒馆对话并触发 DM 战后叙述（无法回传时自动降级为复制）"
-        >
-          {sent ? <Check className="h-3.5 w-3.5" /> : <ClipboardList className="h-3.5 w-3.5" />}
-          {sent ? '已送回对话' : '战报送回对话'}
-        </Button>
+      </div>
+      </details>
+      <div className="flex flex-wrap items-start gap-2">
+        <ReportSendButton copy={copyReport} />
         <Button
           size="sm"
           variant="secondary"

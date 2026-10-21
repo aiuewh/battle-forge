@@ -9,6 +9,9 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useBattleStore } from '@/store/battleStore';
+import { useActionUiStore } from '@/store/actionUiStore';
+import { hudCandidates, hudTargetReason } from '@/lib/engine/hudTargets';
+import { abilityPreview, abilityTargetCheck, movementPreview } from '@/lib/engine/actionPreview';
 import {
   CELL, posToCell, cellToFeet, cellCenter, cellKey, unitOccupiedCells,
   reachableCells, gridDistanceCells, aoeCells,
@@ -23,11 +26,14 @@ import { resolveCreatureKind } from '@/lib/engine/creatures';
 import { getIconStage, resolveIconKind } from './emblem3d/stage';
 import {
   makeProjector, strHash, drawFloorTile, drawCellOverlay, drawCube, drawShadow,
-  drawSphere, drawPyramid, drawHpBar, drawLabel, drawRing,
-  drawSlash, drawFloatText, drawBadge, TILE_W, TILE_H,
+  drawSphere, drawPyramid, drawLabel, drawRing, STAGE_PALETTE,
+  plateLayout, drawNameplate, type NameplateInfo,
+  drawSlash, drawFloatText, drawBadge, drawSpotlight, TILE_W, TILE_H,
   type IsoCam,
 } from './iso/isoScene';
+import { TokenQuickMenu } from './TokenQuickMenu';
 import { Button } from '@/components/ui/button';
+import { HudMenu } from './HudMenu';
 import { cn } from '@/lib/utils';
 import {
   MousePointer2, Ruler, Flame, BrickWall, Trash2, ZoomIn, ZoomOut, Maximize,
@@ -67,21 +73,40 @@ interface LungeState { dirX: number; dirY: number; born: number }
 const ALLY_COLORS = { hi: '#b8f7c6', mid: '#3ecf6a', lo: '#0c5e2c' };
 const NEUTRAL_COLORS = { hi: '#ffe9b0', mid: '#e3ba55', lo: '#7d5c17' };
 
-export function BattleMapIso({ compact = false }: { compact?: boolean }) {
+export function BattleMapIso({ compact = false, workspace = false, boundary, onInspect }: { compact?: boolean; workspace?: boolean; boundary?: HTMLElement | null; onInspect?: (id: string) => void }) {
   const store = useBattleStore();
+  const actionUi = useActionUiStore();
+  const [hoverCell, setHoverCell] = useState<Cell | null>(null);
+  const [moveConfirm, setMoveConfirm] = useState<{ id: string; cell: Cell; epoch: number } | null>(null);
+  const moveUnit = store.units.find(u => u.id === store.selectedId);
+  const moveView = moveUnit && hoverCell && !actionUi.request && (!workspace || actionUi.movingActorId === moveUnit.id) ? movementPreview(moveUnit, hoverCell, store.units, store.obstacles, store.mapConfig, store.battleActive, store.turn.currentUnitId) : null;
+  const confirmation = moveConfirm && moveConfirm.epoch === store.interactionEpoch && moveConfirm.id === store.selectedId && !actionUi.request ? moveConfirm : null;
+  const requestMove = (id: string, cell: Cell, confirmed = false) => {
+    const s = useBattleStore.getState();
+    const unit = s.units.find(u => u.id === id);
+    if (!unit || s.readOnly || s.pendingReactionStep) return;
+    const p = movementPreview(unit, cell, s.units, s.obstacles, s.mapConfig, s.battleActive, s.turn.currentUnitId);
+    if (p.reason) { actionUi.fail(p.reason); return; }
+    if (p.threats.length && !confirmed) { setMoveConfirm({ id, cell, epoch: s.interactionEpoch }); return; }
+    if (s.requestPlayerMove(id, cell)) { setMoveConfirm(null); actionUi.fail(null); }
+  };
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [tool, setTool] = useState<Tool>('select');
+  const [toolChoice, setTool] = useState<Tool>('select');
+  const tool: Tool = actionUi.request || actionUi.movingActorId ? 'select' : toolChoice;
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [aoePreset, setAoePreset] = useState<(typeof AOE_PRESETS)[number] | null>(null);
   const [obstacleKind, setObstacleKind] = useState<MapObstacle['kind']>('full');
   const [drag, setDrag] = useState<DragState | null>(null);
   const [hoverInfo, setHoverInfo] = useState<{ unitId: string; sx: number; sy: number } | null>(null);
+  const [quickMenu, setQuickMenu] = useState<{ unitId: string; x: number; y: number } | null>(null);
   const [size, setSize] = useState({ w: 800, h: 500 });
 
   // 渲染循环内部状态（不走 React，避免高频 setState）
   const camRef = useRef<IsoCam>({ scale: 0.9, panX: 0, panY: 0 });
   const sizeRef = useRef({ w: 800, h: 500 });
+  const hoverCellRef = useRef<Cell | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const tokenHitsRef = useRef<Array<{ id: string; sx: number; sy: number; r: number }>>([]);
   const animPosRef = useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -89,7 +114,15 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
   const floatsRef = useRef<FloatEffect[]>([]);
   const slashesRef = useRef<SlashEffect[]>([]);
   const seenEventsRef = useRef<Set<string>>(new Set());
+  const invalidateRef = useRef<() => void>(() => {});
+  const visibleRef = useRef(true);
   const fittedRef = useRef('');
+
+  useEffect(() => useActionUiStore.subscribe(selection => {
+    if (selection.request || selection.movingActorId) {
+      setTool('select'); setAoePreset(null); setToolsOpen(false);
+    }
+  }), []);
 
   const setDragBoth = (d: DragState | null) => {
     dragRef.current = d;
@@ -112,6 +145,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
       canvas.style.height = `${rect.height}px`;
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      invalidateRef.current();
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -121,11 +155,13 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
   const fitView = useCallback(() => {
     const s = useBattleStore.getState();
     const { units, obstacles, mapConfig } = s;
-    let minX = 0, minY = 0, maxX = mapConfig.width, maxY = mapConfig.height;
+    let minX = units.length ? Infinity : 0, minY = units.length ? Infinity : 0;
+    let maxX = units.length ? -Infinity : mapConfig.width, maxY = units.length ? -Infinity : mapConfig.height;
     for (const u of units) {
       const c = posToCell(u.pos);
       minX = Math.min(minX, c.cx); minY = Math.min(minY, c.cy);
-      maxX = Math.max(maxX, c.cx + 1); maxY = Math.max(maxY, c.cy + 1);
+      const span = SIZE_META[u.size]?.cells ?? 1;
+      maxX = Math.max(maxX, c.cx + span); maxY = Math.max(maxY, c.cy + span);
     }
     for (const o of obstacles) {
       for (const c of o.cells) {
@@ -145,25 +181,29 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
     const bboxW = rightX - leftX;
     const bboxH = bottomY - topY + 90; // 顶部余量（token高度）
     const { w, h } = sizeRef.current;
-    const scale = Math.min(1.5, Math.max(0.28, Math.min(w / bboxW, h / bboxH) * 0.94));
+    const hudHeight = boundary?.querySelector('.token-hud')?.getBoundingClientRect().height ?? 180;
+    const topInset = workspace ? 150 : 0;
+    const usableH = workspace ? Math.max(130, h - hudHeight - topInset - 30) : h;
+    const scale = Math.min(1.5, Math.max(0.28, Math.min(w / bboxW, usableH / bboxH) * 0.94));
     camRef.current = {
       scale,
       panX: w / 2 - (leftX + rightX) / 2 * scale,
-      panY: h / 2 - (topY + bottomY) / 2 * scale + 20 * scale,
+      panY: topInset + usableH / 2 - (topY + bottomY) / 2 * scale + 20 * scale,
     };
-  }, []);
+    invalidateRef.current();
+  }, [workspace, boundary]);
 
   // 单位数变化时自动适配（首次载入/演示）
   useEffect(() => {
     const s = useBattleStore.getState();
-    const sig = `${s.units.length}:${s.mapConfig.width}x${s.mapConfig.height}`;
+    const sig = `${s.units.length}:${s.mapConfig.width}x${s.mapConfig.height}:${Math.round(size.w)}x${Math.round(size.h)}`;
     if (s.units.length > 0 && fittedRef.current !== sig) {
       fittedRef.current = sig;
       // 等画布尺寸就绪
       requestAnimationFrame(() => fitView());
     }
     if (s.units.length === 0) fittedRef.current = '';
-  }, [store.units.length, store.mapConfig.width, store.mapConfig.height, fitView]);
+  }, [store.units.length, store.mapConfig.width, store.mapConfig.height, size.w, size.h, fitView]);
 
   // ---------- 事件特效（伤害飘字/攻击突进/挥砍） ----------
   useEffect(() => {
@@ -213,8 +253,12 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
   // ---------- 渲染主循环 ----------
   useEffect(() => {
     let raf = 0;
+    let disposed = false;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const wake = () => { if (!disposed && !raf && !document.hidden) raf = requestAnimationFrame(draw); };
     const draw = (time: number) => {
-      raf = requestAnimationFrame(draw);
+      raf = 0;
+      if (disposed || document.hidden) return;
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d');
       if (!canvas || !ctx) return;
@@ -223,12 +267,24 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
       const proj = makeProjector(cam);
       const { w, h } = sizeRef.current;
       const t = time;
+      let animating = false;
+      canvas.dataset.renderCount = String(Number(canvas.dataset.renderCount ?? 0) + 1);
+      const labelRects: Array<{x:number;y:number;w:number;h:number}> = [];
+      const placeLabel = (x:number,y:number,w:number,h:number) => {
+        const minY = workspace ? 125 + h / 2 : h / 2;
+        let ly = Math.max(minY, y);
+        for (let attempt=0; attempt<7 && labelRects.some(r => Math.abs(x-r.x)<(w+r.w)/2 && Math.abs(ly-r.y)<(h+r.h)/2); attempt++) {
+          const above = y - (attempt + 1) * (h + 4);
+          ly = above >= minY ? above : Math.max(minY, y) + (attempt + 1) * (h + 4);
+        }
+        labelRects.push({x,y:ly,w,h}); return ly;
+      };
 
       // 背景
       ctx.clearRect(0, 0, w, h);
       const bg = ctx.createLinearGradient(0, 0, 0, h);
-      bg.addColorStop(0, '#100d09');
-      bg.addColorStop(1, '#1a1410');
+      bg.addColorStop(0, STAGE_PALETTE.bgTop);
+      bg.addColorStop(1, STAGE_PALETTE.bgBottom);
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 
@@ -257,21 +313,44 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         }
       }
 
+      // ---- 战场边界（金线收边 + 外圈压暗） ----
+      {
+        const cN = proj.p(0, 0), cE = proj.p(s.mapConfig.width, 0);
+        const cS = proj.p(s.mapConfig.width, s.mapConfig.height), cW = proj.p(0, s.mapConfig.height);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(cN.x, cN.y); ctx.lineTo(cE.x, cE.y); ctx.lineTo(cS.x, cS.y); ctx.lineTo(cW.x, cW.y);
+        ctx.closePath();
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = STAGE_PALETTE.boundaryEdge;
+        ctx.lineWidth = 5;
+        ctx.stroke();
+        ctx.strokeStyle = STAGE_PALETTE.boundaryLine;
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // ---- 移动范围（选中单位） ----
       const selected = s.units.find(u => u.id === s.selectedId);
       const dragUnit = dragRef.current?.kind === 'token' && dragRef.current.unitId
         ? s.units.find(u => u.id === dragRef.current!.unitId)
         : null;
-      const rangeUnit = dragUnit ?? (tool === 'select' ? selected : null);
+      const rangeUnit = dragUnit ?? (tool === 'select' && (!workspace || useActionUiStore.getState().movingActorId === selected?.id) ? selected : null);
       let moveRange: Map<string, number> | null = null;
       if (rangeUnit && rangeUnit.hp > 0) {
         const mv = remainingMovement(rangeUnit);
-        if (mv > 0) moveRange = reachableCells(rangeUnit, s.units, s.obstacles, mv, s.mapConfig.diagonal);
+        if (mv > 0) moveRange = reachableCells(rangeUnit, s.units, s.obstacles, mv, s.mapConfig.diagonal, {
+          mapWidth: s.mapConfig.width, mapHeight: s.mapConfig.height, ignoreFullObstacles: rangeUnit.moveMode === 'fly',
+        });
       }
       if (moveRange) {
         for (const k of moveRange.keys()) {
           const [cx, cy] = k.split(',').map(Number);
-          drawCellOverlay(ctx, proj, cx, cy, 'rgba(110,190,235,0.16)', 'rgba(110,190,235,0.28)');
+          const hoveredCell = hoverCellRef.current;
+          const hovered = hoveredCell?.cx === cx && hoveredCell?.cy === cy;
+          drawCellOverlay(ctx, proj, cx, cy,
+            hovered ? STAGE_PALETTE.rangeFillHover : STAGE_PALETTE.rangeFill, STAGE_PALETTE.rangeStroke);
         }
       }
 
@@ -294,6 +373,23 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         });
       }
 
+      const action = useActionUiStore.getState();
+      const actionActor = action.request ? s.units.find(u => u.id === action.request!.actorId) : null;
+      if (action.request && actionActor) {
+        const ab = action.request.ability;
+        const candidateIds = new Set(hudCandidates(action.request, actionActor, s.units).map(u => u.id));
+        for (const u of s.units) {
+          if (!candidateIds.has(u.id)) continue;
+          const reason = hudTargetReason(action.request, actionActor, u, s.units, s.obstacles, s.mapConfig.diagonal);
+          for (const c of unitOccupiedCells(u)) drawCellOverlay(ctx, proj, c.cx, c.cy,
+            u.id === action.targetId ? 'rgba(255,210,80,.60)' : reason ? 'rgba(180,50,50,.18)' : 'rgba(70,200,130,.38)');
+        }
+        const preview = abilityPreview(actionActor, ab, s.units.find(u => u.id === action.targetId), s.units, s.obstacles, s.mapConfig.diagonal,
+          { ...action.request, originPos: action.originPos, angle: action.angle });
+        if (preview.template) {
+          for (const c of aoeCells(preview.template, s.units).cells) drawCellOverlay(ctx, proj, c.cx, c.cy, preview.reason ? 'rgba(200,50,50,.32)' : 'rgba(245,160,50,.36)');
+        }
+      }
       // ---- AoE 拖拽预览 / 掩体绘制预览 ----
       const d = dragRef.current;
       if (d?.kind === 'aoe' && aoePreset) {
@@ -351,7 +447,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         for (const c of o.cells) {
           objs.push({
             depth: c.cx + c.cy - 0.1,
-            draw: () => drawCube(ctx, proj, c.cx, c.cy, o.kind),
+            draw: () => o.kind === 'difficult' ? drawCellOverlay(ctx, proj, c.cx, c.cy, 'rgba(160,125,65,.45)', 'rgba(210,170,90,.5)') : drawCube(ctx, proj, c.cx, c.cy, o.kind),
           });
         }
       }
@@ -366,7 +462,9 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         const prev = animPosRef.current.get(u.id);
         if (!prev) {
           animPosRef.current.set(u.id, { ...target });
-        } else {
+        } else if (prev.x !== target.x || prev.y !== target.y) {
+          animating = !reduced;
+          if (reduced) { prev.x = target.x; prev.y = target.y; }
           prev.x += (target.x - prev.x) * 0.22;
           prev.y += (target.y - prev.y) * 0.22;
           if (Math.abs(target.x - prev.x) < 0.6 && Math.abs(target.y - prev.y) < 0.6) { prev.x = target.x; prev.y = target.y; }
@@ -376,7 +474,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         const aCellF = { x: anim.x / CELL, y: anim.y / CELL };
         const centerG = { x: aCellF.x + span / 2, y: aCellF.y + span / 2 };
         const isDead = !!u.deathSaves?.dead;
-        const isDown = u.hp <= 0 && !isDead;
+        const isDown = (u.hp <= 0 || u.knockedOut || u.statuses.includes('unconscious')) && !isDead;
         const isEnemy = u.attitude === 2;
 
         objs.push({
@@ -389,20 +487,24 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
             hitsThisFrame.push({ id: u.id, sx: cp.x, sy: groundY - tokenR * 0.8, r: tokenR * 1.15 });
             const lunge = lungeRef.current.get(u.id);
             let ox = 0, oy = 0;
-            if (lunge && t - lunge.born < 260) {
+            if (!reduced && lunge && t - lunge.born < 260) {
+              animating = true;
               const prog = Math.sin(Math.PI * (t - lunge.born) / 260);
               ox = lunge.dirX * 12 * cam.scale * prog;
               oy = lunge.dirY * 6 * cam.scale * prog;
             }
-            const bob = isDead || isDown ? 0 : Math.sin(t * 0.0035 + strHash(u.id) % 10) * 2.6 * cam.scale;
+            const bob = 0;
 
-            // 光环：当前行动者（金色脉冲）/ 选中（青色虚线）
+            drawCellOverlay(ctx, proj, Math.floor(centerG.x), Math.floor(centerG.y), u.attitude === 2 ? 'rgba(160,55,40,.28)' : 'rgba(45,120,105,.24)', u.attitude === 2 ? '#e0836a' : '#5fd6a8');
+            // 光环：当前行动者（金色聚光呼吸 + 脉冲环）/ 选中（蓝色）
             if (s.turn.currentUnitId === u.id && s.battleActive) {
-              const pulse = 0.55 + 0.35 * Math.sin(t * 0.006);
-              drawRing(ctx, cp.x, groundY, (span * 26 + 6) * cam.scale, `rgba(245,197,66,${pulse})`, t * 0.04, 3);
+              if (!reduced) animating = true;
+              const breathe = reduced ? 0 : Math.sin(t / 300);
+              drawSpotlight(ctx, cp.x, groundY, (span * 34 + 10) * cam.scale, 0.17 + 0.07 * breathe);
+              drawRing(ctx, cp.x, groundY, (span * 26 + 6) * cam.scale, `rgba(245,197,66,${0.62 + 0.28 * breathe})`, 0, 3);
             }
             if (s.selectedId === u.id) {
-              drawRing(ctx, cp.x, groundY, (span * 24 + 4) * cam.scale, 'rgba(90,200,250,0.9)', -t * 0.05, 2);
+              drawRing(ctx, cp.x, groundY, (span * 24 + 4) * cam.scale, STAGE_PALETTE.selectRing, 0, 2);
             }
 
             const alpha = isDead ? 0.22 : isDown ? 0.75 : 1;
@@ -418,13 +520,13 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
               if (USE_ICON_BADGES && (EMBLEM_ASSETS[kind] || iconKind === 'goblin' || iconKind === 'orc')) {
                 // 有矢量图标资产的族类 → 3D 金属徽章（挤出 + 斜角 + 金属材质）
                 // 自转用往复摆动（±35°）而非全周旋转——扁徽章侧对镜头时会失去辨识度
-                const swingSpeed = s.battleActive && s.turn.currentUnitId === u.id ? 0.0024 : 0.0009;
+
                 const swingPhase = (strHash(u.id) % 100) / 100 * Math.PI;
                 getIconStage().drawIcon(ctx, {
                   x: cp.x + ox, groundY: groundY + oy,
                   size: 28 * cam.scale,
                   kind: iconKind,
-                  spin: Math.sin(t * swingSpeed + swingPhase) * 0.6,
+                  spin: Math.sin(swingPhase) * 0.18,
                   lift: bob, alpha, squash, dead: isDead,
                 });
               } else {
@@ -443,7 +545,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
               drawShadow(ctx, cp.x, groundY, r * 0.95, isDead ? 0.15 : 0.32);
               // 玩家金环
               if (u.isPlayer && !isDead) {
-                drawRing(ctx, cp.x, groundY, r * 1.15, 'rgba(245,197,66,0.95)', t * 0.03, 2.5);
+                drawRing(ctx, cp.x, groundY, r * 1.15, 'rgba(245,197,66,0.95)', 0, 2.5);
               }
               drawSphere(ctx, {
                 x: cp.x + ox,
@@ -452,48 +554,34 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
                 colors: u.attitude === 1 ? NEUTRAL_COLORS : ALLY_COLORS,
                 alpha, squash,
               });
+              if (!isDown) drawLabel(ctx, cp.x + ox, groundY - r * 0.85 + oy, u.name.slice(0,1), '#e5fff4', cam.scale, 13);
               if (isDown) {
-                drawLabel(ctx, cp.x, groundY - r * 0.5, '✚', '#ff6b6b', cam.scale, 14);
+                drawLabel(ctx, cp.x, groundY - r * 0.5, u.knockedOut ? '昏迷' : '✚', '#ff6b6b', cam.scale, 14);
               }
             }
 
             // 死亡不再画 UI 元件
-            if (isDead) return;
+            if (isDead) { drawLabel(ctx, cp.x, groundY - 14, '† 阵亡', '#a8a6a0', cam.scale, 11); return; }
 
-            // 名字（含操控标记）
-            const topY = isEnemy
-              ? groundY - (span * 26 * cam.scale + bob) - 6
-              : groundY - (12 + span * 7.5) * cam.scale * 1.85 - bob - 6;
+            // 名牌卡：名字 + 常显血条 + 状态行（屏幕空间恒定尺寸，低倍率下仍可读）
+            const tokenTopY = isEnemy
+              ? groundY - (span * 26 * cam.scale + bob)
+              : groundY - (12 + span * 7.5) * cam.scale * 1.85 - bob;
             const controlTag = u.attitude === 0 && !u.isPlayer ? (u.playerControlled ? ' 👤' : ' 🤖') : '';
-            const nameColor = u.isPlayer ? '#f5c542' : u.attitude === 2 ? '#ff8a75' : u.attitude === 1 ? '#e3ba55' : '#7fe0a0';
-            drawLabel(ctx, cp.x, topY - 34 * cam.scale, `${u.isPlayer ? '★' : ''}${u.name}${controlTag}`, nameColor, cam.scale, Math.max(9, 10.5));
-
-            // HP 条
-            const ratio = u.maxHp > 0 ? Math.max(0, u.hp) / u.maxHp : 0;
-            const barW = Math.max(30, Math.min(64, 26 + span * 12)) * cam.scale;
-            const showText = s.selectedId === u.id || s.turn.currentUnitId === u.id || hoverInfo?.unitId === u.id;
-            drawHpBar(ctx, cp.x, topY - 22 * cam.scale, barW, 5 * cam.scale, ratio, cam.scale,
-              showText ? `${Math.max(0, u.hp)}/${u.maxHp}` : undefined);
-
-            // 状态图标
-            const icons = u.statuses.filter(st => st !== 'disengaging').slice(0, 4);
-            if (icons.length > 0) {
-              const iw = 13 * cam.scale;
-              const startX = cp.x - (icons.length - 1) * iw / 2;
-              ctx.font = `${10 * cam.scale}px "Noto Sans SC", system-ui, sans-serif`;
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'middle';
-              icons.forEach((st, i) => {
-                const def = CONDITIONS[st];
-                ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-                ctx.lineWidth = 3;
-                const ix = startX + i * iw;
-                const iy = topY - 40 * cam.scale;
-                ctx.strokeText(def?.icon ?? '❓', ix, iy);
-                ctx.fillStyle = def?.color ?? '#aaa';
-                ctx.fillText(def?.icon ?? '❓', ix, iy);
-              });
-            }
+            const nameColor = u.isPlayer ? '#f5c542' : isEnemy ? '#ff8a75' : u.attitude === 1 ? '#e3ba55' : '#7fe0a0';
+            const plateStatuses = u.statuses.filter(st => st !== 'disengaging').slice(0, 4)
+              .map(st => ({ icon: CONDITIONS[st]?.icon ?? '❓', color: CONDITIONS[st]?.color ?? '#aaa' }));
+            const plate: NameplateInfo = {
+              name: `${u.isPlayer ? '★' : ''}${u.name}${controlTag}`,
+              nameColor,
+              hp: u.hp,
+              maxHp: u.maxHp,
+              statuses: plateStatuses,
+              variant: s.turn.currentUnitId === u.id && s.battleActive ? 'current' : s.selectedId === u.id ? 'selected' : 'default',
+            };
+            const plateBox = plateLayout(ctx, plate);
+            const plateTop = placeLabel(cp.x, tokenTopY - 8 - plateBox.h, plateBox.w, plateBox.h);
+            drawNameplate(ctx, cp.x, plateTop, plate, plateBox.w, plateBox.h, plateBox.label);
           },
         });
       }
@@ -509,22 +597,23 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
       // ---- 拖拽 token 幽灵与成本 ----
       if (dragRef.current?.kind === 'token' && dragUnit) {
         const dd = dragRef.current;
-        const cost = gridDistanceCells({ cx: dd.startX, cy: dd.startY }, { cx: dd.curX, cy: dd.curY }, s.mapConfig.diagonal) * CELL;
+        const route = movementPreview(dragUnit, { cx: dd.curX, cy: dd.curY }, s.units, s.obstacles, s.mapConfig, s.battleActive, s.turn.currentUnitId);
+        const cost = route.cost;
         const max = remainingMovement(dragUnit);
-        const valid = cost <= max;
+        const valid = !route.reason;
         const p = proj.p(dd.curX + 0.5, dd.curY + 0.5);
         // 路径箭头
         const p0 = proj.p(dd.startX + 0.5, dd.startY + 0.5);
         ctx.save();
-        ctx.strokeStyle = valid ? 'rgba(120,220,255,0.9)' : 'rgba(255,110,110,0.9)';
+        ctx.strokeStyle = valid ? STAGE_PALETTE.pathValid : STAGE_PALETTE.pathInvalid;
         ctx.lineWidth = 2.5;
         ctx.setLineDash([6, 4]);
         ctx.beginPath();
         ctx.moveTo(p0.x, p0.y);
-        ctx.lineTo(p.x, p.y);
+        for (const c of route.path.slice(1)) { const step = proj.p(c.cx + .5, c.cy + .5); ctx.lineTo(step.x, step.y); }
         ctx.stroke();
         ctx.restore();
-        drawBadge(ctx, p.x, p.y - 18, `移动 ${cost}尺 / 剩余 ${max}尺`, valid ? 'rgba(30,90,120,0.92)' : 'rgba(140,40,40,0.92)', cam.scale);
+        drawBadge(ctx, p.x, p.y - 18, `移动 ${cost}尺 / 剩余 ${max}尺`, valid ? STAGE_PALETTE.pathBadgeBg : 'rgba(140,40,40,0.92)', cam.scale);
       }
 
       // ---- 测距 ----
@@ -571,10 +660,31 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
 
       // ---- 悬停提示（记录命中区域） ----
       void hoverInfo;
+      if (visibleRef.current && !reduced && (animating || floatsRef.current.length > 0 || slashesRef.current.length > 0)) wake();
     };
-    raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
+    invalidateRef.current = wake;
+    const unsubStore = useBattleStore.subscribe(wake), unsubSelection = useActionUiStore.subscribe(wake);
+    // Webfonts 就绪后重绘一次，避免 canvas 首帧用到回退字体
+    document.fonts?.ready.then(() => invalidateRef.current()).catch(() => {});
+    const canvas = canvasRef.current;
+    const onVisibility = () => { if (document.hidden && raf) { cancelAnimationFrame(raf); raf = 0; } else wake(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    const io = new IntersectionObserver(entries => { visibleRef.current = entries[0].isIntersecting; if (visibleRef.current) wake(); });
+    if (canvas) { io.observe(canvas); for (const event of ['pointermove','pointerdown','pointerup','wheel']) canvas.addEventListener(event, wake, { passive: true }); }
+    wake();
+    return () => { disposed = true; cancelAnimationFrame(raf); unsubStore(); unsubSelection(); io.disconnect(); document.removeEventListener('visibilitychange', onVisibility); if (canvas) for (const event of ['pointermove','pointerdown','pointerup','wheel']) canvas.removeEventListener(event, wake); invalidateRef.current = () => {}; };
   }, [tool, aoePreset, hoverInfo]);
+
+  useEffect(() => {
+    invalidateRef.current();
+    if (!workspace || !actionUi.targetId) return;
+    const unit = store.units.find(u => u.id === actionUi.targetId);
+    const hudHeight = boundary?.querySelector('.token-hud')?.getBoundingClientRect().height ?? 180;
+    if (!unit) return;
+    const point = makeProjector(camRef.current).p(unit.pos.x / 5 + .5, unit.pos.y / 5 + .5);
+    const limit = sizeRef.current.h - hudHeight - 45;
+    if (point.y > limit) { camRef.current.panY -= point.y - Math.max(160, limit - 45); invalidateRef.current(); }
+  }, [actionUi.targetId, actionUi.request, workspace, boundary, store.units]);
 
   // ---------- 指针交互 ----------
   const pickCell = (clientX: number, clientY: number): Cell => {
@@ -601,12 +711,32 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
 
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
+    if (store.readOnly && tool !== 'select' && tool !== 'measure') return;
+    setQuickMenu(null);
     const cell = pickCell(e.clientX, e.clientY);
     const canvas = canvasRef.current;
     const rect = canvas?.getBoundingClientRect();
     const sx = e.clientX - (rect?.left ?? 0);
     const sy = e.clientY - (rect?.top ?? 0);
 
+    const req = useActionUiStore.getState().request;
+    if (req && !store.readOnly && e.button === 0) {
+      const tokenId = pickToken(e.clientX, e.clientY);
+      if (tokenId) {
+        const actor = store.units.find(u => u.id === req.actorId);
+        const target = store.units.find(u => u.id === tokenId);
+        if (actor && target) {
+          const candidate = hudCandidates(req, actor, store.units).some(u => u.id === target.id);
+          const reason = candidate ? hudTargetReason(req, actor, target, store.units, store.obstacles, store.mapConfig.diagonal) : '该单位不是此动作的合法目标';
+          if (reason) actionUi.fail(reason); else actionUi.select(tokenId);
+        }
+        setDragBoth(null);
+        return;
+      }
+      // Ground click may place AoE on pointer-up; dragging still pans the view.
+      setDragBoth({ kind: 'pan', startX: cell.cx, startY: cell.cy, curX: e.clientX, curY: e.clientY, lastScreenX: e.clientX, lastScreenY: e.clientY, screenStartX: e.clientX, screenStartY: e.clientY, moved: false });
+      return;
+    }
     if (tool === 'measure') {
       setDragBoth({ kind: 'measure', startX: cell.cx, startY: cell.cy, curX: cell.cx, curY: cell.cy, lastScreenX: sx, lastScreenY: sy, screenStartX: sx, screenStartY: sy, moved: false });
       return;
@@ -620,11 +750,20 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
       setDragBoth({ kind: 'obstacle', startX: cell.cx, startY: cell.cy, curX: cell.cx, curY: cell.cy, lastScreenX: sx, lastScreenY: sy, screenStartX: sx, screenStartY: sy, moved: false, obstacleCells: [cell] });
       return;
     }
-    // select 工具：点选式——点击棋子=选中/再点取消（移动改为点击目标格）
+    // select 工具：点选式——点击棋子=选中+快捷菜单；已武装移动的棋子可直接拖拽换位
     if (e.button === 0) {
       const tokenId = pickToken(e.clientX, e.clientY);
       if (tokenId) {
-        store.setSelectedId(store.selectedId === tokenId ? null : tokenId);
+        const unit = store.units.find(u => u.id === tokenId);
+        const s = useBattleStore.getState();
+        const canDragToken = !!unit && unit.hp > 0 && !s.pendingReactionStep
+          && (!s.battleActive || useActionUiStore.getState().movingActorId === unit.id);
+        if (canDragToken && unit) {
+          setDragBoth({ kind: 'token', unitId: tokenId, startX: cell.cx, startY: cell.cy, curX: cell.cx, curY: cell.cy, lastScreenX: e.clientX, lastScreenY: e.clientY, screenStartX: e.clientX, screenStartY: e.clientY, moved: false });
+        } else {
+          store.setSelectedId(store.selectedId === tokenId ? null : tokenId);
+          if (unit && unit.hp > 0) setQuickMenu({ unitId: tokenId, x: sx, y: sy });
+        }
         return;
       }
     }
@@ -646,6 +785,8 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
 
   const onPointerMove = (e: React.PointerEvent) => {
     const cell = pickCell(e.clientX, e.clientY);
+    hoverCellRef.current = cell;
+    setHoverCell(prev => prev?.cx === cell.cx && prev?.cy === cell.cy ? prev : cell);
     const d = dragRef.current;
     if (!d) {
       // 悬停单位提示
@@ -694,8 +835,13 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
           }
         }
         if (!blocked) {
-          s.moveUnit(unit.id, { x: cellToFeet(d.curX), y: cellToFeet(d.curY) });
+          requestMove(unit.id, { cx: d.curX, cy: d.curY });
         }
+      } else if (unit) {
+        // 未拖动 = 点击：选中切换 + 弹出快捷菜单（Foundry 式就近操作）
+        s.setSelectedId(s.selectedId === unit.id ? null : unit.id);
+        const rect = canvasRef.current?.getBoundingClientRect();
+        setQuickMenu({ unitId: unit.id, x: e.clientX - (rect?.left ?? 0), y: e.clientY - (rect?.top ?? 0) });
       }
     } else if (d.kind === 'aoe' && aoePreset && d.moved) {
       const o = cellCenter({ cx: d.startX, cy: d.startY });
@@ -704,30 +850,29 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
     } else if (d.kind === 'obstacle' && d.obstacleCells && d.obstacleCells.length > 0) {
       s.addObstacle(d.obstacleCells, obstacleKind);
     } else if (d.kind === 'pan' && !d.moved) {
+      const req = useActionUiStore.getState().request;
+      if (req) {
+        const actor = s.units.find(u => u.id === req.actorId);
+        if (req.ability.kind === 'save-aoe' && actor && !s.readOnly) {
+          const cell = pickCell(e.clientX, e.clientY);
+          const origin = { x: cellToFeet(cell.cx), y: cellToFeet(cell.cy) };
+          const reason = abilityTargetCheck(actor, req.ability, undefined, s.obstacles, s.mapConfig.diagonal, origin);
+          if (reason) actionUi.fail(reason); else actionUi.place(origin);
+        } else actionUi.fail('请点选地图上的合法目标');
+        setDragBoth(null); return;
+      }
       // 点在棋子上：选中/取消已在 down 处理，这里仅结束
       if (pickToken(e.clientX, e.clientY)) { setDragBoth(null); return; }
       // 点选式移动：选中棋子 + 点击可抵达的空格 → 移动
-      if (tool === 'select' && e.button === 0 && s.selectedId) {
+      if (tool === 'select' && e.button === 0 && s.selectedId && (!workspace || useActionUiStore.getState().movingActorId === s.selectedId)) {
         const unit = s.units.find(u => u.id === s.selectedId);
         const target = pickCell(e.clientX, e.clientY);
         if (unit && unit.hp > 0) {
           const cur = posToCell(unit.pos);
           if (target.cx !== cur.cx || target.cy !== cur.cy) {
-            const occupied = new Set(s.units.filter(u => u.id !== unit.id).flatMap(u => unitOccupiedCells(u).map(cellKey)));
-            const span = SIZE_META[unit.size].cells;
-            let blocked = false;
-            for (let i = 0; i < span; i++) {
-              for (let j = 0; j < span; j++) {
-                if (occupied.has(cellKey({ cx: target.cx + i, cy: target.cy + j }))) blocked = true;
-              }
-            }
-            const mv = remainingMovement(unit);
-            const range = mv > 0 ? reachableCells(unit, s.units, s.obstacles, mv, s.mapConfig.diagonal) : null;
-            if (!blocked && range?.has(cellKey(target))) {
-              s.moveUnit(unit.id, { x: cellToFeet(target.cx), y: cellToFeet(target.cy) });
-              setDragBoth(null);
-              return;
-            }
+            requestMove(unit.id, target);
+            setDragBoth(null);
+            return;
           }
         }
       }
@@ -765,6 +910,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
     const k = ns / cam.scale;
     cam.panX = w / 2 - (w / 2 - cam.panX) * k;
     cam.panY = h / 2 - (h / 2 - cam.panY) * k;
+    invalidateRef.current();
     cam.scale = ns;
   };
 
@@ -772,7 +918,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
   const hoverUnit = hoverInfo ? store.units.find(u => u.id === hoverInfo.unitId) : null;
 
   const tools = [
-    { key: 'select' as Tool, icon: MousePointer2, label: '选择/拖拽' },
+    { key: 'select' as Tool, icon: MousePointer2, label: '点选/移动' },
     { key: 'measure' as Tool, icon: Ruler, label: '测距' },
     { key: 'aoe' as Tool, icon: Flame, label: 'AoE 模板' },
     { key: 'obstacle' as Tool, icon: BrickWall, label: '绘制掩体' },
@@ -784,7 +930,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
   return (
     <div
       ref={containerRef}
-      className={cn('relative overflow-hidden rounded-xl parchment-panel', compact ? 'h-[340px] md:h-[400px]' : 'h-[480px] md:h-[640px]')}
+      className={cn('relative overflow-hidden rounded-xl parchment-panel', workspace ? 'battle-map-fill' : compact ? 'embed-map h-[280px] md:h-[340px]' : 'h-[480px] md:h-[640px]')}
     >
       <canvas
         ref={canvasRef}
@@ -795,74 +941,21 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         onPointerCancel={() => setDragBoth(null)}
       />
 
-      {/* 顶部工具栏 */}
-      <div className="absolute top-2 left-2 right-2 z-20 flex flex-wrap items-center gap-1.5">
-        {tools.map(tItem => (
-          <Button
-            key={tItem.key}
-            size="sm"
-            variant={tool === tItem.key ? 'default' : 'secondary'}
-            className={cn('h-8 gap-1 px-2 text-xs', tool === tItem.key && 'bg-primary text-primary-foreground')}
-            onClick={() => { setTool(tItem.key); if (tItem.key !== 'aoe') setAoePreset(null); }}
-            title={tItem.label}
-          >
-            <tItem.icon className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">{tItem.label}</span>
-          </Button>
-        ))}
-        <div className="grow" />
-        {rangeHint && (
-          <span className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2 py-1 text-[11px] text-sky-200">
-            {rangeHint}
-          </span>
-        )}
-        <Button size="sm" variant="secondary" className="h-8 w-8 p-0" onClick={() => zoomAt(1.25)} title="放大"><ZoomIn className="h-3.5 w-3.5" /></Button>
-        <Button size="sm" variant="secondary" className="h-8 w-8 p-0" onClick={() => zoomAt(0.8)} title="缩小"><ZoomOut className="h-3.5 w-3.5" /></Button>
-        <Button size="sm" variant="secondary" className="h-8 w-8 p-0" onClick={fitView} title="适配视野"><Maximize className="h-3.5 w-3.5" /></Button>
+      <div className={cn('map-tools absolute z-20', workspace ? 'stage-map-tools' : 'top-2 left-2 right-2')}>
+        <HudMenu boundary={boundary} label="地图工具" open={toolsOpen} onOpenChange={setToolsOpen} side="bottom"
+          trigger={<button className="stage-map-tool-button" aria-label="地图工具" disabled={!!actionUi.request || !!actionUi.movingActorId}><MousePointer2 size={18}/></button>}>
+          <div className="hud-menu-heading"><strong>地图工具</strong><button aria-label="关闭地图工具" onClick={() => setToolsOpen(false)}>×</button></div>
+          <div className="hud-map-tool-list">{tools.map(tItem => <button key={tItem.key} aria-pressed={tool === tItem.key}
+            disabled={store.readOnly && !['select','measure'].includes(tItem.key)}
+            onClick={() => { setTool(tItem.key); if (tItem.key !== 'aoe') setAoePreset(null); if (['select','measure'].includes(tItem.key)) setToolsOpen(false); }}>
+            <tItem.icon size={16}/>{tItem.label}</button>)}</div>
+          {toolChoice === 'aoe' && <div className="hud-menu-list">{AOE_PRESETS.map(p => <button key={p.label} className="hud-list-item" disabled={store.readOnly} onClick={() => { setAoePreset(p); setToolsOpen(false); }}><span>{p.label}</span><small>{p.note}</small></button>)}<button disabled={store.readOnly} onClick={() => store.clearAoeTemplates()}>清除范围模板</button></div>}
+          {toolChoice === 'obstacle' && <div className="hud-menu-list">{([['full','完全掩体'],['threeQuarters','四分之三掩体'],['half','半身掩体'],['difficult','困难地形']] as const).map(([k,label]) => <button key={k} disabled={store.readOnly} onClick={() => { setObstacleKind(k); setToolsOpen(false); }}>{label}</button>)}<button disabled={store.readOnly} onClick={() => store.clearObstacles()}>清除掩体</button></div>}
+        </HudMenu>
+        <button className="stage-map-tool-button" onClick={() => zoomAt(1.25)} aria-label="放大"><ZoomIn size={18}/></button>
+        <button className="stage-map-tool-button" onClick={() => zoomAt(.8)} aria-label="缩小"><ZoomOut size={18}/></button>
+        <button className="stage-map-tool-button" onClick={fitView} aria-label="适配视野"><Maximize size={18}/></button>
       </div>
-
-      {/* AoE 预设选择条 */}
-      {tool === 'aoe' && (
-        <div className="absolute top-12 left-2 right-2 z-20 flex flex-wrap gap-1 rounded-lg bg-black/60 p-1.5 backdrop-blur">
-          {AOE_PRESETS.map(p => (
-            <button
-              key={p.label}
-              onClick={() => setAoePreset(p)}
-              className={cn(
-                'rounded-md border px-2 py-1 text-[11px] leading-tight transition-colors',
-                aoePreset?.label === p.label
-                  ? 'border-primary bg-primary/90 text-primary-foreground'
-                  : 'border-transparent text-foreground/80 hover:bg-white/10',
-              )}
-              title={p.note}
-            >
-              {p.label}
-            </button>
-          ))}
-          <div className="grow" />
-          <button onClick={() => store.clearAoeTemplates()} className="rounded-md px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/20" title="清除全部模板">
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-
-      {/* 掩体类型选择 */}
-      {tool === 'obstacle' && (
-        <div className="absolute top-12 left-2 z-20 flex gap-1 rounded-lg bg-black/60 p-1.5 backdrop-blur">
-          {([['full', '完全掩体（墙）'], ['threeQuarters', '3/4 掩体(+5)'], ['half', '半身掩体(+2)']] as const).map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => setObstacleKind(k)}
-              className={cn('rounded-md px-2 py-1 text-[11px]', obstacleKind === k ? 'bg-primary/90 text-primary-foreground' : 'text-foreground/80 hover:bg-white/10')}
-            >
-              {label}
-            </button>
-          ))}
-          <button onClick={() => store.clearObstacles()} className="rounded-md px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/20">
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
 
       {/* 悬停单位提示卡 */}
       {hoverUnit && (
@@ -886,14 +979,34 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
       )}
 
       {/* 选中提示（点选式移动） */}
-      {selectedUnit && tool === 'select' && !drag && (
+      {selectedUnit && tool === 'select' && !drag && !actionUi.request && !confirmation && !workspace && (
         <div className="pointer-events-none absolute bottom-2 left-1/2 z-20 -translate-x-1/2 rounded-md border border-border/50 bg-black/70 px-3 py-1 text-[11px] text-muted-foreground backdrop-blur">
           已选中 <span className="font-bold text-foreground">{selectedUnit.name}</span> —— 点击青色范围内的格子移动，再点该棋子取消
         </div>
       )}
 
+      {actionUi.request && workspace && <div className="stage-target-hint">{actionUi.request.ability.name} · {actionUi.request.ability.kind === 'save-aoe' ? '点选地图落点' : '点选高亮棋子'}</div>}
+      {moveView && !drag && !confirmation && !actionUi.request && !hoverInfo && (
+        <div className={cn("pointer-events-none absolute z-20 rounded-md bg-black/85 p-2 text-xs text-sky-100", workspace ? "stage-move-preview" : "bottom-12 left-2 right-2")}>
+          {moveView.reason ?? `移动 ${moveView.cost} 尺，剩余 ${moveView.left} 尺`}
+          {moveView.threats.length > 0 && <div className="text-amber-200">可能受到借机攻击：{moveView.threats.map(t => t.unit.name).join('、')}</div>}
+        </div>
+      )}
+      {confirmation && (() => {
+        const unit = store.units.find(u => u.id === confirmation.id);
+        const p = unit ? movementPreview(unit, confirmation.cell, store.units, store.obstacles, store.mapConfig, store.battleActive, store.turn.currentUnitId) : null;
+        return <div role="alertdialog" aria-label="确认危险移动" className={cn("absolute z-40 rounded-lg border border-amber-400/60 bg-black/95 p-3 text-xs text-amber-100", workspace ? "stage-move-confirm" : "bottom-2 left-2 right-2")}>
+          <div>{p?.reason ?? `移动 ${p?.cost} 尺，剩余 ${p?.left} 尺`}</div>
+          <div>可能受到借机攻击：{p?.threats.map(t => t.unit.name).join('、') || '当前无威胁'}</div>
+          <div className="mt-2 flex gap-2"><Button size="sm" disabled={!!p?.reason || store.readOnly || !!store.pendingReactionStep} onClick={() => requestMove(confirmation.id, confirmation.cell, true)}>确认移动</Button>
+            <Button size="sm" variant="secondary" onClick={() => setMoveConfirm(null)}>取消</Button></div>
+        </div>;
+      })()}
+      {/* Token 上下文快捷菜单：点击棋子后弹出在棋子旁（移动/攻击/详情） */}
+      {quickMenu && <TokenQuickMenu unitId={quickMenu.unitId} x={quickMenu.x} y={quickMenu.y}
+        mapW={size.w} mapH={size.h} onClose={() => setQuickMenu(null)} onInspect={onInspect} />}
       {/* 图例 */}
-      <div className="pointer-events-none absolute bottom-2 right-2 z-10 hidden items-center gap-2.5 rounded-md bg-black/45 px-2.5 py-1.5 text-[10px] text-muted-foreground backdrop-blur md:flex">
+      {!workspace && <div className="pointer-events-none absolute bottom-2 right-2 z-10 hidden items-center gap-2.5 rounded-md bg-black/45 px-2.5 py-1.5 text-[10px] text-muted-foreground backdrop-blur md:flex">
         <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded-full" style={{ background: 'radial-gradient(circle at 35% 30%, #b8f7c6, #3ecf6a 55%, #0c5e2c)' }} />友方</span>
         <span className="flex items-center gap-1">
           <svg width="12" height="10" viewBox="0 0 12 10"><polygon points="0,9 6,0 12,9 6,7" fill="#c33a2b" /></svg>
@@ -901,7 +1014,7 @@ export function BattleMapIso({ compact = false }: { compact?: boolean }) {
         </span>
         <span className="flex items-center gap-1"><span className="inline-block h-3 w-3 rounded-sm" style={{ background: 'linear-gradient(135deg,#8d949e 40%,#565b63)' }} />掩体</span>
         <span className="text-primary/60">👤玩家操控 · 🤖AI托管</span>
-      </div>
+      </div>}
     </div>
   );
 }

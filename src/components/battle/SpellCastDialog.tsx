@@ -37,13 +37,14 @@ const AOE_SHAPES: Array<{ v: string; label: string }> = [
 ];
 
 export function SpellCastDialog({
-  open, onOpenChange, actor, units, request, onCast,
+  open, onOpenChange, actor, units, request, onCast, portalContainer,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   actor: BattleUnit;
   units: BattleUnit[];
   request: GenericCastRequest;
+  portalContainer?: HTMLElement | null;
   onCast: (synth: AiAbility, castLevel: number, consumeSlot: boolean, targetId: string | null) => void;
 }) {
   const base = request.baseLevel;
@@ -80,11 +81,11 @@ export function SpellCastDialog({
   // 目标候选：治疗选友方（含自己），攻击/豁免选敌方
   const targetOptions = useMemo(() => {
     if (!needTarget) return [];
-    return units.filter(u => u.hp > 0 && !u.deathSaves?.dead && u.id !== actor.id)
-      .filter(u => (kind === 'heal' ? u.attitude === 0 : u.attitude !== 0));
+    return units.filter(u => !u.deathSaves?.dead)
+      .filter(u => kind === 'heal' ? u.attitude === actor.attitude : u.hp > 0 && u.id !== actor.id && u.attitude !== actor.attitude);
   }, [units, actor.id, kind, needTarget]);
 
-  const canSubmit = !(base > 0 && consumeSlot && levelOptions.length === 0) && (!needTarget || targetId !== null);
+  const canSubmit = !(base > 0 && consumeSlot && levelOptions.length === 0);
 
   const submit = () => {
     const synth: AiAbility = {
@@ -107,7 +108,7 @@ export function SpellCastDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-md overflow-y-auto bg-card text-card-foreground">
+      <DialogContent portalContainer={portalContainer} className="dnd-theme max-h-[85vh] max-w-md overflow-y-auto bg-card text-card-foreground">
         <DialogHeader>
           <DialogTitle className="text-violet-300">◐ 通用施法 · {request.name}</DialogTitle>
         </DialogHeader>
@@ -205,7 +206,7 @@ export function SpellCastDialog({
             <input type="number" value={range} onChange={e => setRange(Number(e.target.value) || 0)} className="rounded border border-border/60 bg-background/60 px-2 py-1 font-mono" />
           </label>
 
-          {needTarget && (
+          {false && needTarget && (
             <label className="flex flex-col gap-1">
               <span className="text-muted-foreground">目标{kind === 'heal' ? '（友方/自己）' : '（敌方）'}</span>
               <select value={targetId ?? ''} onChange={e => setTargetId(e.target.value || null)} className="rounded border border-border/60 bg-background/60 px-2 py-1">
@@ -217,7 +218,7 @@ export function SpellCastDialog({
             </label>
           )}
           {kind === 'save-aoe' && (
-            <p className="text-[10px] text-muted-foreground">范围豁免：不选目标时以施法者自身为中心落点（可选目标时以其位置为原点）。</p>
+            <p className="text-[10px] text-muted-foreground">配置完成后，在地图选择落点并预览将波及的单位。</p>
           )}
 
           <label className="flex items-center gap-2">
@@ -237,7 +238,7 @@ export function SpellCastDialog({
           >
             {!canSubmit
               ? (base > 0 && consumeSlot && levelOptions.length === 0 ? '无可用法术位' : '请选择目标')
-              : `施放${castLevel > base ? `（以 ${castLevel} 环）` : ''}`}
+              : `选择目标${castLevel > base ? `（以 ${castLevel} 环）` : ''}`}
           </Button>
         </div>
       </DialogContent>

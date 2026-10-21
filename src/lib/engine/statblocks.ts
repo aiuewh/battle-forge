@@ -466,7 +466,7 @@ export function parseAttack(
   const concentration = o.concentration === true || o['专注'] === true || o['需要专注'] === true;
   const bonusAction = o.bonusAction === true || o['附赠动作'] === true;
   const reaction = o.reaction === true || o['反应'] === true;
-  // F3：充能（"5-6"/"6"/5 → 回合开始 d20≥5 恢复）与每日限次（"每日2次"/2 → 长休恢复）
+  // F3：充能（"5-6"/"6"/5 → 回合开始 d6≥5 恢复）与每日限次（"每日2次"/2 → 长休恢复）
   const rechargeRaw = o.recharge ?? o['充能'];
   const rechargeNum = rechargeRaw !== undefined ? parseInt(String(rechargeRaw).match(/(\d+)/)?.[1] ?? '', 10) : NaN;
   const usesRaw = o.usesPerDay ?? o['每日限次'] ?? o['每日次数'];
@@ -529,6 +529,19 @@ export function parseAttack(
     saveAbility,
     saveDc,
     halfOnSuccess,
+    damageOnSuccess: ['none','half','full'].includes(String(o.damageOnSuccess ?? '')) ? o.damageOnSuccess as AiAbility['damageOnSuccess'] : undefined,
+    excludeSelf: o.excludeSelf === true || o['排除自身'] === true,
+    ignoresCover: o.ignoresCover === true || o['忽略掩护'] === true,
+    requiresSight: o.requiresSight === true || o['需要看见'] === true,
+    durationRounds: o.durationRounds !== undefined || o['持续轮数'] !== undefined ? Math.max(1, Math.floor(toNum(o.durationRounds ?? o['持续轮数'], 1))) : undefined,
+    repeatSave: (() => {
+      const value = o.repeatSave ?? o['重复豁免'];
+      if (!value || typeof value !== 'object') return undefined;
+      const r = value as Record<string, unknown>, raw = String(r.ability ?? r['属性'] ?? '').toLowerCase();
+      const ability = ABILITY_CN[raw];
+      if (!ability) return undefined;
+      return { ability, dc: toNum(r.dc ?? r.DC ?? r['DC'], saveDc ?? 13), timing: r.timing === 'start' || r['时机'] === '回合开始' ? 'start' as const : 'end' as const };
+    })(),
     multiAttack,
     spellLevel,
     upcast,

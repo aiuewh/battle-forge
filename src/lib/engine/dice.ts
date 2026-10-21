@@ -209,15 +209,15 @@ export function applyUpcast(
 
 // ---------- 结果判定 ----------
 
-export function judgeCheck(d20: DiceResult, target: number | null): {
+export function judgeCheck(d20: DiceResult, target: number | null, kind: 'check' | 'attack' = 'check'): {
   outcome: 'critical-success' | 'success' | 'failure' | 'critical-failure';
 } {
   const raw = d20.rawD20 ?? d20.rolls.find(r => r.sides === 20 && r.kept)?.value;
   // 2024 规则：优劣势取保留骰判定——优势 [20,15] 保留 20 即裸20（自动成功/重击），劣势 [20,1] 保留 1 即裸1
   const critSuccess = raw === 20;
   const critFailure = raw === 1;
-  if (critSuccess) return { outcome: 'critical-success' };
-  if (critFailure) return { outcome: 'critical-failure' };
+  if (kind === 'attack' && critSuccess) return { outcome: 'critical-success' };
+  if (kind === 'attack' && critFailure) return { outcome: 'critical-failure' };
   if (target === null) return { outcome: 'success' };
   return { outcome: d20.total >= target ? 'success' : 'failure' };
 }
