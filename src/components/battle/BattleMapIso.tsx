@@ -306,10 +306,24 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
       maxX = Math.min(maxX, minX + 240); maxY = Math.min(maxY, minY + 240);
 
       // ---- 地面 ----
-      for (let cx = minX; cx < maxX; cx++) {
-        for (let cy = minY; cy < maxY; cy++) {
-          const inBounds = cx >= 0 && cy >= 0 && cx < s.mapConfig.width && cy < s.mapConfig.height;
-          drawFloorTile(ctx, proj, cx, cy, inBounds);
+      // 性能：逐格 drawFloorTile 在大地图上是主要开销（30×30 = 900 次/帧）。
+      // 缩小到格子不足 3px 时视觉上已是纯色，跳过细格只画底色块。
+      const cellPx = TILE_W * cam.scale;
+      const detailFloor = cellPx >= 3;
+      if (!detailFloor) {
+        // 粗画：按 2 格步进，边界内外用同色即可（缩小时分辨不出）
+        for (let cx = minX; cx < maxX; cx += 2) {
+          for (let cy = minY; cy < maxY; cy += 2) {
+            const inBounds = cx >= 0 && cy >= 0 && cx < s.mapConfig.width && cy < s.mapConfig.height;
+            drawFloorTile(ctx, proj, cx, cy, inBounds);
+          }
+        }
+      } else {
+        for (let cx = minX; cx < maxX; cx++) {
+          for (let cy = minY; cy < maxY; cy++) {
+            const inBounds = cx >= 0 && cy >= 0 && cx < s.mapConfig.width && cy < s.mapConfig.height;
+            drawFloorTile(ctx, proj, cx, cy, inBounds);
+          }
         }
       }
 
