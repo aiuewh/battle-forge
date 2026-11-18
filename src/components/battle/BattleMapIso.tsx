@@ -545,7 +545,10 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
               }
             } else {
               // 友方/中立：与敌方共用 3D 徽章管线（此前是扁平绿球，与地图其余部分质感割裂）
-              const kind = resolveCreatureKind(u.creatureType, u.name);
+              // 友方兜底为 humanoid（冒险者/剑盾人形），而不是 generic（紫色水晶簇）——
+              // 玩家角色名通常不含族类关键词，直接 resolveCreatureKind 会落到 generic
+              const resolved = resolveCreatureKind(u.creatureType, u.name);
+              const kind = resolved === 'generic' && u.attitude !== 1 ? 'humanoid' : resolved;
               const iconKind = resolveIconKind(kind, u.name);
               const hasBadge = USE_ICON_BADGES && !!(EMBLEM_ASSETS[kind] || iconKind === 'goblin' || iconKind === 'orc');
               if (hasBadge) {
@@ -585,8 +588,10 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
 
             // 名牌卡：名字 + 常显血条 + 状态行（屏幕空间恒定尺寸，低倍率下仍可读）
             // 高度锚点按实际棋子形态：徽章 = 与敌方同高（size 28 * scale），球体 = 球顶
-            const useBadgeTop = isEnemy || (USE_ICON_BADGES && !!(EMBLEM_ASSETS[resolveCreatureKind(u.creatureType, u.name)]
-              || ['goblin', 'orc'].includes(resolveIconKind(resolveCreatureKind(u.creatureType, u.name), u.name))));
+            const nameKindRaw = resolveCreatureKind(u.creatureType, u.name);
+            const nameKind = nameKindRaw === 'generic' && u.attitude !== 1 ? 'humanoid' : nameKindRaw;
+            const useBadgeTop = USE_ICON_BADGES && !!(EMBLEM_ASSETS[nameKind]
+              || ['goblin', 'orc'].includes(resolveIconKind(nameKind, u.name)));
             const tokenTopY = useBadgeTop
               ? groundY - (span * 26 * cam.scale + bob)
               : groundY - (12 + span * 7.5) * cam.scale * 1.85 - bob;

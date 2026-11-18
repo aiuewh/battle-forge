@@ -306,7 +306,7 @@ console.log('\n━━━━━━ S8. 2026-11-18 BUG 修复回归 ━━━━�
   const [sheet] = charSheetsFromTree(tree as never);
   ok('s8i 熟练加值字段生效', sheet?.pb === 5, String(sheet?.pb));
   const assembled = unitFromCharSheet(sheet);
-  const sword = assembled.aiAbilities.find(a => a.name === '长剑');
+  const sword = (assembled.aiAbilities ?? []).find(a => a.name === '长剑');
   ok('s8j 攻击加值覆盖优先于推导', sword?.attackBonus === 12, String(sword?.attackBonus));
   ok('s8k 豁免加值使用声明的熟练加值',
     assembled.saveBonuses?.str === 4 + 5, String(assembled.saveBonuses?.str));
@@ -331,13 +331,13 @@ console.log('\n━━━━━━ S8. 2026-11-18 BUG 修复回归 ━━━━�
   };
   const [s2] = charSheetsFromTree(tree2 as never);
   const u2 = unitFromCharSheet(s2);
-  const spear = u2.aiAbilities.find(a => a.name === '飞矛');
+  const spear = (u2.aiAbilities ?? []).find(a => a.name === '飞矛');
   // 投掷近战武器保持 melee kind（否则贴脸时会失去近战判定），
   // 但 ranged 字段如实标记「可远程使用」，射程取显式值
   ok('s8l 投掷武器保留近战 kind+显式射程',
     spear?.kind === 'melee' && spear?.range === 60,
     JSON.stringify({ kind: spear?.kind, ranged: spear?.ranged, range: spear?.range }));
-  const longsword = u2.aiAbilities.find(a => a.name === '长剑');
+  const longsword = (u2.aiAbilities ?? []).find(a => a.name === '长剑');
   ok('s8m 两用武器抽出第二段骰', longsword?.versatileDice === '1d10', String(longsword?.versatileDice));
 }
 
