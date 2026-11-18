@@ -29,7 +29,7 @@ export function BattleLog({ compact = false }: { compact?: boolean }) {
     <div className="flex h-full flex-col gap-2">
       <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
         <ScrollText className="h-3.5 w-3.5" />战斗日志
-        <span className="rounded-full bg-black/40 px-1.5 text-[10px]">{events.length}</span>
+        <span className="rounded-full bg-black/40 px-1.5 text-[11.5px]">{events.length}</span>
       </div>
       <div ref={logRef} className={cn('log-scroll flex flex-col gap-1 overflow-y-auto pr-1', compact ? 'max-h-40' : 'max-h-64 md:max-h-96')}>
         {events.length === 0 && (
@@ -39,7 +39,7 @@ export function BattleLog({ compact = false }: { compact?: boolean }) {
         )}
         {events.map(e => (
           <div key={e.id} className={cn('flex items-start gap-1.5 rounded-md border px-2 py-1 text-[11.5px] leading-snug', LEVEL_CLS[e.level ?? 'info'])}>
-            <span className="shrink-0 font-mono text-[9px] text-muted-foreground/70">
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground/70">
               R{e.round}
             </span>
             <span className="min-w-0 break-words">{e.text}</span>

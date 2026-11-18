@@ -497,15 +497,17 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
             const bob = 0;
 
             drawCellOverlay(ctx, proj, Math.floor(centerG.x), Math.floor(centerG.y), u.attitude === 2 ? 'rgba(160,55,40,.28)' : 'rgba(45,120,105,.24)', u.attitude === 2 ? '#e0836a' : '#5fd6a8');
-            // 光环：当前行动者（金色聚光呼吸 + 脉冲环）/ 选中（蓝色）
+            // 光环：当前行动者（金色聚光 + 呼吸细环，虚线感由内缩小半径体现）/ 选中（冷白细环）
+            // 两个环用「颜色 + 半径」双重区分：金色大环=当前回合，冷白小环=UI 选中，避免同色叠环打架
             if (s.turn.currentUnitId === u.id && s.battleActive) {
               if (!reduced) animating = true;
               const breathe = reduced ? 0 : Math.sin(t / 300);
               drawSpotlight(ctx, cp.x, groundY, (span * 34 + 10) * cam.scale, 0.17 + 0.07 * breathe);
-              drawRing(ctx, cp.x, groundY, (span * 26 + 6) * cam.scale, `rgba(245,197,66,${0.62 + 0.28 * breathe})`, 0, 3);
+              drawRing(ctx, cp.x, groundY, (span * 28 + 8) * cam.scale, `rgba(245,197,66,${0.62 + 0.28 * breathe})`, 0, 3);
             }
             if (s.selectedId === u.id) {
-              drawRing(ctx, cp.x, groundY, (span * 24 + 4) * cam.scale, STAGE_PALETTE.selectRing, 0, 2);
+              // 选中环内缩 4 尺半径，与当前回合环错开，不与金色主题冲突
+              drawRing(ctx, cp.x, groundY, (span * 20 + 2) * cam.scale, STAGE_PALETTE.selectRing, 0, 2);
             }
 
             const alpha = isDead ? 0.22 : isDown ? 0.75 : 1;
@@ -542,22 +544,39 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
                 });
               }
             } else {
-              const r = (12 + span * 7.5) * cam.scale;
-              drawShadow(ctx, cp.x, groundY, r * 0.95, isDead ? 0.15 : 0.32);
-              // 玩家金环
-              if (u.isPlayer && !isDead) {
-                drawRing(ctx, cp.x, groundY, r * 1.15, 'rgba(245,197,66,0.95)', 0, 2.5);
-              }
-              drawSphere(ctx, {
-                x: cp.x + ox,
-                y: groundY - r * 0.85 - bob + oy,
-                radius: r,
-                colors: u.attitude === 1 ? NEUTRAL_COLORS : ALLY_COLORS,
-                alpha, squash,
-              });
-              if (!isDown) drawLabel(ctx, cp.x + ox, groundY - r * 0.85 + oy, u.name.slice(0,1), '#e5fff4', cam.scale, 13);
-              if (isDown) {
-                drawLabel(ctx, cp.x, groundY - r * 0.5, u.knockedOut ? '昏迷' : '✚', '#ff6b6b', cam.scale, 14);
+              // 友方/中立：与敌方共用 3D 徽章管线（此前是扁平绿球，与地图其余部分质感割裂）
+              const kind = resolveCreatureKind(u.creatureType, u.name);
+              const iconKind = resolveIconKind(kind, u.name);
+              const hasBadge = USE_ICON_BADGES && !!(EMBLEM_ASSETS[kind] || iconKind === 'goblin' || iconKind === 'orc');
+              if (hasBadge) {
+                const swingPhase = (strHash(u.id) % 100) / 100 * Math.PI;
+                getIconStage().drawIcon(ctx, {
+                  x: cp.x + ox, groundY: groundY + oy,
+                  size: 28 * cam.scale,
+                  kind: iconKind,
+                  spin: Math.sin(swingPhase) * 0.18,
+                  lift: bob, alpha, squash, dead: isDead,
+                  // 玩家金 / 中立黄 / 队友绿（与先攻条 turn-side 同源）
+                  ringColor: u.isPlayer ? 0xf5c542 : u.attitude === 1 ? 0xe3ba55 : 0x3ecf6a,
+                });
+              } else {
+                const r = (12 + span * 7.5) * cam.scale;
+                drawShadow(ctx, cp.x, groundY, r * 0.95, isDead ? 0.15 : 0.32);
+                // 玩家金环
+                if (u.isPlayer && !isDead) {
+                  drawRing(ctx, cp.x, groundY, r * 1.15, 'rgba(245,197,66,0.95)', 0, 2.5);
+                }
+                drawSphere(ctx, {
+                  x: cp.x + ox,
+                  y: groundY - r * 0.85 - bob + oy,
+                  radius: r,
+                  colors: u.attitude === 1 ? NEUTRAL_COLORS : ALLY_COLORS,
+                  alpha, squash,
+                });
+                if (!isDown) drawLabel(ctx, cp.x + ox, groundY - r * 0.85 + oy, u.name.slice(0,1), '#e5fff4', cam.scale, 13);
+                if (isDown) {
+                  drawLabel(ctx, cp.x, groundY - r * 0.5, u.knockedOut ? '昏迷' : '✚', '#ff6b6b', cam.scale, 14);
+                }
               }
             }
 
@@ -565,7 +584,10 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
             if (isDead) { drawLabel(ctx, cp.x, groundY - 14, '† 阵亡', '#a8a6a0', cam.scale, 11); return; }
 
             // 名牌卡：名字 + 常显血条 + 状态行（屏幕空间恒定尺寸，低倍率下仍可读）
-            const tokenTopY = isEnemy
+            // 高度锚点按实际棋子形态：徽章 = 与敌方同高（size 28 * scale），球体 = 球顶
+            const useBadgeTop = isEnemy || (USE_ICON_BADGES && !!(EMBLEM_ASSETS[resolveCreatureKind(u.creatureType, u.name)]
+              || ['goblin', 'orc'].includes(resolveIconKind(resolveCreatureKind(u.creatureType, u.name), u.name))));
+            const tokenTopY = useBadgeTop
               ? groundY - (span * 26 * cam.scale + bob)
               : groundY - (12 + span * 7.5) * cam.scale * 1.85 - bob;
             const controlTag = u.attitude === 0 && !u.isPlayer ? (u.playerControlled ? ' 👤' : ' 🤖') : '';

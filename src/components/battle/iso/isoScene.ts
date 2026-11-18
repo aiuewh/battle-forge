@@ -39,7 +39,8 @@ export const STAGE_PALETTE = {
   pathValid: 'rgba(240,205,150,0.95)',
   pathInvalid: 'rgba(255,110,110,0.9)',
   pathBadgeBg: 'rgba(70,55,22,0.92)',
-  selectRing: 'rgba(110,180,250,0.95)',
+  // 选中环：暖白（与金色主题同族）——原先的冷蓝 #6eb4fa 与全局金色冲突
+  selectRing: 'rgba(255,246,224,0.92)',
   hpHigh: '#4f9d43',
   hpMid: '#d3a13c',
   hpLow: '#d5453c',
@@ -47,7 +48,7 @@ export const STAGE_PALETTE = {
   plateBg: 'rgba(14,11,8,0.84)',
   plateBorder: 'rgba(229,189,125,0.32)',
   plateBorderCurrent: 'rgba(229,189,125,0.9)',
-  plateBorderSelected: 'rgba(110,180,250,0.8)',
+  plateBorderSelected: 'rgba(255,246,224,0.82)',
 } as const;
 
 /** HP 比例 → 色梯（画布名牌与 DOM 血条共用） */

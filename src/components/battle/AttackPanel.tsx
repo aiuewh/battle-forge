@@ -125,7 +125,7 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
       {/* 攻击者/目标 */}
       <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-1.5">
         <label className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">攻击者</span>
+          <span className="text-[11.5px] text-muted-foreground">攻击者</span>
           <Select value={attackerId} onValueChange={setAttackerId}>
             <SelectTrigger className="h-9 w-full border-border/50 bg-black/30 text-xs">
               <SelectValue placeholder="选择" className="truncate" />
@@ -141,7 +141,7 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
         </label>
         <Swords className="mb-2 h-4 w-4 text-primary" />
         <label className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">目标</span>
+          <span className="text-[11.5px] text-muted-foreground">目标</span>
           <Select value={targetId} onValueChange={setTargetId}>
             <SelectTrigger className="h-9 w-full border-border/50 bg-black/30 text-xs">
               <SelectValue placeholder="选择" className="truncate" />
@@ -160,24 +160,24 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
       {/* 攻击参数 */}
       <div className="grid grid-cols-2 gap-1.5">
         <label className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">攻击加值</span>
+          <span className="text-[11.5px] text-muted-foreground">攻击加值</span>
           <Input className="h-8 border-border/50 bg-black/30 text-center text-sm" type="number"
             value={attackBonus} onChange={e => setAttackBonus(parseInt(e.target.value, 10) || 0)} />
         </label>
         <label className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">伤害公式</span>
+          <span className="text-[11.5px] text-muted-foreground">伤害公式</span>
           <Input className="h-8 border-border/50 bg-black/30 text-center font-mono text-sm"
             value={damageFormula} onChange={e => setDamageFormula(e.target.value)} />
         </label>
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         <label className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">附加伤害骰（重击不翻倍）</span>
+          <span className="text-[11.5px] text-muted-foreground">附加伤害骰（重击不翻倍）</span>
           <Input className="h-8 border-border/50 bg-black/30 text-center font-mono text-sm" placeholder="如 2d6 神能"
             value={rider} onChange={e => setRider(e.target.value)} />
         </label>
         <label className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">伤害类型</span>
+          <span className="text-[11.5px] text-muted-foreground">伤害类型</span>
           <Select value={damageType} onValueChange={v => setDamageType(v as DamageType)}>
             <SelectTrigger className="h-8 border-border/50 bg-black/30 text-xs">
               <SelectValue />
@@ -210,7 +210,7 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
           <span className="text-muted-foreground">距离 {autoInfo.dist} 尺{autoInfo.melee ? '（近战范围）' : ''}</span>
           <button
             type="button"
-            className="rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-primary"
+            className="rounded border border-border/50 px-1.5 py-0.5 text-[11.5px] text-muted-foreground hover:text-primary"
             title="切换远程/近战判定：远程会应用「5 尺内有敌对生物 ⇒ 劣势」等 2024 规则"
             onClick={() => setIsRangedOverride(!(autoInfo.isRanged))}
           >
@@ -259,7 +259,7 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
 
       {/* 目标抗性提示 */}
       {target && (target.resistances.length > 0 || target.immunities.length > 0 || target.vulnerabilities.length > 0) && (
-        <div className="flex flex-wrap gap-1 text-[10px]">
+        <div className="flex flex-wrap gap-1 text-[11.5px]">
           {target.immunities.map(t => (
             <span key={t} className="status-chip border-red-400/40 text-red-300" title="免疫">免疫 {DAMAGE_TYPE_META[t].name}</span>
           ))}

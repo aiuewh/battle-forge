@@ -8,6 +8,10 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /* 中文字体栈：Noto Sans SC（正文，next/font 注入） > 系统黑体回退 */
+  --font-sans-cjk: var(--font-sans-sc), var(--font-geist-sans), "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* 衬线标题栈：Noto Serif SC（next/font 注入） > 系统衬线回退 */
+  --font-serif-cjk: var(--font-serif-sc), "Songti SC", "SimSun", Georgia, serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -118,6 +122,8 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* 全局中文正文：Geist 无 CJK 字形，显式接中文字体栈避免平台回退不一致 */
+    font-family: var(--font-sans-cjk);
   }
 }
 
@@ -156,10 +162,11 @@
   font-feature-settings: "tnum" 1;
 }
 
-/* 金色标题字 */
+/* 金色标题字（衬线：Noto Serif SC 由 layout.tsx 注入，末段为系统回退） */
 .font-display {
-  font-family: "Noto Serif SC", "Palatino Linotype", "Garamond", Georgia, serif;
+  font-family: var(--font-serif-cjk);
   letter-spacing: 0.04em;
+  font-weight: 700;
 }
 
 .gold-text {
@@ -311,7 +318,7 @@
   border-radius: 12px;
   background: #16110c;
   color: var(--hud-ink);
-  font: 14px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font: 14px/1.45 var(--font-sans-cjk);
 }
 .battle-workspace-embedded { height: 650px; }
 .stage-turn-preview { position: absolute; z-index: 20; top: 68px; left: 65px; right: 12px; display: flex; gap: 4px; overflow: hidden; }
@@ -351,8 +358,8 @@
 .battle-workspace:fullscreen { width: 100vw; height: 100dvh; border-radius: 0; }
 .battle-map-fill { position: absolute !important; inset: 0; width: 100%; height: 100%; border: 0; border-radius: inherit; }
 .battle-workspace :where(button:not([data-slot="switch"])), .hud-menu button, .hud-dialog-button {
-  min-height: 40px; border: 1px solid var(--hud-border, #43546a); border-radius: 7px;
-  background: var(--hud-surface, #18222f); color: var(--hud-ink, #edf2f8); padding: 7px 10px;
+  min-height: 40px; border: 1px solid var(--hud-border, #565b50); border-radius: 7px;
+  background: var(--hud-surface, #242522); color: var(--hud-ink, #f2f0e8); padding: 7px 10px;
   font-size: 13px; line-height: 1.4; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
 .battle-workspace button:not([data-slot="switch"]):hover:not(:disabled), .hud-menu button:hover:not(:disabled) { background: var(--hud-raised); border-color: #8a8d7f; }
@@ -409,22 +416,22 @@
 .hud-moving { display: flex; align-items: center; gap: 10px; }
 .hud-moving span { flex: 1; }
 .hud-wait { color: var(--hud-muted); display: flex; align-items: center; gap: 10px; }
-.hud-reaction, .hud-error { position: absolute; bottom: calc(100% + 10px); right: 0; width: min(450px, 100%); padding: 12px; border: 1px solid #6ea89b; border-radius: 9px; background: var(--hud-surface); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.hud-reaction, .hud-error { position: absolute; bottom: calc(100% + 10px); right: 0; width: min(450px, 100%); padding: 12px; border: 1px solid #7fb3a4; border-radius: 9px; background: var(--hud-surface); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .hud-reaction > span { font-size: 12px; color: var(--hud-muted); }
 .hud-reaction > div { display: flex; gap: 8px; width: 100%; }
 .hud-error { border-color: #be8275; color: #ffd1c4; justify-content: space-between; }
 .hud-error > span { flex: 1; }
 .hud-ready-button { min-height: 28px !important; font-size: 12px !important; padding: 3px 6px !important; }
-.hud-menu { z-index: 60; width: min(350px, var(--radix-popover-content-available-width)); max-height: min(330px, calc(100dvh - 150px), var(--radix-popover-content-available-height)); overflow-y: auto; overscroll-behavior: contain; background: rgba(36,37,34,.96); border: 1px solid #66705c; border-radius: 10px; padding: 12px; color: var(--hud-ink); box-shadow: 0 12px 35px #0008; font: 14px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+.hud-menu { z-index: 60; width: min(350px, var(--radix-popover-content-available-width)); max-height: min(330px, calc(100dvh - 150px), var(--radix-popover-content-available-height)); overflow-y: auto; overscroll-behavior: contain; background: rgba(36,37,34,.96); border: 1px solid #6b6154; border-radius: 10px; padding: 12px; color: var(--hud-ink); box-shadow: 0 12px 35px #0008; font: 14px/1.5 var(--font-sans-cjk); }
 .hud-menu-arrow { fill: #242522; }
 .hud-menu-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .hud-menu-heading button { width: 30px; min-height: 30px; padding: 0; border: 0; }
 .hud-menu-list { display: flex; flex-direction: column; gap: 4px; }
 .hud-menu button.hud-list-item { display: flex; flex-direction: column; align-items: flex-start; text-align: left; width: 100%; border-color: transparent; padding: 10px; gap: 3px; }
-.hud-list-item small { color: #b3bfd0; font-size: 12px; }
+.hud-list-item small { color: #b8ad99; font-size: 12px; }
 .hud-list-item > span { display: flex; flex-wrap: wrap; gap: 5px; }
 .hud-tag { font-size: 11px; color: #d9bc8e; }
-.hud-spell-levels { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 10px; margin-bottom: 6px; border-bottom: 1px solid #43546a; }
+.hud-spell-levels { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 10px; margin-bottom: 6px; border-bottom: 1px solid rgba(216,178,122,.22); }
 .hud-spell-levels button { flex-direction: column; gap: 0; min-width: 50px; }
 .hud-spell-levels button[aria-selected="true"] { border-color: #e5bd7d; color: #e5bd7d; background: #3b3023; }
 .hud-spell-levels small { font-size: 11px; }
@@ -432,8 +439,8 @@
 .hud-setting select { background: #343630; color: var(--hud-ink); border: 1px solid #565b50; padding: 6px; border-radius: 6px; }
 .hud-map-tool-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-bottom: 8px; }
 .hud-map-tool-list button[aria-pressed="true"] { border-color: #e5bd7d; color: #e5bd7d; }
-.hud-report { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 10px 0; border-top: 1px solid #43546a; border-bottom: 1px solid #43546a; }
-.hud-report small { color: #b3bfd0; width: 100%; }
+.hud-report { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 10px 0; border-top: 1px solid rgba(216,178,122,.22); border-bottom: 1px solid rgba(216,178,122,.22); }
+.hud-report small { color: #b8ad99; width: 100%; }
 .hud-danger { color: #f3a89a !important; }
 .hud-form-input { display: block; width: 100%; border: 1px solid #565b50; background: #2a2a26; color: var(--hud-ink); padding: 10px; margin-top: 6px; border-radius: 6px; font-size: 16px; }
 .battle-dialog { width: min(94vw, 780px); max-width: 780px; max-height: 88vh; overflow-y: auto; grid-template-columns: minmax(0, 1fr); background: rgba(36,37,34,.97); color: var(--hud-ink); }

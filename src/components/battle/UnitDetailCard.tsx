@@ -113,7 +113,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
                 <span
                   key={a.id}
                   title={a.note ?? a.name}
-                  className="flex items-center gap-1 rounded-md border border-border/40 bg-black/30 px-1.5 py-0.5 text-[10px] text-foreground/85"
+                  className="flex items-center gap-1 rounded-md border border-border/40 bg-black/30 px-1.5 py-0.5 text-[11.5px] text-foreground/85"
                 >
                   {icon}{a.name}
                   <span className="text-muted-foreground">{desc}</span>
@@ -135,7 +135,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
           </div>
           <span className="text-sm font-bold tabular-nums">
             {unit.hp}<span className="text-muted-foreground">/{unit.maxHp}</span>
-            {unit.tempHp > 0 && <span className="text-cyan-300"> +{unit.tempHp}</span>}
+            {unit.tempHp > 0 && <span className="text-[#8fdfc8]"> +{unit.tempHp}</span>}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -215,7 +215,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
           ['速度', 'speed', unit.speed],
         ] as const).map(([label, key, val]) => (
           <label key={key} className="flex flex-col gap-0.5">
-            <span className="text-[10px] text-muted-foreground">{label}</span>
+            <span className="text-[11.5px] text-muted-foreground">{label}</span>
             <Input className="h-8 border-border/50 bg-black/30 text-center text-sm" type="number" value={val}
               onChange={e => store.updateUnit(unit.id, { [key]: parseInt(e.target.value, 10) || 0 } as never)} />
           </label>
@@ -228,7 +228,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
           <span className="text-sky-300">临时 AC +{unit.tempAcBonus}（至其下回合开始）</span>
           <button
             type="button"
-            className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-primary"
+            className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[11.5px] text-muted-foreground hover:text-primary"
             onClick={() => store.updateUnit(unit.id, { tempAcBonus: 0 })}
           >
             清除
@@ -242,13 +242,13 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
         <div className="grid grid-cols-6 gap-1">
           {(Object.keys(ABILITY_META) as AbilityKey[]).map(k => (
             <label key={k} className="flex flex-col items-center gap-0.5" title={`${ABILITY_META[k].name} 调整值 ${formatMod(abilityMod(unit.abilities?.[k] ?? 10))}`}>
-              <span className="text-[9px] text-muted-foreground">{ABILITY_META[k].short}</span>
+              <span className="text-[11px] text-muted-foreground">{ABILITY_META[k].short}</span>
               <Input className="h-7 w-full border-border/50 bg-black/30 px-0.5 text-center text-xs" type="number"
                 value={unit.abilities?.[k] ?? 10}
                 onChange={e => store.updateUnit(unit.id, {
                   abilities: { ...unit.abilities, [k]: parseInt(e.target.value, 10) || 10 } as never,
                 })} />
-              <span className="text-[9px] font-bold text-primary">{formatMod(abilityMod(unit.abilities?.[k] ?? 10))}</span>
+              <span className="text-[11px] font-bold text-primary">{formatMod(abilityMod(unit.abilities?.[k] ?? 10))}</span>
             </label>
           ))}
         </div>
@@ -316,7 +316,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
             ['易伤×2', 'vulnerabilities'],
           ] as const).map(([label, key]) => (
             <div key={key} className="rounded-lg border border-border/40 bg-black/25 p-1.5">
-              <div className="mb-1 text-[10px] text-muted-foreground">{label}</div>
+              <div className="mb-1 text-[11.5px] text-muted-foreground">{label}</div>
               <div className="flex flex-wrap gap-0.5">
                 {(Object.keys(DAMAGE_TYPE_META) as DamageType[]).map(dt => {
                   const list = unit[key];
@@ -394,13 +394,13 @@ function SpellSlotEditor({ unitId }: { unitId: string }) {
         <span className="text-[11px] font-semibold text-muted-foreground">法术位</span>
         {!slots && (
           <div className="flex gap-1">
-            <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => initSlots([1, 2, 3])}>满施法者 1-3环</Button>
-            <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => initSlots([1, 2, 3, 4, 5, 6, 7, 8, 9])}>1-9环</Button>
+            <Button size="sm" variant="ghost" className="h-6 text-[11.5px]" onClick={() => initSlots([1, 2, 3])}>满施法者 1-3环</Button>
+            <Button size="sm" variant="ghost" className="h-6 text-[11.5px]" onClick={() => initSlots([1, 2, 3, 4, 5, 6, 7, 8, 9])}>1-9环</Button>
           </div>
         )}
         {slots && (
           <div className="flex gap-1">
-            <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => store.restoreSpellSlots(unitId, true)}>长休恢复</Button>
+            <Button size="sm" variant="ghost" className="h-6 text-[11.5px]" onClick={() => store.restoreSpellSlots(unitId, true)}>长休恢复</Button>
           </div>
         )}
       </div>
@@ -410,7 +410,7 @@ function SpellSlotEditor({ unitId }: { unitId: string }) {
             const lv = Number(lvStr);
             return (
               <div key={lv} className="flex items-center gap-1 rounded-lg border border-border/40 bg-black/25 px-1.5 py-1">
-                <span className="text-[10px] text-muted-foreground">{lv}环</span>
+                <span className="text-[11.5px] text-muted-foreground">{lv}环</span>
                 <div className="flex gap-0.5">
                   {Array.from({ length: s.max }).map((_, i) => (
                     <button
@@ -421,13 +421,17 @@ function SpellSlotEditor({ unitId }: { unitId: string }) {
                           spellSlots: { ...slots, [lv]: { ...s, current: Math.min(s.max, i + 1) } },
                         });
                       }}
-                      title={i < s.current ? `消耗 ${lv} 环` : `恢复 ${lv} 环`}
+                      title={i < s.current ? `消耗 ${lv} 环（剩 ${s.current}）` : `恢复 ${lv} 环`}
                       className={cn('h-3 w-3 rounded-full border transition-colors',
-                        i < s.current ? 'border-cyan-300 bg-cyan-400 shadow-[0_0_6px_rgba(110,200,240,0.7)]' : 'border-border bg-transparent')}
+                        i < s.current
+                          ? 'border-[#8fdfc8] bg-[#7fd6c0] shadow-[0_0_6px_rgba(127,214,192,0.65)]'
+                          : 'border-border bg-transparent')}
                     />
                   ))}
                 </div>
-                <span className="text-[10px] tabular-nums text-muted-foreground">{s.current}/{s.max}</span>
+                <span className="text-[11.5px] tabular-nums text-muted-foreground" title={`剩余 ${s.current} / 上限 ${s.max}`}>
+                  <b className="font-semibold text-foreground/80">{s.current}</b>/{s.max}
+                </span>
               </div>
             );
           })}

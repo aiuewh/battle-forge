@@ -30,6 +30,8 @@ export interface IconDrawOpts {
   squash?: number;
   /** 死亡灰化 */
   dead?: boolean;
+  /** 阵营环颜色（0xRRGGBB）：友方绿/中立黄/玩家金/敌方红；缺省保持敌红 */
+  ringColor?: number;
 }
 
 /** 族类 → 徽章金属主色（detail 纹色直接用 asset 自带原色） */
@@ -167,6 +169,8 @@ function buildIconGroup(asset: EmblemAsset, faceColor: number, toon = false): TH
 
 interface IconMeshes {
   group: THREE.Group;
+  /** 阵营环材质：友方绿 / 中立黄 / 玩家金 / 敌方红（按单位逐次染色，实例共享） */
+  ringMat?: THREE.MeshStandardMaterial;
 }
 
 const BASE_BOTTOM = -1.15; // 底座底面世界 y（buildMeshes 里底座的位置决定，锚定用）
@@ -247,20 +251,18 @@ class IconStage {
         cone.rotation.y = Math.PI / 4;
         group.add(cone);
       }
-      // 底座圆台 + 敌方阵营环
+      // 底座圆台 + 阵营环（环色由 drawIcon 按单位态度逐次染色）
       const stone = new THREE.Mesh(
         new THREE.CylinderGeometry(0.92, 1.06, 0.2, 24),
         new THREE.MeshStandardMaterial({ color: 0x3b3630, roughness: 0.9, metalness: 0.04 }),
       );
       stone.position.y = -1.05;
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(0.84, 0.05, 8, 36),
-        new THREE.MeshStandardMaterial({ color: 0xc4392b, metalness: 0.5, roughness: 0.32, emissive: 0xc4392b, emissiveIntensity: 0.22 }),
-      );
+      const ringMat = new THREE.MeshStandardMaterial({ color: 0xc4392b, metalness: 0.5, roughness: 0.32, emissive: 0xc4392b, emissiveIntensity: 0.22 });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.84, 0.05, 8, 36), ringMat);
       ring.position.y = -0.94;
       ring.rotation.x = Math.PI / 2;
       group.add(stone, ring);
-      m = { group };
+      m = { group, ringMat };
       this.cache.set(kind, m);
     }
     return m;
@@ -272,7 +274,12 @@ class IconStage {
     const dpr = Math.min(2, window.devicePixelRatio || 1) * 1.6;
     const px = Math.ceil(size * dpr);
 
-    const { group } = this.getMeshes(o.kind);
+    const { group, ringMat } = this.getMeshes(o.kind);
+    // 阵营环染色（材质为各族实例共享，逐次改色即可）
+    if (ringMat && o.ringColor !== undefined) {
+      ringMat.color.setHex(o.ringColor);
+      ringMat.emissive.setHex(o.ringColor);
+    }
     group.rotation.y = o.spin ?? 0;
     const liftWorld = (o.lift ?? 0) > 0 ? (o.lift ?? 0) / size * 2.2 : 0;
     group.position.y = liftWorld;

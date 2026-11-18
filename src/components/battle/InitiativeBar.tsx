@@ -103,7 +103,7 @@ export function InitiativeBar({ compact = false, showControls = true }: { compac
                   <span className="truncate text-sm font-medium" style={{ color: meta.color }}>{u.name}</span>
                   {isDown && <Skull className="h-3 w-3 text-red-400" />}
                   {u.concentration && (
-                    <span className="status-chip border-cyan-400/40 text-cyan-300" title={`专注：${u.concentration}`}>🎯</span>
+                    <span className="status-chip border-[#7fd6c0]/40 text-[#8fdfc8]" title={`专注：${u.concentration}`}>🎯</span>
                   )}
                   {u.legendary && u.legendary.points > 0 && (
                     <span className="status-chip border-purple-400/40 text-purple-300" title={`传奇动作 ${u.legendary.points} 点`}>
@@ -128,7 +128,7 @@ export function InitiativeBar({ compact = false, showControls = true }: { compac
                   </div>
                   <span className="w-16 text-right text-[11px] tabular-nums text-muted-foreground">
                     {u.hp}/{u.maxHp}
-                    {u.tempHp > 0 && <span className="text-cyan-300">+{u.tempHp}</span>}
+                    {u.tempHp > 0 && <span className="text-[#8fdfc8]">+{u.tempHp}</span>}
                   </span>
                 </div>
               </div>
@@ -152,7 +152,7 @@ export function InitiativeBar({ compact = false, showControls = true }: { compac
                   );
                 })}
                 {u.statuses.length > (compact ? 3 : 5) && (
-                  <span className="text-[9px] text-muted-foreground">+{u.statuses.length - (compact ? 3 : 5)}</span>
+                  <span className="text-[11px] text-muted-foreground">+{u.statuses.length - (compact ? 3 : 5)}</span>
                 )}
               </div>
               {/* 队友操控快捷开关 */}
