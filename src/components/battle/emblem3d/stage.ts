@@ -50,8 +50,19 @@ const ICON_FACE: Record<string, number> = {
   orc: 0x55a065,
 };
 
-/** 卡通材质族类（低金属度高饱和，贴参考图的平面卡通风；其余走金属徽章风） */
-const TOON_ICONS = new Set<string>(['orc']);
+/**
+ * 卡通（非金属）材质族类：有机生物用平涂卡通风，金属徽章风只留给无机/亡灵/构装体。
+ * 判据：金属度 0.82 + 环境贴图在正视角度会把浅色脸冲成白色（哥布林绿脸发白即此因），
+ * 且有机生物本不该有金属反光。
+ */
+const TOON_ICONS = new Set<string>([
+  'orc',       // 兽人（獠牙怪兽脸）
+  'goblin',    // 哥布林/地精/狗头人
+  'beast',     // 野兽
+  'wyvern',    // 飞龙（活体）
+  'fey',       // 精怪
+  'dragon',    // 龙类（活体鳞甲，非铁器）
+]);
 
 /** 野怪（哥布林/地精等）名称二级映射：humanoid 且名字命中 → 哥布林专属徽章 */
 const GOBLIN_NAME = /哥布林|地精|狗头人|小鬼|goblin|hobgoblin|kobold|\bimp\b/i;
@@ -104,11 +115,18 @@ function normalizeIcon(geo: THREE.BufferGeometry, depthVb: number): THREE.Buffer
   return geo;
 }
 
-/** 一份资产 → 徽章 Group（主轮廓厚挤出 + accent 副色挤出 + detail 纹色薄片叠正面） */
+/** 一份资产 → 徽章 Group（主轮廓厚挤出 + accent 副色挤出 + detail 纹色薄片叠正面）
+ *
+ *  精细度参数（2026-11-19 重做）：
+ *  - curveSegments 10 → 32：SVG 里的 C/A 曲线此前被折线化，小尺寸下五官糊成一团
+ *  - detail 层改为「贴在正面」而非「半嵌」：嵌入式会把细节埋进主体斜面
+ *  - detail 有自己的微小斜角，避免纯平面如贴纸
+ */
 function buildIconGroup(asset: EmblemAsset, faceColor: number, toon = false): THREE.Group {
   const group = new THREE.Group();
   const DEPTH = 460;      // 主轮廓挤出厚（viewBox 尺度 → 世界 ~0.9），侧面不至窄成纸片
   const DETAIL_DEPTH = 60;
+  const CURVE = 32;       // 曲线细分：决定圆形/弧线的圆滑度
   // 金属徽章：高金属度+环境反射；卡通徽章（兽人等贴参考图风）：近无金属高饱和
   const baseMat = toon
     ? { metalness: 0.06, roughness: 0.5 }
@@ -122,8 +140,8 @@ function buildIconGroup(asset: EmblemAsset, faceColor: number, toon = false): TH
     bevelEnabled: true,
     bevelThickness: 42,
     bevelSize: 34,
-    bevelSegments: 3,
-    curveSegments: 10,
+    bevelSegments: 4,
+    curveSegments: CURVE,
   }), DEPTH);
   group.add(new THREE.Mesh(baseGeo, new THREE.MeshStandardMaterial({
     color: tint(faceColor), ...baseMat, side: THREE.DoubleSide,
@@ -138,8 +156,8 @@ function buildIconGroup(asset: EmblemAsset, faceColor: number, toon = false): TH
       bevelEnabled: true,
       bevelThickness: 42,
       bevelSize: 34,
-      bevelSegments: 3,
-      curveSegments: 10,
+      bevelSegments: 4,
+      curveSegments: CURVE,
     }), DEPTH);
     accGeo.translate(0, 0, DETAIL_DEPTH * S);
     const accHex = parseInt(asset.accent.color.replace('#', ''), 16) || 0xf0a832;
@@ -148,19 +166,26 @@ function buildIconGroup(asset: EmblemAsset, faceColor: number, toon = false): TH
     })));
   }
 
-  // detail 纹色薄片：与主轮廓同一归一化变换（自然对齐），一半嵌入一半凸出；用素材原色
+  // detail 纹色层：贴在主轮廓正面的平面贴片（无斜角）。
+  // 斜角版本在正视角度会让每层边缘高光正对镜头，14 层叠加后整张脸过曝发白——
+  // 平面贴片既无此问题，也更接近 SVG 原稿的平涂观感。
   if (asset.detail?.length) {
-    asset.detail.forEach(it => {
+    const LAYER_GAP = 0.004;                     // 每层前移（世界单位，徽章高约 2.0）
+    const frontZ = DEPTH * S / 2 + DETAIL_DEPTH * S / 2; // 首层贴合 base 正面
+    asset.detail.forEach((it, idx) => {
       const dGeo = normalizeIcon(new THREE.ExtrudeGeometry(dToShapes(it.d), {
-        depth: DETAIL_DEPTH, bevelEnabled: false, curveSegments: 10,
+        depth: DETAIL_DEPTH,
+        bevelEnabled: false,
+        curveSegments: CURVE,
       }), DETAIL_DEPTH);
-      // detail 中心 = base 正面 + detail 半厚：薄片一半悬浮一半嵌进正面
-      dGeo.translate(0, 0, DEPTH * S / 2 + DETAIL_DEPTH * S / 2);
+      dGeo.translate(0, 0, frontZ + LAYER_GAP * idx);
       const fillHex = parseInt(String(it.fill).replace('#', ''), 16) || 0xf44444;
       const m = new THREE.Mesh(dGeo, new THREE.MeshStandardMaterial({
-        color: tint(fillHex), metalness: toon ? 0.05 : 0.4, roughness: 0.5, side: THREE.DoubleSide,
+        color: tint(fillHex), metalness: toon ? 0.05 : 0.28, roughness: 0.62, side: THREE.DoubleSide,
+        // 同深度共面时按索引决胜，杜绝闪烁
+        polygonOffset: true, polygonOffsetFactor: -idx - 1, polygonOffsetUnits: -1,
       }));
-      m.renderOrder = 1;
+      m.renderOrder = 1 + idx;
       group.add(m);
     });
   }
@@ -252,12 +277,20 @@ class IconStage {
         group.add(cone);
       }
       // 底座圆台 + 阵营环（环色由 drawIcon 按单位态度逐次染色）
+      // 注意：卡通徽章渲染时会临时摘掉 scene.environment，底座若依赖 IBL 会整个消失。
+      // 用高自发光近似底色（emissive 不依赖环境光），保证底座在两种渲染模式下都在。
       const stone = new THREE.Mesh(
         new THREE.CylinderGeometry(0.92, 1.06, 0.2, 24),
-        new THREE.MeshStandardMaterial({ color: 0x3b3630, roughness: 0.9, metalness: 0.04 }),
+        new THREE.MeshStandardMaterial({
+          color: 0x3b3630, roughness: 0.9, metalness: 0.04,
+          emissive: 0x4a4238, emissiveIntensity: 1.0,
+        }),
       );
       stone.position.y = -1.05;
-      const ringMat = new THREE.MeshStandardMaterial({ color: 0xc4392b, metalness: 0.5, roughness: 0.32, emissive: 0xc4392b, emissiveIntensity: 0.22 });
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: 0xc4392b, metalness: 0.5, roughness: 0.32,
+        emissive: 0xc4392b, emissiveIntensity: 0.8,
+      });
       const ring = new THREE.Mesh(new THREE.TorusGeometry(0.84, 0.05, 8, 36), ringMat);
       ring.position.y = -0.94;
       ring.rotation.x = Math.PI / 2;
@@ -271,7 +304,9 @@ class IconStage {
   /** 渲染一枚徽章/红锥并拷贝到 2D 画布（在地图 rAF 循环内同步调用） */
   drawIcon(ctx: CanvasRenderingContext2D, o: IconDrawOpts): void {
     const size = Math.max(8, o.size);
-    const dpr = Math.min(2, window.devicePixelRatio || 1) * 1.6;
+    // 出图分辨率：徽章在地图上只有 ~28px，细节全靠这里超采样后缩小。
+    // 2.6×（原 1.6×）让五官/獠牙在缩放后仍有可辨轮廓；上限 2.6 避免高分屏上过度开销
+    const dpr = Math.min(2.6, (window.devicePixelRatio || 1) * 1.3);
     const px = Math.ceil(size * dpr);
 
     const { group, ringMat } = this.getMeshes(o.kind);
@@ -289,7 +324,10 @@ class IconStage {
     this.scene.add(group);
     // 锚定点 = 底座底面中心（悬浮时随组整体抬升）——与地面贴合处
     let footRatio = 0.92;
-    // 卡通徽章：降灯光 + 摘环境 IBL（RoomEnvironment 不受灯强控制，是材质色被冲淡的主因）
+    // 卡通徽章：降灯光 + 摘环境 IBL。
+    // 实测：IBL 是浅色材质被冲白的主因，envMapIntensity=0 不足以抵消（RoomEnvironment
+    // 走的是另一条着色路径），必须摘 scene.environment。
+    // 底座/阵营环因此失去反射 → 它们的材质改用高 emissive 自发光补偿（见 getMeshes）。
     const toon = TOON_ICONS.has(o.kind);
     const restoreLights = this.setLightLevel(toon ? 'toon' : 'metal');
     const prevEnv = this.scene.environment;

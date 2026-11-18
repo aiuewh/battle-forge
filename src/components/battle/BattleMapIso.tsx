@@ -527,7 +527,7 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
                 const swingPhase = (strHash(u.id) % 100) / 100 * Math.PI;
                 getIconStage().drawIcon(ctx, {
                   x: cp.x + ox, groundY: groundY + oy,
-                  size: 28 * cam.scale,
+                  size: 34 * cam.scale,
                   kind: iconKind,
                   spin: Math.sin(swingPhase) * 0.18,
                   lift: bob, alpha, squash, dead: isDead,
@@ -537,7 +537,7 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
                 drawPyramid(ctx, {
                   x: cp.x + ox, groundY: groundY + oy,
                   baseRx: ex, baseRy: ey,
-                  height: span * 26 * cam.scale + bob,
+                  height: span * 32 * cam.scale + bob,
                   alpha, squash,
                   hi: isDead ? '#8a8886' : '#e05a4a',
                   lo: isDead ? '#5f5d5b' : '#9c2418',
@@ -555,7 +555,7 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
                 const swingPhase = (strHash(u.id) % 100) / 100 * Math.PI;
                 getIconStage().drawIcon(ctx, {
                   x: cp.x + ox, groundY: groundY + oy,
-                  size: 28 * cam.scale,
+                  size: 34 * cam.scale,
                   kind: iconKind,
                   spin: Math.sin(swingPhase) * 0.18,
                   lift: bob, alpha, squash, dead: isDead,
@@ -593,7 +593,7 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
             const useBadgeTop = USE_ICON_BADGES && !!(EMBLEM_ASSETS[nameKind]
               || ['goblin', 'orc'].includes(resolveIconKind(nameKind, u.name)));
             const tokenTopY = useBadgeTop
-              ? groundY - (span * 26 * cam.scale + bob)
+              ? groundY - (span * 32 * cam.scale + bob)
               : groundY - (12 + span * 7.5) * cam.scale * 1.85 - bob;
             const controlTag = u.attitude === 0 && !u.isPlayer ? (u.playerControlled ? ' 👤' : ' 🤖') : '';
             const nameColor = u.isPlayer ? '#f5c542' : isEnemy ? '#ff8a75' : u.attitude === 1 ? '#e3ba55' : '#7fe0a0';
