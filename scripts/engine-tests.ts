@@ -385,8 +385,36 @@ check('友方全灭敌方胜', (() => { const r = checkBattleEnd([mkUnit({ attit
 const onlyNeutral = checkBattleEnd([mkUnit({ attitude: 1, hp: 10 })]);
 check('只剩中立结束无胜者(修复#6)', onlyNeutral.ended && onlyNeutral.winner === null, JSON.stringify(onlyNeutral));
 check('双方在场不结束', checkBattleEnd([mkUnit({ attitude: 0, hp: 10 }), mkUnit({ attitude: 2, hp: 10 })]).ended === false);
-const allDown = checkBattleEnd([mkUnit({ attitude: 0, hp: 0 }), mkUnit({ attitude: 2, hp: 0 })]);
+// P0-4 回归：hp=0 但未判死 = 还在死亡豁免，战斗必须继续
+check('濒死未判死不结束（死亡豁免仍可救回）',
+  checkBattleEnd([
+    mkUnit({ attitude: 0, hp: 0, deathSaves: { successes: 0, failures: 0, stable: false, dead: false } }),
+    mkUnit({ attitude: 2, hp: 10 }),
+  ]).ended === false);
+check('已稳定昏迷且敌方存活 → 判负（稳定者无法自救）',
+  (() => {
+    const r = checkBattleEnd([
+      mkUnit({ attitude: 0, hp: 0, deathSaves: { successes: 3, failures: 0, stable: true, dead: false } }),
+      mkUnit({ attitude: 2, hp: 10 }),
+    ]);
+    return r.ended && r.winner === 2;
+  })());
+check('敌方濒死未判死 → 战斗继续（等敌方豁免跑完）',
+  checkBattleEnd([
+    mkUnit({ attitude: 0, hp: 10 }),
+    mkUnit({ attitude: 2, hp: 0, deathSaves: { successes: 0, failures: 0, stable: false, dead: false } }),
+  ]).ended === false);
+const allDown = checkBattleEnd([
+  mkUnit({ attitude: 0, hp: 0, deathSaves: { successes: 0, failures: 3, stable: false, dead: true } }),
+  mkUnit({ attitude: 2, hp: 0, deathSaves: { successes: 0, failures: 3, stable: false, dead: true } }),
+]);
 check('全灭无胜者', allDown.ended && allDown.winner === null);
+// P1-4 回归：敌方已清空，场上只剩友方 + 中立 → 友方胜（不再卡住）
+check('友方+中立（敌人已清）→ 友方胜',
+  (() => {
+    const r = checkBattleEnd([mkUnit({ attitude: 0, hp: 10 }), mkUnit({ attitude: 1, hp: 10 })]);
+    return r.ended && r.winner === 0;
+  })());
 
 // 传奇动作（纯函数：需构造独立状态）
 const legend = mkUnit({ id: 'ld', legendary: { points: 3, max: 3 } });

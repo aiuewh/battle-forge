@@ -588,6 +588,19 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
     const [a, b] = hpRaw.match(/\d+/g)!.map(Number);
     hp = Math.round((a + b) / 2);
   }
+  // 反畸形输入：HP ≤ 0 会让索敌的 hp>0 判定失败（敌人永不参战），却仍占先攻槽位，
+  // 造成「已判胜但先攻条还挂着敌人」；AC ≤ 0 则任何攻击必然命中。统一钳到下限并告警。
+  if (!Number.isFinite(hp) || hp <= 0) {
+    warnings.push(`「${name}」生命值非法（${JSON.stringify(hpRaw)}），已钳制为 1`);
+    hp = 1;
+  }
+  const acRaw2 = o.ac ?? o.AC ?? o['护甲等级'] ?? o['护甲'];
+  const acParsed = toNum(acRaw2, 13);
+  let acFinal = acParsed;
+  if (!Number.isFinite(acParsed) || acParsed <= 0) {
+    warnings.push(`「${name}」AC 非法（${JSON.stringify(acRaw2)}），已钳制为 10`);
+    acFinal = 10;
+  }
   // 抗性「非魔法」限定扫描：钝击/挥砍/穿刺（非魔法）
   const physNonmagicRes = [o.resistances ?? o['抗性']].flat().some(item => item && /非魔法/.test(String(item))
     && /^(钝击|挥砍|穿刺|bludgeoning|piercing|slashing)/i.test(String(item).replace(/[（(].*$/, '').trim()));
@@ -756,7 +769,7 @@ function parseDef(raw: unknown, warnings: string[]): StatblockDef | null {
     name,
     size,
     cr,
-    ac: toNum(o.ac ?? o.AC ?? o['护甲等级'] ?? o['护甲'] ?? 13, 13),
+    ac: acFinal,
     hp,
     speed: speedParsed.speed,
     speeds: speedParsed.speeds,

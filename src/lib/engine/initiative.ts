@@ -214,18 +214,46 @@ export function checkLairSlot(state: TurnState, units: BattleUnit[]): boolean {
   return units.some(u => (u.lairActions?.length ?? 0) > 0 && u.hp > 0) && state.round > 1;
 }
 
-/** 战斗结束判定：一方全灭/全倒 */
+/**
+ * 战斗结束判定：一方全灭/全倒。
+ *
+ * 2024 关键语义：掉到 0 HP 但「还在掷死亡豁免」的单位仍算战斗未定 —— 必须先让豁免跑完
+ * （三次成功稳定 → 可被治疗救回；三次失败 → 真死）。否则最后一名友方刚被打倒就被判负，
+ * 死亡豁免/稳定伤势/治疗救回整套流程永远走不到。
+ *
+ * 判定口径（每侧）：
+ *  - 站立者（hp>0 且未死且未被留活口）→ 该侧在场
+ *  - 死亡危机中（hp<=0、未死、未稳定、非留活口）→ 该侧仍在场（等豁免结果）
+ *  - 已稳定昏迷 / 已死 → 不再具备行动能力（对手已可宣告胜利）
+ * 中立(attitude 1)不参与胜负，只在其独存时以无胜者收尾。
+ */
 export function checkBattleEnd(units: BattleUnit[]): { ended: boolean; winner: 0 | 1 | 2 | null } {
-  const active = units.filter(u => !u.deathSaves?.dead && u.hp > 0 && !u.knockedOut);
-  if (active.length === 0) return { ended: true, winner: null };
-  const attitudes = new Set(active.map(u => u.attitude));
-  // 只剩一种态度 → 结束；中立(1)单独存在时结束但无胜者
-  if (attitudes.size === 1) {
-    const w = [...attitudes][0] as 0 | 1 | 2;
-    if (w === 1) return { ended: true, winner: null };
-    return { ended: true, winner: w };
-  }
-  return { ended: false, winner: null };
+  const standing = (u: BattleUnit) => !u.deathSaves?.dead && u.hp > 0 && !u.knockedOut;
+  const inDeathCrisis = (u: BattleUnit) =>
+    !u.deathSaves?.dead && !u.deathSaves?.stable && u.hp <= 0 && !u.knockedOut;
+
+  const sideUnits = (att: 0 | 2) => units.filter(u => u.attitude === att);
+  const sideStanding = (att: 0 | 2) => sideUnits(att).some(standing);
+  const sideCrisis = (att: 0 | 2) => sideUnits(att).some(inDeathCrisis);
+  /** 该侧是否仍「在场」：有站立者，或有人在死亡危机中（结果未定） */
+  const sideInPlay = (att: 0 | 2) => sideStanding(att) || sideCrisis(att);
+
+  const hostiles = sideInPlay(2);
+  const friendlies = sideInPlay(0);
+
+  // 双方都在场 → 继续
+  if (hostiles && friendlies) return { ended: false, winner: null };
+
+  // 只剩一方在场：若该方仅剩「死亡危机中」的单位（无站立者），等豁免跑完再判
+  if (hostiles && !sideStanding(2)) return { ended: false, winner: null };
+  if (friendlies && !sideStanding(0)) return { ended: false, winner: null };
+
+  // 明确分出胜负
+  if (hostiles) return { ended: true, winner: 2 };
+  if (friendlies) return { ended: true, winner: 0 };
+
+  // 双方均无在场者（全体阵亡/全员稳定）：无胜者收尾
+  return { ended: true, winner: null };
 }
 
 /** 传奇动作：在其他单位回合结束后可用，每轮 3 点 */

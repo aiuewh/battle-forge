@@ -222,6 +222,20 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
         ))}
       </div>
 
+      {/* 临时 AC（护盾术等反应法术）：只读展示 + 手动清除，避免"隐藏数值"无法察觉 */}
+      {(unit.tempAcBonus ?? 0) > 0 && (
+        <div className="flex items-center gap-2 rounded border border-sky-500/40 bg-sky-950/30 px-2 py-1 text-[11px]">
+          <span className="text-sky-300">临时 AC +{unit.tempAcBonus}（至其下回合开始）</span>
+          <button
+            type="button"
+            className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-primary"
+            onClick={() => store.updateUnit(unit.id, { tempAcBonus: 0 })}
+          >
+            清除
+          </button>
+        </div>
+      )}
+
       {/* 属性 */}
       <div>
         <div className="mb-1 text-[11px] font-semibold text-muted-foreground">属性值（豁免=属性调整）</div>

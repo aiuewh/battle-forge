@@ -28,21 +28,50 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
   const [damageFormula, setDamageFormula] = useState('1d8+3');
   const [rider, setRider] = useState('');
   const [damageType, setDamageType] = useState<DamageType>('slashing');
+  /** 本次攻击是否远程：默认按攻击者与目标距离推断（>10 尺视为远程），可手动切换 */
+  const [isRangedOverride, setIsRangedOverride] = useState<boolean | null>(null);
+  /** 两用武器双手持用（Versatile）：切换伤害骰为第二段（如长剑 1d8 → 1d10） */
+  const [twoHanded, setTwoHanded] = useState(false);
 
   const attacker = units.find(u => u.id === attackerId);
   const target = units.find(u => u.id === targetId);
+  /** 攻击者已装备武器里带两用骰的那件（供切换按钮判断是否显示） */
+  const versatileWeapon = attacker?.aiAbilities?.find(a => a.versatileDice);
+
+  /** 切到双手持用：把当前伤害公式的第一段骰换成两用骰，保留加值 */
+  const toggleTwoHanded = () => {
+    if (!versatileWeapon) return;
+    const next = !twoHanded;
+    setTwoHanded(next);
+    if (next) {
+      const modMatch = damageFormula.match(/([+-]\d+)$/);
+      const mod = modMatch ? modMatch[1] : '';
+      setDamageFormula(`${versatileWeapon.versatileDice}${mod}`);
+    } else {
+      const modMatch = damageFormula.match(/([+-]\d+)$/);
+      const mod = modMatch ? modMatch[1] : '';
+      const base = versatileWeapon.dice.replace(/[+-]\d+$/, '');
+      setDamageFormula(`${base}${mod}`);
+    }
+  };
 
   // 自动判定信息
   const autoInfo = useMemo(() => {
     if (!attacker || !target) return null;
-    const mode = attackRollModeAgainst(attacker, target);
+    const dist = unitDistance(attacker, target, store.mapConfig.diagonal);
+    const melee = inMeleeRange(attacker, target, attacker.reach ?? 5, store.mapConfig.diagonal);
+    // 远程判定要参与优劣计算：贴身射击（5 尺内有敌对生物）劣势依赖 isRanged
+    const isRanged = isRangedOverride ?? !melee;
+    const hostileWithin5Ft = units.some(u =>
+      u.id !== attacker.id && u.hp > 0 && !u.deathSaves?.dead
+      && u.attitude !== attacker.attitude && u.attitude !== 1 && attacker.attitude !== 1
+      && unitDistance(attacker, u, store.mapConfig.diagonal) <= 5);
+    const mode = attackRollModeAgainst(attacker, target, { distanceFeet: dist, isMeleeAttack: !isRanged, hostileWithin5Ft });
     const blockedCells = new Map<string, 'half' | 'threeQuarters' | 'full'>();
     for (const o of obstacles) if (o.kind !== 'difficult') for (const c of o.cells) blockedCells.set(`${c.cx},${c.cy}`, o.kind);
     const cover = estimateCover(attacker, target, obstacles, blockedCells);
-    const dist = unitDistance(attacker, target, store.mapConfig.diagonal);
-    const melee = inMeleeRange(attacker, target, attacker.reach ?? 5, store.mapConfig.diagonal);
-    return { mode, cover, dist, melee };
-  }, [attacker, target, obstacles, store.mapConfig.diagonal]);
+    return { mode, cover, dist, melee, isRanged };
+  }, [attacker, target, obstacles, store.mapConfig.diagonal, units, isRangedOverride]);
 
   // 预设攻击填充
   const fillFromPreset = () => {
@@ -55,7 +84,9 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
     }
   };
 
-  const effectiveAc = target ? target.ac + coverBonus(autoInfo?.cover.cover ?? 'none') : 10;
+  // 有效 AC = 基础 AC + 临时 AC（护盾术等反应法术）+ 掩护加值
+  const tempAc = target?.tempAcBonus ?? 0;
+  const effectiveAc = target ? target.ac + tempAc + coverBonus(autoInfo?.cover.cover ?? 'none') : 10;
 
   // 2024 徒手打击（擒抱/推撞）就绪：存活目标 + 近战触及 + 体型差 ≤1 级
   const strikeReady = !!attacker && !!target && attacker.id !== target.id
@@ -74,6 +105,7 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
       riderDamage: rider || undefined,
       weaponType: damageType,
       coverKind: autoInfo?.cover.cover,
+      isRanged: autoInfo?.isRanged,
     });
   };
 
@@ -176,6 +208,17 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
             </span>
           )}
           <span className="text-muted-foreground">距离 {autoInfo.dist} 尺{autoInfo.melee ? '（近战范围）' : ''}</span>
+          <button
+            type="button"
+            className="rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-primary"
+            title="切换远程/近战判定：远程会应用「5 尺内有敌对生物 ⇒ 劣势」等 2024 规则"
+            onClick={() => setIsRangedOverride(!(autoInfo.isRanged))}
+          >
+            {autoInfo.isRanged ? '远程' : '近战'}
+          </button>
+          {tempAc > 0 && (
+            <span className="text-sky-300" title="护盾术等反应法术提供的临时 AC，至受术者下回合开始">临时 AC +{tempAc}</span>
+          )}
           <span className="ml-auto font-semibold text-primary">
             有效 AC {effectiveAc}
           </span>
@@ -190,6 +233,13 @@ export function AttackPanel({ defaultAttackerId }: { defaultAttackerId?: string 
         <Button size="sm" variant="secondary" className="h-9 gap-1 text-xs" onClick={fillFromPreset} disabled={!attacker}>
           <Target className="h-3.5 w-3.5" />填入预设
         </Button>
+        {versatileWeapon && (
+          <Button size="sm" variant={twoHanded ? 'default' : 'secondary'} className="h-9 gap-1 text-xs"
+            title={`两用武器：${twoHanded ? '当前双手持用' : '当前单手持用'}（点击切换伤害骰 ${versatileWeapon.versatileDice ?? ''}）`}
+            onClick={toggleTwoHanded}>
+            两用 {twoHanded ? '双手' : '单手'}
+          </Button>
+        )}
         <Button size="sm" variant="secondary" className="h-9 gap-1 text-xs" onClick={doSave} disabled={!target}>
           敏捷豁免（半伤）
         </Button>

@@ -86,16 +86,21 @@ const STATUS_CN: Record<string, string> = {
   '力竭': 'exhaustion', '枯竭': 'exhaustion',
 };
 
-/** 单条状态词解析（英文键 > 中文键 > exhaustion 前缀）；导出供敌卡层复用 */
+/** 单条状态词解析（英文键 > 中文键 > exhaustion 前缀）；导出供敌卡层复用
+ *  力竭保留等级（exhaustion:N）——引擎的 -2/级检定与 -5 尺/级速度只认带等级的形态，
+ *  丢失等级等于力竭完全无效果。 */
 export function resolveStatus(word: string): string | null {
   const k = word.toLowerCase();
   if (VALID_STATUSES.has(k)) return k;
-  if (k.startsWith('exhaustion')) return 'exhaustion';
-  if (/^exhaustion[\s-]*\d+$/.test(k)) return 'exhaustion';
+  // 力竭带等级形态优先：exhaustion:2 / exhaustion 2 / 力竭2 / 力竭-2 / 力竭·2 / 力竭（无数字=1级）
+  const lvM = word.match(/力竭[\s\-·:：]?(\d+)/) ?? k.match(/exhaustion[\s\-:：]?(\d+)/);
+  if (lvM) {
+    const lv = Math.max(1, Math.min(6, parseInt(lvM[1], 10)));
+    return `exhaustion:${lv}`;
+  }
+  if (k.startsWith('exhaustion') || word.startsWith('力竭')) return 'exhaustion:1';
   const cn = STATUS_CN[word] ?? STATUS_CN[k];
   if (cn) return cn;
-  // 中文「力竭2/力竭-2」形态
-  if (/^力竭[\s\-]?\d*$/.test(word)) return 'exhaustion';
   return null;
 }
 
@@ -235,7 +240,11 @@ export function generateBattleBlock(
     parts.push(`hp ${u.hp}/${u.maxHp}`);
     parts.push(`pos ${Math.round(u.pos.x)},${Math.round(u.pos.y)}`);
     if (u.attitude !== 1) parts.push(`att ${u.attitude}`);
-    if (u.statuses.length > 0) parts.push(`status ${u.statuses.filter(s => VALID_STATUSES.has(s)).join(',')}`);
+    // 保留力竭等级（exhaustion:N 不在 VALID_STATUSES 白名单内，但必须能往返）
+    const statuses = u.statuses
+      .map(s => (s.startsWith('exhaustion:') ? s : (VALID_STATUSES.has(s) ? s : null)))
+      .filter((s): s is string => s !== null);
+    if (statuses.length > 0) parts.push(`status ${statuses.join(',')}`);
     if (u.portrait) parts.push(`portrait ${u.portrait}`);
     if (u.next) parts.push('next');
     return parts.join('|');

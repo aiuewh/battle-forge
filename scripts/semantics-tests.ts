@@ -5,10 +5,11 @@
  *       公式变体 / RFC6902 标准操作 / 敌卡别名
  * 运行: bun scripts/semantics-tests.ts
  */
-import { parseBattleBlock, parseOutcome, parseCheckDetail, parseDmMessage } from '../src/lib/engine/protocol';
+import { parseBattleBlock, parseOutcome, parseCheckDetail, parseDmMessage, generateBattleBlock } from '../src/lib/engine/protocol';
 import { parseFormula, rollFormula, setRng } from '../src/lib/engine/dice';
 import { parseEncounterDefs } from '../src/lib/engine/statblocks';
-import { applyPatches } from '../src/lib/engine/sheetbridge';
+import { applyPatches, charSheetsFromTree, unitFromCharSheet } from '../src/lib/engine/sheetbridge';
+import { mergeUnitFromProtocol } from '../src/lib/engine/merge';
 import { suggestPatches } from '../src/lib/engine/report';
 import { planTurn, validateStep, type AiContext } from '../src/lib/engine/ai';
 import type { BattleUnit } from '../src/lib/engine/types';
@@ -60,7 +61,10 @@ console.log('━━━━━━ S1. battle 块同义变体 ━━━━━━');
   const st2 = parseBattleBlock('法师|status 震慑/昏迷')[0];
   ok('s1e 震慑/昏迷 斜杠分隔', st2?.statuses.includes('stunned') === true && st2?.statuses.includes('unconscious') === true, JSON.stringify(st2?.statuses));
   const st3 = parseBattleBlock('战士|status 力竭2')[0];
-  ok('s1e 力竭2→exhaustion', st3?.statuses.includes('exhaustion') === true, JSON.stringify(st3?.statuses));
+  // P1-2 回归：保留力竭等级（exhaustion:N），否则 -2/级减值丢失
+  ok('s1e 力竭2→exhaustion:2', st3?.statuses.includes('exhaustion:2') === true, JSON.stringify(st3?.statuses));
+  const st4 = parseBattleBlock('战士|status 力竭')[0];
+  ok('s1e 无等级力竭→exhaustion:1', st4?.statuses.includes('exhaustion:1') === true, JSON.stringify(st4?.statuses));
 
   // s1g next 大小写
   ok('s1g NEXT 大写', parseBattleBlock('哥布林|init 9|NEXT')[0]?.next === true);
@@ -226,6 +230,115 @@ console.log('━━━━━━ S7. 修复回归：单体豁免 / 反应触发�
   const patches = suggestPatches(unitsSp, sheets);
   const slotPatch = patches.find(p => p.path === '/角色列表/艾尔玛/施法/法术位/3环/当前');
   ok('s7e 法术位补丁路径', slotPatch !== undefined && slotPatch.value === 1, JSON.stringify(patches.map(p => p.path)));
+}
+
+console.log('\n━━━━━━ S8. 2026-11-18 BUG 修复回归 ━━━━━━');
+{
+  /** S8 专用单位工厂（baseUnit 是上方块内的局部函数） */
+  const mkUnit8 = (p: Partial<BattleUnit>): BattleUnit => ({
+    id: 'u', name: '单位', attitude: 1, hp: 20, maxHp: 20, tempHp: 0, ac: 13,
+    init: 10, initMod: 0, pos: { x: 0, y: 0 }, size: 'medium', speed: 30,
+    statuses: [], resistances: [], immunities: [], vulnerabilities: [],
+    isPlayer: false, aiProfile: 'tactical', aiAbilities: [],
+    actionEconomy: { action: false, bonus: false, reaction: false, movementUsed: 0 },
+    hasActed: false, ...p,
+  } as BattleUnit);
+  const baseUnit = mkUnit8;
+
+  // ---------- P0-1：协议块不得复活已判死单位 ----------
+  const deadUnit = baseUnit({
+    id: 'corpse', name: '尸体', attitude: 2, hp: 0, maxHp: 7,
+    deathSaves: { successes: 0, failures: 3, stable: false, dead: true },
+  });
+  const staleCard = { id: 'corpse', statuses: [], attitude: 2 as const, next: false, extras: [], hp: { current: 7, max: 7 } };
+  const merged = mergeUnitFromProtocol(deadUnit, staleCard, false).unit;
+  ok('s8a 过期敌卡不复活尸体', merged.hp === 0 && merged.deathSaves?.dead === true,
+    JSON.stringify({ hp: merged.hp, deathSaves: merged.deathSaves }));
+
+  const dyingUnit = baseUnit({
+    id: 'down', name: '濒死', attitude: 0, hp: 0, maxHp: 20,
+    deathSaves: { successes: 0, failures: 1, stable: false, dead: false },
+  });
+  const noHpCard = { id: 'down', statuses: [], attitude: 0 as const, next: false, extras: [] };
+  const mergedNoHp = mergeUnitFromProtocol(dyingUnit, noHpCard, false).unit;
+  ok('s8b 缺省 hp 字段不清死亡豁免', mergedNoHp.deathSaves?.failures === 1,
+    JSON.stringify(mergedNoHp.deathSaves));
+  const healedCard = { ...noHpCard, hp: { current: 8, max: 20 } };
+  const mergedHealed = mergeUnitFromProtocol(dyingUnit, healedCard, false).unit;
+  ok('s8c 明确正 HP 才清除豁免计数',
+    mergedHealed.hp === 8 && mergedHealed.deathSaves?.failures === 0 && mergedHealed.deathSaves?.dead === false,
+    JSON.stringify({ hp: mergedHealed.hp, ds: mergedHealed.deathSaves }));
+
+  // ---------- P1-3：敌卡负/零 HP、AC 钳制 ----------
+  const bad = parseEncounterDefs('[{"名称":"畸形怪","ac":-5,"生命值":-3,"攻击":[]}]');
+  ok('s8d 负 HP 钳制为 1', bad.defs[0]?.hp === 1, String(bad.defs[0]?.hp));
+  ok('s8e 负 AC 钳制为 10', bad.defs[0]?.ac === 10, String(bad.defs[0]?.ac));
+  ok('s8f 钳制有告警', bad.warnings.length >= 2, JSON.stringify(bad.warnings));
+
+  // ---------- P2-4：状态全被过滤时不输出空 status ----------
+  const noStatus = generateBattleBlock([{
+    id: 'A', init: 10, hp: 5, maxHp: 10, pos: { x: 0, y: 0 }, attitude: 2, statuses: ['dodging'],
+  }]);
+  ok('s8g 无可序列状态时不留 status 尾巴', !/\|status\s*(\n|$)/.test(noStatus), JSON.stringify(noStatus));
+
+  // ---------- P1-2：力竭等级往返 ----------
+  const exhBlock = generateBattleBlock([{
+    id: 'A', init: 10, hp: 5, maxHp: 10, pos: { x: 0, y: 0 }, attitude: 2, statuses: ['exhaustion:3'],
+  }]);
+  const exhBack = parseBattleBlock(exhBlock.replace(/<\/?battle>/g, '').trim())[0];
+  ok('s8h 力竭等级导出后可回读', exhBack?.statuses.includes('exhaustion:3') === true,
+    JSON.stringify(exhBack?.statuses));
+
+  // ---------- P0-3 / P1-5：角色装配读取显式攻击加值与熟练加值 ----------
+  const tree = {
+    角色列表: {
+      战士甲: {
+        姓名: '战士甲', 等级: 9, 熟练加值: 5,
+        生命值: { 当前: 50, 最大: 50 }, 护甲等级: { 总值: 17 },
+        属性: { 力量: 18, 敏捷: 14, 体质: 14, 智力: 10, 感知: 10, 魅力: 10 },
+        熟练配置: { 技能: {}, 豁免: { 力量: true }, 武器: '', 护甲: '', 工具: {} },
+        施法: { 关键属性: '无', 法术位: {}, 法术书: {} },
+        物品: { 武器: { 长剑: { 伤害公式: '1d8', 伤害类型: '挥砍', 映射属性: '力量', 已装备: true, 熟练: true, 攻击加值覆盖: 12 } }, 护甲: {}, 奇物: {}, 杂物: {} },
+        状态: {}, 抗性: [], 免疫: [], 易伤: [],
+      },
+    },
+  };
+  const [sheet] = charSheetsFromTree(tree as never);
+  ok('s8i 熟练加值字段生效', sheet?.pb === 5, String(sheet?.pb));
+  const assembled = unitFromCharSheet(sheet);
+  const sword = assembled.aiAbilities.find(a => a.name === '长剑');
+  ok('s8j 攻击加值覆盖优先于推导', sword?.attackBonus === 12, String(sword?.attackBonus));
+  ok('s8k 豁免加值使用声明的熟练加值',
+    assembled.saveBonuses?.str === 4 + 5, String(assembled.saveBonuses?.str));
+
+  // ---------- P2-1 / P2-2：射程覆盖改判远程、两用骰抽出 ----------
+  const tree2 = {
+    角色列表: {
+      投手: {
+        姓名: '投手', 等级: 5, 生命值: { 当前: 30, 最大: 30 }, 护甲等级: { 总值: 15 },
+        属性: { 力量: 16, 敏捷: 14, 体质: 12, 智力: 10, 感知: 10, 魅力: 8 },
+        熟练配置: { 技能: {}, 豁免: {}, 武器: '', 护甲: '', 工具: {} },
+        施法: { 关键属性: '无', 法术位: {}, 法术书: {} },
+        物品: {
+          武器: {
+            飞矛: { 伤害公式: '1d6', 伤害类型: '穿刺', 映射属性: '力量', 已装备: true, 熟练: true, 射程: 60 },
+            长剑: { 伤害公式: '1d8', 伤害类型: '挥砍', 映射属性: '力量', 已装备: true, 熟练: true, 属性特征: '多用(1d10)' },
+          }, 护甲: {}, 奇物: {}, 杂物: {},
+        },
+        状态: {}, 抗性: [], 免疫: [], 易伤: [],
+      },
+    },
+  };
+  const [s2] = charSheetsFromTree(tree2 as never);
+  const u2 = unitFromCharSheet(s2);
+  const spear = u2.aiAbilities.find(a => a.name === '飞矛');
+  // 投掷近战武器保持 melee kind（否则贴脸时会失去近战判定），
+  // 但 ranged 字段如实标记「可远程使用」，射程取显式值
+  ok('s8l 投掷武器保留近战 kind+显式射程',
+    spear?.kind === 'melee' && spear?.range === 60,
+    JSON.stringify({ kind: spear?.kind, ranged: spear?.ranged, range: spear?.range }));
+  const longsword = u2.aiAbilities.find(a => a.name === '长剑');
+  ok('s8m 两用武器抽出第二段骰', longsword?.versatileDice === '1d10', String(longsword?.versatileDice));
 }
 
 console.log('\n━━━━━━━━━━━━━━ 语义测试汇总 ━━━━━━━━━━━━━━');

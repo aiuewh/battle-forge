@@ -89,7 +89,9 @@ ok('A2 ID=init 的行被跳过', (() => { const r = parseBattleBlock('init 5|hp 
 // A5 status 未知值
 {
   const s = parseBattleBlock('死者|status dead,死亡,exhaustion-2,unknown')[0];
-  ok('A5 exhaustion 归一化保留', s?.statuses.includes('exhaustion') === true, JSON.stringify(s?.statuses));
+  // P1-2 回归：力竭必须保留等级（引擎的 -2/级检定与 -5尺/级速度只认 exhaustion:N）
+  ok('A5 exhaustion 归一化保留等级', s?.statuses.includes('exhaustion:2') === true, JSON.stringify(s?.statuses));
+  ok('A5 未知状态被丢弃', !s?.statuses.includes('unknown'), JSON.stringify(s?.statuses));
 }
 // A6 全角字符
 {

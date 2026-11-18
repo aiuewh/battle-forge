@@ -104,6 +104,11 @@ export interface AiAbility {
   damageType?: DamageType;
   /** 射程（英尺），5 = 近战触及 */
   range: number;
+  /** 远程攻击（武器 kind 为 ranged 时置 true）：决定贴身远程劣势等 2024 判定。
+   *  与 kind 分开是因为 melee 武器也可能有远程射程（投掷），结算需按真实攻击方式判。 */
+  ranged?: boolean;
+  /** 两用（Versatile）武器双手持用时的伤害公式（如长剑 1d10），UI 可切换 */
+  versatileDice?: string;
   /** AoE 形状（save-aoe 必填） */
   aoe?: { kind: AoeShapeKind; size: number };
   /** 豁免属性与 DC（save-aoe / save / 附加毒伤） */

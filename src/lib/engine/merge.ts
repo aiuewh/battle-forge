@@ -110,22 +110,28 @@ export function mergeUnitFromProtocol(
   }
 
   // ---- 战前暂存 / 兼容旧卡：AI 数值直入 ----
+  // 死亡状态清除规则（防止 AI 重发省略/过期 hp 让尸体站起来）：
+  //  - 已判定死亡（dead:true）→ 协议块永不复活，必须走复活法术/手动 reviveUnit；
+  //  - 濒死（hp<=0 但未死未稳定）→ 仅当 AI 明确给出正 HP 才视为被治疗，清除豁免计数。
+  const protocolHp = p.hp?.current;
+  const revivedByProtocol = protocolHp !== undefined && protocolHp > 0;
+  const clearedDeath = revivedByProtocol && existing.deathSaves && !existing.deathSaves.dead
+    ? { successes: 0, failures: 0, stable: false, dead: false }
+    : existing.deathSaves;
   return {
     unit: {
       ...existing,
+      // 已死亡单位不被协议块改回活着：HP 保持 0，避免先攻序列/索敌误判
+      hp: existing.deathSaves?.dead ? Math.min(0, existing.hp) : (p.hp?.current ?? existing.hp),
+      maxHp: p.hp?.max ?? Math.max(existing.maxHp, p.hp?.current ?? 0),
       init: p.init ?? existing.init,
       initRolled: p.init !== undefined ? false : existing.initRolled,
-      hp: p.hp?.current ?? existing.hp,
-      maxHp: p.hp?.max ?? Math.max(existing.maxHp, p.hp?.current ?? 0),
       pos: p.pos ?? existing.pos,
       attitude: p.attitude,
       statuses: [...p.statuses],
       portrait: p.portrait ?? existing.portrait,
       hasActed: !p.next,
-      // HP 恢复时清除死亡状态
-      deathSaves: (p.hp?.current ?? 0) > 0 && existing.hp <= 0
-        ? { successes: 0, failures: 0, stable: false, dead: false }
-        : existing.deathSaves,
+      deathSaves: clearedDeath,
     },
     conflicts,
   };

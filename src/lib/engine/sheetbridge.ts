@@ -168,7 +168,11 @@ export interface WeaponDef {
   magicBonus: number;
   proficient: boolean;
   equipped: boolean;
-  versatile?: string;       // "两用(1d10)"
+  versatile?: string;       // "多用(1d10)" 原始标签
+  /** 两用双手持用的伤害骰（如 "1d10"），未标两用时 undefined */
+  versatileDice?: string;
+  /** 显式攻击加值覆盖（状态栏写入）：优先于属性+熟练+魔法加值推导 */
+  attackOverride?: number;
   ranged: boolean;
   range: number;
   /** 2024 武器精通词条（Graze/Topple/Push/Vex/Sap/Slow/Nick/Cleave） */
@@ -210,6 +214,8 @@ function hasStructuredActionFields(o: Record<string, unknown>): boolean {
 export interface CharSheet {
   name: string;
   level: number;
+  /** 熟练加值：变量显式声明优先（房规/怪物化角色），缺省按等级推导 */
+  pb?: number;
   /** 2024 额外攻击次数：额外攻击 变量字段优先，缺省按 职业 字段查表（战士 5/11/20→2/3/4；野蛮人/圣武士/游侠 5→2；其余 1） */
   extraAttacks?: number;
   hp: number;
@@ -509,7 +515,9 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       }
     }
     const level = getNum(c, '等级') ?? 1;
-    const pb = proficiencyBonus(level);
+    // 熟练加值：MVU 变量显式字段优先（状态栏/房规/怪物化角色会写），缺省按 2024 等级表
+    const pbDeclared = getNum(c, '熟练加值');
+    const pb = pbDeclared !== undefined && pbDeclared > 0 ? pbDeclared : proficiencyBonus(level);
     // 额外攻击：可选变量字段直接指定；缺省按 职业 字符串查 2024 职业表
     const extraAttacks = Math.max(1, Math.round(getNum(c, '额外攻击') ?? extraAttacksFromClass(getStr(c, '职业'), level)));
 
@@ -582,6 +590,12 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
           const rangeFallback = isRangedW
             ? (/长弓/.test(wName) ? 150 : /重弩/.test(wName) ? 100 : 80)
             : (isThrown ? 30 : 5);
+          const rangeFinal = rangeField !== undefined && rangeField > 0 ? rangeField : rangeFallback;
+          // 攻击加值覆盖：状态栏写入的显式命中加值（自定义/房规/魔法武器）——优先于自动推导
+          const atkOverride = getNum(w, '攻击加值覆盖', '攻击加值', '命中加值', '命中加值覆盖', 'attackBonusOverride');
+          // 两用（Versatile）：属性特征形如「多用(1d10)」/「两用(1d10)」/「Versatile 1d10」，抽出第二段骰
+          const tags = getStr(w, '属性特征') ?? '';
+          const versatileMatch = tags.match(/(?:多用|两用|versatile)[^0-9]{0,6}(\d+d\d+)/i);
           // 武器精通：词条库判定优先级——先确认掌握（武器.已掌握），再按词条结算。
           // 卡内协议存复合形态如 "摔绊(Topple)" / "推离(Push)"：剥离括号查中文别名，
           // 再提取括号内英文键兜底（条目28《新角色变量登记规则》规定的书写格式）
@@ -602,9 +616,13 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
             magicBonus: getNum(w, '魔法加值', '加值') ?? 0,
             proficient: w['熟练'] === true || w['熟练'] === 'true',
             equipped: w['已装备'] === true,
-            versatile: getStr(w, '属性特征'),
+            versatile: tags || undefined,
+            versatileDice: versatileMatch?.[1],
+            attackOverride: atkOverride,
+            // 远程武器类别按武器名判定；投掷类近战武器（匕首/标枪）保持 melee kind，
+            // 由行动栏「远程/近战」开关按本次攻击方式切换（避免把匕首误判成纯远程武器）
             ranged: isRangedW,
-            range: rangeField !== undefined && rangeField > 0 ? rangeField : rangeFallback,
+            range: rangeFinal,
             mastery: mastered ? masteryKey : undefined,
           });
         }
@@ -736,6 +754,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
     out.push({
       name,
       level,
+      pb,
       extraAttacks,
       hp, maxHp, tempHp,
       ac, initMod, speed, speeds,
@@ -767,7 +786,8 @@ export interface SheetToUnitOptions {
 
 /** 角色卡 → 战斗单位（含武器与法术动作表） */
 export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {}): BattleUnit {
-  const pb = proficiencyBonus(sheet.level);
+  // 熟练加值：变量显式声明优先（房规/怪物化角色），缺省按等级推导
+  const pb = sheet.pb ?? proficiencyBonus(sheet.level);
   const abilities: Abilities = { ...sheet.abilities };
 
   // 豁免加值：熟练属性 = 属性调整值 + 熟练加值（2024：豁免检定计入熟练）
@@ -781,20 +801,27 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
   const sorted = [...sheet.weapons].sort((a, b) => Number(b.equipped) - Number(a.equipped));
   const weaponAbilities: AiAbility[] = sorted.map((w, i) => {
     const abMod = abilityMod(abilities[w.ability] ?? 10);
+    // 攻击加值覆盖（状态栏「攻击加值覆盖」）：显式值优先，否则 属性+熟练+魔法
+    const derivedAtk = abMod + (w.proficient ? pb : 0) + w.magicBonus;
+    const attackBonus = Number.isFinite(w.attackOverride) ? w.attackOverride! : derivedAtk;
+    // 两用（Versatile）：默认按单手伤害，versatileDice 交由 UI 切换双手持用
     return {
       id: `w${i}-${w.name}`,
       name: w.name,
       kind: w.ranged ? 'ranged' : 'melee',
-      attackBonus: abMod + (w.proficient ? pb : 0) + w.magicBonus,
+      attackBonus,
       dice: `${w.formula}${formatMod(abMod + w.magicBonus)}`,
       damageType: w.damageType,
       range: w.range,
+      ranged: w.ranged,
+      versatileDice: w.versatileDice,
       multiAttack: multiAttacks,
       mastery: w.mastery,
       // 2024：精通词条的豁免 DC 与 Graze 擦伤只用属性调整值，不含武器魔法加值
       masteryMod: abMod,
       note: [
         w.versatile ? `两用：${w.versatile}` : '',
+        w.attackOverride !== undefined ? `命中加值覆盖 ${formatMod(w.attackOverride)}` : '',
         w.equipped ? '已装备' : '',
         w.mastery ? `精通：${w.mastery}${['Graze', 'Topple', 'Push'].includes(w.mastery) ? '（命中/失手自动结算）' : '（按词条手动/叙事结算）'}` : '',
       ].filter(Boolean).join(' · ') || undefined,
