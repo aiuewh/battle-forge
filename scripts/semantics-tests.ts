@@ -379,6 +379,46 @@ console.log('\n━━━━━━ S9. 2026-11-19 跨端契约修复回归 ━━
   ok('s9m 力竭保留等级', JSON.stringify(st({ 力竭: { 等级: 4 } })) === '["exhaustion:4"]');
 }
 
+console.log('\n━━━━━━ S10. 2026-11-20 武器射程/两用与 PB 回归 ━━━━━━');
+{
+  const mkChar = (weapons: Record<string, unknown>, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    姓名: '测', 等级: 5, 生命值: { 当前: 20, 最大: 20 }, 护甲等级: { 总值: 15 },
+    属性: { 力量: 16, 敏捷: 14, 体质: 14, 智力: 10, 感知: 10, 魅力: 10 },
+    熟练配置: { 技能: {}, 豁免: {} }, 物品: { 武器: weapons }, 施法: {}, ...over,
+  });
+  const ab = (name: string, w: Record<string, unknown>) => {
+    const [sheet] = charSheetsFromTree({ 角色列表: { 测: mkChar({ [name]: w }) } } as never);
+    const unit = unitFromCharSheet(sheet);
+    return (unit.aiAbilities ?? []).find(a => a.name === name)!;
+  };
+
+  // 射程字段必须真正送达引擎（状态栏此前不写、引擎此前靠名称推断）
+  ok('s10a 显式射程送达引擎', ab('吹箭', { 伤害公式: '1d4', 熟练: true, 射程: 60 }).range === 60);
+  // 名称不含弓弩 + 显式远程射程 → 判为远程
+  const blowgun = ab('吹箭', { 伤害公式: '1d4', 熟练: true, 射程: 60 });
+  ok('s10b 射程兜底判远程', blowgun.kind === 'ranged' && blowgun.ranged === true,
+    JSON.stringify({ kind: blowgun.kind, ranged: blowgun.ranged }));
+  // 投掷家族保持 melee（飞矛/标枪/匕首写射程也不得升为纯远程）
+  for (const [n, w] of [
+    ['飞矛', { 伤害公式: '1d6', 熟练: true, 射程: 60 }],
+    ['标枪', { 伤害公式: '1d6', 熟练: true, 射程: 30 }],
+    ['匕首', { 伤害公式: '1d4', 熟练: true, 射程: 20, 属性特征: '灵巧, 投掷' }],
+  ] as const) {
+    const a = ab(n, w);
+    ok(`s10c ${n} 保持近战 kind`, a.kind === 'melee' && a.ranged === false,
+      JSON.stringify({ kind: a.kind, ranged: a.ranged, range: a.range }));
+  }
+  // 弓弩名称仍按远程，射程按名称推断
+  const longbow = ab('长弓', { 伤害公式: '1d8', 熟练: true });
+  ok('s10d 长弓名称判远程且 150 尺', longbow.kind === 'ranged' && longbow.range === 150,
+    JSON.stringify({ kind: longbow.kind, range: longbow.range }));
+  // 近战武器被填明显远程射程 → 允许升为远程（自定义魔法飞剑等）
+  ok('s10e 近战名+远射程→远程', ab('魔法飞剑', { 伤害公式: '1d8', 熟练: true, 射程: 120 }).kind === 'ranged');
+  // 两用：词条只在 属性特征 时抽出第二段骰
+  ok('s10f 两用词条抽出第二段骰',
+    ab('长剑', { 伤害公式: '1d8', 熟练: true, 属性特征: '两用(1d10)' }).versatileDice === '1d10');
+}
+
 console.log('\n━━━━━━━━━━━━━━ 语义测试汇总 ━━━━━━━━━━━━━━');
 console.log(`✅ 通过: ${pass}  ❌ 失败: ${fail}`);
 if (findings.length > 0) {

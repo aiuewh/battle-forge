@@ -605,13 +605,21 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
           const abRaw2 = getStr(w, '映射属性') ?? '力量';
           const wNameLower = wName.toLowerCase();
           const isRangedW = /弓|弩|镖|投石索|手雷|弓箭/.test(wName);
-          const isThrown = /投掷|标枪|匕首|手斧/.test(getStr(w, '属性特征') ?? '') || /标枪/.test(wName);
+          // 投掷类：词条含「投掷」，或名称属于 5e 的投掷武器家族（飞矛/标枪/匕首/手斧/三叉戟/网）。
+          // 这些武器本质是近战武器 + 可投掷，即使写了 射程 也不该升为纯远程 kind。
+          const isThrown = /投掷/.test(getStr(w, '属性特征') ?? '')
+            || /标枪|飞矛|矛|匕首|手斧|三叉戟|飞锤|网/.test(wName);
           // 射程：显式 射程 字段优先（尺），否则按名称推断（接近规则值：长弓150/重弩100/其他弓弩80/投掷30）
           const rangeField = getNum(w, '射程', '射程(尺)', '射程（尺）');
           const rangeFallback = isRangedW
             ? (/长弓/.test(wName) ? 150 : /重弩/.test(wName) ? 100 : 80)
             : (isThrown ? 30 : 5);
           const rangeFinal = rangeField !== undefined && rangeField > 0 ? rangeField : rangeFallback;
+          // 远程判定：名称命中弓弩 → 远程；投掷类家族 → 保持 melee（由行动栏开关切换）。
+          // 其余情况若写了明显超出近战触及的射程（>10 尺），判为远程
+          // （例如「吹箭 射程 60」这种名称不含弓弩的自定义远程武器）。
+          const rangedByRange = !isRangedW && !isThrown && rangeFinal > 10;
+          const isRangedFinal = isRangedW || rangedByRange;
           // 攻击加值覆盖：状态栏写入的显式命中加值（自定义/房规/魔法武器）——优先于自动推导
           const atkOverride = getNum(w, '攻击加值覆盖', '攻击加值', '命中加值', '命中加值覆盖', 'attackBonusOverride');
           // 两用（Versatile）：属性特征形如「多用(1d10)」/「两用(1d10)」/「Versatile 1d10」，抽出第二段骰
@@ -640,9 +648,10 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
             versatile: tags || undefined,
             versatileDice: versatileMatch?.[1],
             attackOverride: atkOverride,
-            // 远程武器类别按武器名判定；投掷类近战武器（匕首/标枪）保持 melee kind，
-            // 由行动栏「远程/近战」开关按本次攻击方式切换（避免把匕首误判成纯远程武器）
-            ranged: isRangedW,
+            // 远程武器类别：名称命中弓弩 → 远程；否则若显式 射程 > 10 尺也算远程
+            // （吹箭/自定义远射武器等名称不含弓弩的情况）。投掷类近战武器（匕首/标枪）
+            // 保持 melee kind，由行动栏「远程/近战」开关按本次攻击方式切换。
+            ranged: isRangedFinal,
             range: rangeFinal,
             mastery: mastered ? masteryKey : undefined,
           });
