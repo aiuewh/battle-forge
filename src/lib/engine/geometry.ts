@@ -7,6 +7,56 @@ import { SIZE_META } from './types';
 
 export const CELL = 5; // 每格英尺
 
+// ---------- 小顶堆 ----------
+
+/** 二叉小顶堆：替代「每轮 queue.sort() + shift()」的 O(n²·log n) 寻路队列。
+ *  平手时先入先出（seq 递增），保持与原稳定排序相同的出队顺序，
+ *  避免等代价路径的形状发生变化。 */
+class MinHeap<T> {
+  private items: Array<{ value: T; seq: number }> = [];
+  private seq = 0;
+  constructor(private cmp: (a: T, b: T) => number) {}
+
+  get size() { return this.items.length; }
+
+  private less(i: number, j: number) {
+    const d = this.cmp(this.items[i].value, this.items[j].value);
+    return d !== 0 ? d < 0 : this.items[i].seq < this.items[j].seq;
+  }
+  private swap(i: number, j: number) {
+    const t = this.items[i]; this.items[i] = this.items[j]; this.items[j] = t;
+  }
+
+  push(value: T) {
+    this.items.push({ value, seq: this.seq++ });
+    let i = this.items.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (!this.less(i, p)) break;
+      this.swap(i, p); i = p;
+    }
+  }
+
+  pop(): T | undefined {
+    if (!this.items.length) return undefined;
+    const top = this.items[0].value;
+    const last = this.items.pop()!;
+    if (this.items.length) {
+      this.items[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1;
+        let m = i;
+        if (l < this.items.length && this.less(l, m)) m = l;
+        if (r < this.items.length && this.less(r, m)) m = r;
+        if (m === i) break;
+        this.swap(i, m); i = m;
+      }
+    }
+    return top;
+  }
+}
+
 // ---------- 换算 ----------
 
 export function feetToCell(v: number): number {
@@ -154,11 +204,11 @@ function movementSearch(from: Cell, unit: BattleUnit, units: BattleUnit[], obsta
   const parents = new Map<string, string>();
   const result = new Map<string, number>([[cellKey(from), 0]]);
   const bestKeys = new Map<string, string>([[cellKey(from), startKey]]);
-  const queue = [{ cell: from, parity: startParity, cost: 0 }];
+  const queue = new MinHeap<{ cell: Cell; parity: number; cost: number }>((a, b) => a.cost - b.cost);
+  queue.push({ cell: from, parity: startParity, cost: 0 });
   let visited = 0;
-  while (queue.length && visited++ < 30000) {
-    queue.sort((a, b) => a.cost - b.cost);
-    const current = queue.shift()!;
+  while (queue.size && visited++ < 30000) {
+    const current = queue.pop()!;
     const key = stateKey(current.cell, current.parity);
     if (current.cost !== costs.get(key)) continue;
     if (target && cellKey(current.cell) === cellKey(target)) break;

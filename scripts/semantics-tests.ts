@@ -341,6 +341,44 @@ console.log('\n━━━━━━ S8. 2026-11-18 BUG 修复回归 ━━━━�
   ok('s8m 两用武器抽出第二段骰', longsword?.versatileDice === '1d10', String(longsword?.versatileDice));
 }
 
+console.log('\n━━━━━━ S9. 2026-11-19 跨端契约修复回归 ━━━━━━');
+{
+  const mkChar = (over: Record<string, unknown>): Record<string, unknown> => ({
+    姓名: '艾尔玛', 等级: 5, 生命值: { 当前: 30, 最大: 30 }, 护甲等级: { 总值: 15 },
+    属性: { 力量: 16, 敏捷: 14, 体质: 14, 智力: 10, 感知: 10, 魅力: 10 },
+    熟练配置: { 技能: {}, 豁免: { 力量: false, 敏捷: false, 体质: false, 智力: false, 感知: false, 魅力: false } },
+    物品: { 武器: {} }, 施法: {}, ...over,
+  });
+  const sheet = (ch: Record<string, unknown>) => charSheetsFromTree({ 角色列表: { 艾尔玛: ch } } as never)[0];
+  const profs = (ch: Record<string, unknown>) => {
+    const s = sheet(ch);
+    return s.saveProficiencies ? [...s.saveProficiencies].sort() : null;
+  };
+
+  // 状态栏内部序列化器每次写满六项豁免默认值 false。旧实现用 includes('e') 判熟练，
+  // 而 String(false) === "false" 含 e —— 每个存过档的角色六项豁免全部虚高一个 PB。
+  ok('s9a 六项豁免 false 不产生熟练', profs(mkChar({})) === null, JSON.stringify(profs(mkChar({}))));
+  ok('s9b 力量 true → 仅 str 熟练', JSON.stringify(profs(mkChar({ 熟练配置: { 技能: {}, 豁免: { 力量: true } } }))) === '["str"]');
+  ok('s9c 力量 "p" → 仅 str 熟练', JSON.stringify(profs(mkChar({ 熟练配置: { 技能: {}, 豁免: { 力量: 'p' } } }))) === '["str"]');
+  ok('s9d 力量 "j" 不算豁免熟练', profs(mkChar({ 熟练配置: { 技能: {}, 豁免: { 力量: 'j' } } })) === null);
+  ok('s9e 豁免 "false" 不算熟练', profs(mkChar({ 熟练配置: { 技能: {}, 豁免: { 力量: 'false' } } })) === null);
+
+  // 隐匿：false 曾按专精结算（+2PB），比熟练还高
+  const hideOf = (v: unknown) => sheet(mkChar({ 熟练配置: { 技能: { 隐匿: v }, 豁免: {} } })).stealthBonus;
+  const baseDex = 2; // 敏捷 14
+  ok('s9f 隐匿 false = 无加值', hideOf(false) === baseDex, String(hideOf(false)));
+  ok('s9g 隐匿 "p" = 熟练', hideOf('p') === baseDex + 3, String(hideOf('p')));
+  ok('s9h 隐匿 "e" = 专精', hideOf('e') === baseDex + 6, String(hideOf('e')));
+
+  // 状态：世界书条目 11 教 AI 写 /状态/力竭/等级（不写 存在），旧实现要求 存在 === true
+  const st = (v: unknown) => sheet(mkChar({ 状态: v })).statuses;
+  ok('s9i 力竭{等级:2} 无需存在字段', JSON.stringify(st({ 力竭: { 等级: 2 } })) === '["exhaustion:2"]', JSON.stringify(st({ 力竭: { 等级: 2 } })));
+  ok('s9j 中毒{效果描述} 视为在场', JSON.stringify(st({ 中毒: { 效果描述: '中毒' } })) === '["poisoned"]', JSON.stringify(st({ 中毒: { 效果描述: '中毒' } })));
+  ok('s9k 存在:false 被排除', JSON.stringify(st({ 中毒: { 存在: false } })) === '[]');
+  ok('s9l 布尔形态', JSON.stringify(st({ 中毒: false, 倒地: true })) === '["prone"]', JSON.stringify(st({ 中毒: false, 倒地: true })));
+  ok('s9m 力竭保留等级', JSON.stringify(st({ 力竭: { 等级: 4 } })) === '["exhaustion:4"]');
+}
+
 console.log('\n━━━━━━━━━━━━━━ 语义测试汇总 ━━━━━━━━━━━━━━');
 console.log(`✅ 通过: ${pass}  ❌ 失败: ${fail}`);
 if (findings.length > 0) {

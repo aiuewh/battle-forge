@@ -8,7 +8,7 @@
 import type { BattleUnit, TurnState } from './types';
 import type { CharSheet } from './sheetbridge';
 import { matchSheetForName } from './sheetbridge';
-import { conditionName } from './conditions';
+import { CONDITIONS, conditionName } from './conditions';
 
 export interface ReportInput {
   battleName: string;
@@ -19,10 +19,24 @@ export interface ReportInput {
 }
 
 export interface SuggestedPatch {
-  op: 'replace';
+  op: 'replace' | 'remove';
   path: string;
-  value: string | number | boolean;
+  /** remove 操作不携带 value（JSONPatch 语义） */
+  value?: string | number | boolean | Record<string, unknown>;
   note: string;
+}
+
+/** 引擎状态 key → 写入 MVU 的中文键与形态。
+ *  力竭必须写 {等级:N}（引擎只认 exhaustion:N，裸 exhaustion 无减值）；
+ *  其余写 {存在:true, 效果描述} —— 与 sheetbridge 的读侧形态保持一致。 */
+function statusToSchemaEntry(key: string): { name: string; value: Record<string, unknown> } | null {
+  if (key.startsWith('exhaustion:')) {
+    const lv = parseInt(key.split(':')[1], 10);
+    return { name: '力竭', value: { 等级: Number.isFinite(lv) ? lv : 1 } };
+  }
+  const def = CONDITIONS[key];
+  if (!def) return null;            // 专注/祝福/闪避等战术态不入 MVU（按轮次失效）
+  return { name: def.name, value: { 存在: true, 效果描述: def.brief ?? '' } };
 }
 
 /** 单位存活状态描述 */
@@ -75,6 +89,37 @@ export function suggestPatches(units: BattleUnit[], sheets: CharSheet[]): Sugges
           });
         }
       }
+    }
+    // 状态回写：战场上获得/解除的状态（中毒/倒地/力竭…）同步进 MVU。
+    // 此前只回写 HP 与法术位，战斗中的状态蒸发 —— 面板下一轮从 MVU 读回来又是「无状态」。
+    // 只覆盖「可持久状态」：专注/祝福/闪避/受协助这类回合内战术态由引擎自行衰减，不入档。
+    const before = new Map<string, { name: string; value: Record<string, unknown> }>();
+    for (const key of sheet.statuses ?? []) {
+      const entry = statusToSchemaEntry(key);
+      if (entry) before.set(entry.name, entry);
+    }
+    const after = new Map<string, { name: string; value: Record<string, unknown> }>();
+    for (const key of u.statuses ?? []) {
+      const entry = statusToSchemaEntry(key);
+      if (entry) after.set(entry.name, entry);
+    }
+    for (const [name, entry] of after) {
+      const prev = before.get(name);
+      if (prev && JSON.stringify(prev.value) === JSON.stringify(entry.value)) continue;
+      patches.push({
+        op: 'replace',
+        path: `/角色列表/${sheet.name}/状态/${name}`,
+        value: entry.value,
+        note: `${sheet.name} 状态 ${name}${prev ? ' 更新' : ' 获得'}`,
+      });
+    }
+    for (const [name] of before) {
+      if (after.has(name)) continue;
+      patches.push({
+        op: 'remove',
+        path: `/角色列表/${sheet.name}/状态/${name}`,
+        note: `${sheet.name} 状态 ${name} 解除`,
+      });
     }
   }
   return patches;
@@ -173,10 +218,13 @@ export function generateBattleResultBlock(input: ReportInput): string {
   L.push('【建议变量更新】（数值以前端结算为准，请据此输出你的 <UpdateVariable> 补丁，法术位与状态请按你的变量协议同步）');
   if (patches.length > 0) {
     L.push('<JSONPatch>');
-    L.push(JSON.stringify(patches.map(p => ({ op: p.op, path: p.path, value: p.value })), null, 2));
+    // remove 按 JSONPatch 语义不带 value，否则部分 MVU 实现会拒绝整批补丁
+    L.push(JSON.stringify(patches.map(p => (p.op === 'remove'
+      ? { op: p.op, path: p.path }
+      : { op: p.op, path: p.path, value: p.value })), null, 2));
     L.push('</JSONPatch>');
   } else {
-    L.push('（我方生命值无变化，无需补丁）');
+    L.push('（我方生命值与状态均无变化，无需补丁）');
   }
 
   if (battleActive) {

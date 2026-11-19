@@ -1086,7 +1086,27 @@ const reportPatches = suggestPatches(reportUnits, reportSheets);
 const elmaPatch = reportPatches.find(p => p.path === '/角色列表/艾尔玛/生命值/当前');
 check('战报: 生成艾尔玛 HP 补丁', !!elmaPatch);
 check('战报: HP 补丁值=8', elmaPatch?.value === 8);
-check('战报: 补丁只含确定路径', reportPatches.every(p => p.path.startsWith('/角色列表/') && p.path.includes('/生命值/')));
+// 回写范围：HP / 法术位 / 状态（状态回写于 2026-11-19 修复，此前战斗中状态会蒸发）
+const PATCH_PATH_OK = /^\/角色列表\/[^/]+\/(生命值\/当前|施法\/法术位\/\d+环\/当前|状态\/.+)$/;
+check('战报: 补丁只含确定路径', reportPatches.every(p => PATCH_PATH_OK.test(p.path)), JSON.stringify(reportPatches.map(p => p.path)));
+// 艾尔玛单位带 poisoned，名单快照无状态 → 应产生一条状态补丁
+const poisonPatch = reportPatches.find(p => p.path === '/角色列表/艾尔玛/状态/中毒');
+check('战报: 状态获得生成补丁', !!poisonPatch && poisonPatch.op === 'replace', JSON.stringify(poisonPatch));
+check('战报: 状态补丁携带存在标记', (poisonPatch?.value as Record<string, unknown> | undefined)?.存在 === true);
+// 解除状态：名单有力竭、单位无 → remove 补丁且不带 value
+const clearedPatches = suggestPatches(
+  [mkUnit({ id: '艾尔玛', name: '艾尔玛', hp: 20, maxHp: 28, attitude: 0, statuses: [] })],
+  reportSheets.map(s => (s.name === '艾尔玛' ? { ...s, statuses: ['exhaustion:2'] } : s)),
+);
+const exhClear = clearedPatches.find(p => p.path === '/角色列表/艾尔玛/状态/力竭');
+check('战报: 状态解除生成 remove', !!exhClear && exhClear.op === 'remove', JSON.stringify(exhClear));
+check('战报: remove 不带 value', exhClear !== undefined && !('value' in exhClear));
+// 力竭获得：单位力竭 2 级 → replace {等级:2}
+const exhGain = suggestPatches(
+  [mkUnit({ id: '艾尔玛', name: '艾尔玛', hp: 20, maxHp: 28, attitude: 0, statuses: ['exhaustion:2'] })],
+  reportSheets.map(s => (s.name === '艾尔玛' ? { ...s, statuses: [] } : s)),
+).find(p => p.path === '/角色列表/艾尔玛/状态/力竭');
+check('战报: 力竭写等级形态', (exhGain?.value as Record<string, unknown> | undefined)?.等级 === 2, JSON.stringify(exhGain));
 
 const res = resourceSummary(reportUnits, reportSheets);
 check('战报: 资源摘要含中毒状态', res.some(l => l.includes('中毒')));

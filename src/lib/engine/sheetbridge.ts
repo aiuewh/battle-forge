@@ -294,6 +294,27 @@ const ABILITY_CN_KEY: Record<string, AbilityKey> = {
 };
 
 /**
+ * 熟练等级码 → 等级：0=无 1=熟练(p) 2=专精(e) 0.5=半熟练(j)。
+ * 只认精确形态，绝不用 includes 猜字母 —— 字符串 "false" 含 e，
+ * 曾导致「未熟练」被判成「专精」（六项豁免全熟练、隐匿按专精结算）。
+ * 兼容：布尔、'true'/'false'、中文、以及带数值前缀的 "5p"/"3e"/"2j"。
+ */
+function proficiencyRank(raw: unknown): number {
+  if (raw === true) return 1;
+  if (raw === false || raw === null || raw === undefined) return 0;
+  if (typeof raw === 'number') return Number.isFinite(raw) && raw > 0 ? 1 : 0;
+  const s = String(raw).trim().toLowerCase();
+  if (!s || s === 'false' || s === '0' || s === '无' || s === 'none') return 0;
+  if (s === 'true' || s === 'p' || s === 'proficient' || s === '熟练') return 1;
+  if (s === 'e' || s === 'expertise' || s === '专精') return 2;
+  if (s === 'j' || s === 'half' || s === '半熟练') return 0.5;
+  // "5p" / "8e" / "2j"：前导数字是已算好的总值，等级码在末尾
+  const m = s.match(/[+-]?\d+\s*([pej])$/);
+  if (m) return m[1] === 'e' ? 2 : m[1] === 'j' ? 0.5 : 1;
+  return 0;
+}
+
+/**
  * 2024 额外攻击职业表：战士 5/11/20 级 → 2/3/4 次；野蛮人/圣武士/游侠 5 级 → 2 次；
  * 其余职业（法师/术士/邪术师等）无额外攻击，保持 1 次。
  */
@@ -699,11 +720,17 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
     }
 
     // 状态
+    // 「是否存在」判定必须与写入方对齐：世界书条目 11 教 AI 写 `/状态/力竭/等级`（不写 存在），
+    // 状态栏读回（状态栏.html parseLegacyStatusEntry）也是「存在 缺省即视为存在」。
+    // 因此只有显式 存在:false 才排除；对象形态一律视为在场。
     const statuses: string[] = [];
     const stRaw = c['状态'];
     if (stRaw && typeof stRaw === 'object') {
       for (const [sName, sv] of Object.entries(stRaw as Record<string, unknown>)) {
-        const exists = sv && typeof sv === 'object' ? (sv as Record<string, unknown>)['存在'] === true : sv === true;
+        if (sv === false || sv === undefined || sv === null) continue;
+        const exists = sv && typeof sv === 'object'
+          ? (sv as Record<string, unknown>)['存在'] !== false
+          : true;
         if (!exists) continue;
         const key = STATUS_CN[sName];
         if (key) statuses.push(key);
@@ -714,7 +741,9 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       }
     }
 
-    // 隐匿加值 / 豁免熟练（熟练配置.豁免.属性 = "p"/true；与 技能 同风格）
+    // 隐匿加值 / 豁免熟练（熟练配置.豁免.属性 = true/false；熟练配置.技能.名 = "5p"/"8e"/"p"/"e"/"j"）
+    // 注意：不能用 includes('p'/'e') 猜等级——突变值 false 的字符串 "false" 含字母 e，
+    // 会把「未熟练」误判成「专精」。旧实现让每个存过档的角色六项豁免全熟练、隐匿按专精算。
     let stealthBonus: number | undefined;
     const saveProficiencies = new Set<AbilityKey>();
     const profRaw = c['熟练配置'];
@@ -724,13 +753,13 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
         const hide = (skillRaw as Record<string, unknown>)['隐匿'];
         if (hide !== undefined) {
           const base = abilityMod(abilities.dex);
-          const s = String(hide);
-          const explicit = s.match(/^([+-]?\d+)/);
+          // 状态栏写「总值+等级码」（如 "5p"），开头的数字就是已算好的总值，直接采用
+          const explicit = String(hide).match(/^([+-]?\d+)/);
           if (explicit) stealthBonus = parseInt(explicit[1], 10);
-          else if (s.includes('e')) stealthBonus = base + pb * 2;
-          else if (s.includes('p')) stealthBonus = base + pb;
-          else if (s.includes('j')) stealthBonus = base + Math.floor(pb / 2);
-          else stealthBonus = base;
+          else {
+            const rank = proficiencyRank(hide);
+            stealthBonus = rank >= 2 ? base + pb * 2 : rank >= 1 ? base + pb : rank > 0 ? base + Math.floor(pb / 2) : base;
+          }
         }
       }
       const saveRaw = (profRaw as Record<string, unknown>)['豁免'] ?? (profRaw as Record<string, unknown>)['豁免熟练'];
@@ -738,8 +767,8 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
         for (const [k, v] of Object.entries(saveRaw as Record<string, unknown>)) {
           const key = ABILITY_CN_KEY[k] ?? ABILITY_CN_KEY[k.toLowerCase()] ?? (['str', 'dex', 'con', 'int', 'wis', 'cha'] as AbilityKey[]).find(a => a === k.toLowerCase());
           if (!key) continue;
-          const s = String(v).toLowerCase();
-          if (v === true || s === 'true' || s.includes('p') || s.includes('e')) saveProficiencies.add(key);
+          // 豁免只认 p/e/true（半熟练 j 属「所有属性检定」类特性，不适用于豁免）
+          if (proficiencyRank(v) >= 1) saveProficiencies.add(key);
         }
       }
     }
