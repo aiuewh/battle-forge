@@ -556,7 +556,55 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
 
     // 护甲 / 先攻 / 速度
     const acRaw = c['护甲等级'];
-    const ac = getNum(acRaw, '总值', '值') ?? (typeof acRaw === 'number' ? acRaw : 13);
+    const acStored = getNum(acRaw, '总值', '值') ?? (typeof acRaw === 'number' ? acRaw : 13);
+    // 护甲模式（状态栏 7 种）：auto/armor/unarmored/monk/barbarian/mage-armor/custom。
+    // 状态栏切模式时会调 updateCharacterAC() 重算并写回 总值 —— 但它只在「切模式/换装备」
+    // 时触发；若 AI 直接改属性（如感知+2）或改装备而不经过状态栏，总值会滞留旧值。
+    // 这里按模式重新推导，与状态栏 calculateACDetails 对齐；custom/auto 一律用存档值
+    // （custom 是玩家手填，auto 状态栏已算好，引擎再算反而可能与面板不一致）。
+    const acMode = (getStr(c, '护甲模式') ?? '').trim().toLowerCase();
+    const useUnarmoredDefense = c['无甲防御'] !== false;
+    const ac = (() => {
+      const base = acStored;
+      if (!acMode || acMode === 'custom' || acMode === 'auto') return base;
+      if (!useUnarmoredDefense && acMode !== 'armor' && acMode !== 'mage-armor') return base;
+      const dexMod = abilityMod(abilities.dex);
+      const conMod = abilityMod(abilities.con);
+      const wisMod = abilityMod(abilities.wis);
+      // 盾牌加成：从 物品.护甲 里找 护甲类型=盾牌 且已装备
+      const armorInv = (c['物品'] as Record<string, unknown> | undefined)?.['护甲'];
+      let shieldBonus = 0;
+      let armorBase: number | null = null;
+      let armorType = '';
+      if (armorInv && typeof armorInv === 'object') {
+        for (const item of Object.values(armorInv as Record<string, unknown>)) {
+          if (!item || typeof item !== 'object') continue;
+          const it = item as Record<string, unknown>;
+          if (it['已装备'] !== true) continue;
+          const t = String(it['护甲类型'] ?? '').trim();
+          const v = getNum(it, '基础护甲值', '护甲值') ?? 0;
+          if (t === '盾牌') shieldBonus += v;
+          else if (['轻甲', '中甲', '重甲'].includes(t) && armorBase === null) { armorBase = v; armorType = t; }
+        }
+      }
+      switch (acMode) {
+        case 'armor': {
+          if (armorBase === null) return base;
+          const dexPart = armorType === '轻甲' ? dexMod : armorType === '中甲' ? Math.min(dexMod, 2) : 0;
+          return armorBase + dexPart + shieldBonus;
+        }
+        case 'unarmored': {
+          // 状态栏：取「10+dex+con」「10+dex+wis」「10+dex」三者最高（含盾牌加成）
+          const cands = [10 + dexMod];
+          if (useUnarmoredDefense) cands.push(10 + dexMod + conMod, 10 + dexMod + wisMod);
+          return Math.max(...cands) + (useUnarmoredDefense ? shieldBonus : 0);
+        }
+        case 'monk': return 10 + dexMod + wisMod;               // 武僧无甲防御不允许持盾
+        case 'barbarian': return 10 + dexMod + conMod + shieldBonus;
+        case 'mage-armor': return 13 + dexMod + shieldBonus;
+        default: return base;
+      }
+    })();
     const initMod = getNum(c['先攻'], '加值', '总值') ?? abilityMod(abilities.dex);
     // 速度：卡内为对象 {步行,飞行,攀爬,游泳}，主字段取步行；E13 全量装配 speeds（缺省项回退步行）；兼容纯数字旧形态
     const speedRaw = c['速度'];

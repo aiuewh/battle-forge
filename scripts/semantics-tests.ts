@@ -467,6 +467,57 @@ console.log('\n━━━━━━ S11. 职业资源（/资源 → 战斗面板�
   ok('s11j 战报摘要含资源消耗', lines.some(l => l.includes('资源') && l.includes('气 1/5')), JSON.stringify(lines));
 }
 
+console.log('\n━━━━━━ S12. 护甲模式（状态栏 7 种 → 引擎重算） ━━━━━━');
+{
+  // 敏捷16(+3) 体质14(+2) 感知16(+3)
+  const mk = (over: Record<string, unknown>): Record<string, unknown> => ({
+    姓名: '测', 等级: 5, 生命值: { 当前: 20, 最大: 20 }, 护甲等级: { 总值: 13 },
+    属性: { 力量: 16, 敏捷: 16, 体质: 14, 智力: 10, 感知: 16, 魅力: 8 },
+    熟练配置: { 技能: {}, 豁免: {} }, 物品: { 武器: {}, 护甲: {} }, 施法: {}, ...over,
+  });
+  const ac = (over: Record<string, unknown>) => charSheetsFromTree({ 角色列表: { 测: mk(over) } } as never)[0].ac;
+
+  // 无甲系模式各自公式
+  ok('s12a monk = 10+dex+wis', ac({ 护甲模式: 'monk' }) === 16, String(ac({ 护甲模式: 'monk' })));
+  ok('s12b barbarian = 10+dex+con', ac({ 护甲模式: 'barbarian' }) === 15, String(ac({ 护甲模式: 'barbarian' })));
+  ok('s12c mage-armor = 13+dex', ac({ 护甲模式: 'mage-armor' }) === 16, String(ac({ 护甲模式: 'mage-armor' })));
+  // unarmored 取「10+dex(+con)」「10+dex(+wis)」最优
+  ok('s12d unarmored 取最优', ac({ 护甲模式: 'unarmored' }) === 16, String(ac({ 护甲模式: 'unarmored' })));
+
+  // 护甲模式：按护甲类型决定敏捷上限
+  const armorInv = (type: string, base: number, shield = 0) => ({
+    物品: {
+      武器: {},
+      护甲: {
+        甲: { 护甲类型: type, 基础护甲值: base, 已装备: true },
+        ...(shield ? { 盾: { 护甲类型: '盾牌', 基础护甲值: shield, 已装备: true } } : {}),
+      },
+    },
+  });
+  ok('s12e 轻甲加满敏捷', ac({ 护甲模式: 'armor', ...armorInv('轻甲', 11) }) === 14,
+    String(ac({ 护甲模式: 'armor', ...armorInv('轻甲', 11) })));
+  ok('s12f 中甲敏捷上限 +2', ac({ 护甲模式: 'armor', ...armorInv('中甲', 15) }) === 17,
+    String(ac({ 护甲模式: 'armor', ...armorInv('中甲', 15) })));
+  ok('s12g 重甲不加敏捷', ac({ 护甲模式: 'armor', ...armorInv('重甲', 16) }) === 16,
+    String(ac({ 护甲模式: 'armor', ...armorInv('重甲', 16) })));
+  ok('s12h 护甲+盾牌', ac({ 护甲模式: 'armor', ...armorInv('重甲', 16, 2) }) === 18,
+    String(ac({ 护甲模式: 'armor', ...armorInv('重甲', 16, 2) })));
+  ok('s12i 野蛮人无甲+盾牌', ac({ 护甲模式: 'barbarian', ...armorInv('重甲', 16, 2) }) === 17);
+
+  // 关闭无甲防御 → 退回存档值（不能拿职业公式覆盖穿甲结果）
+  ok('s12j 无甲防御关闭退回存档值',
+    ac({ 护甲模式: 'monk', 无甲防御: false }) === 13 && ac({ 护甲模式: 'unarmored', 无甲防御: false }) === 13);
+
+  // auto / custom / 未设模式 一律用存档值，引擎不擅自重算
+  ok('s12k auto 用存档值', ac({ 护甲模式: 'auto', 护甲等级: { 总值: 19 } }) === 19);
+  ok('s12l custom 用存档值', ac({ 护甲模式: 'custom', 护甲等级: { 总值: 21 } }) === 21);
+  ok('s12m 未设模式用存档值', ac({ 护甲等级: { 总值: 17 } }) === 17);
+
+  // 关键收益：AI 直接改属性时，职业无甲 AC 自动跟随（旧实现会滞留登录时的总值）
+  const wis20 = { 护甲模式: 'monk', 属性: { 力量: 16, 敏捷: 16, 体质: 14, 智力: 10, 感知: 20, 魅力: 8 } };
+  ok('s12n 感知提升后 monk AC 跟随', ac(wis20) === 18, String(ac(wis20)));
+}
+
 console.log('\n━━━━━━━━━━━━━━ 语义测试汇总 ━━━━━━━━━━━━━━');
 console.log(`✅ 通过: ${pass}  ❌ 失败: ${fail}`);
 if (findings.length > 0) {
