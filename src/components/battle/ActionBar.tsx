@@ -167,6 +167,27 @@ export function ActionBar({ compact = false, boundary, onInspect }: {
       <div className="hud-economy"><span>移动 {left} 尺{queue ? ` · 余 ${queue.remaining} 次攻击` : ''}</span>{(['action','bonus','reaction'] as const).map((key, i) => <span key={key} className={actor.actionEconomy[key] ? 'spent' : ''}>{['动作','附赠','反应'][i]} {actor.actionEconomy[key] ? '已用' : '可用'}</span>)}</div>
       {readied.length > 0 && <button className="hud-ready-button" disabled={store.readOnly || !!pr} onClick={() => { setReadyTrigger(true); setReadyTarget(''); }}>预备反应 {readied.length}</button>}
     </div>
+    {/* 职业资源：直接显示在 HUD 上并点按消耗，避免为花 1 点气去开人物卡。
+        恢复不在此处——那是休息/结算动作，放人物卡的 +/- 与报告回写。 */}
+    {actor.resources && actor.resources.length > 0 && (
+      <div className="hud-status-strip" aria-label="职业资源">
+        {actor.resources.map(res => {
+          const empty = res.current <= 0;
+          return (
+            <button
+              key={res.name}
+              type="button"
+              disabled={store.readOnly || empty || locked}
+              onClick={() => store.spendResource(actor.id, res.name)}
+              title={`${res.name}：${res.current}/${res.max}${res.rule ? `（${res.rule}恢复）` : ''} — 点击消耗 1 点`}
+              className={empty ? 'hud-resource hud-resource-empty' : 'hud-resource'}
+            >
+              {res.name} {res.current}/{res.max}
+            </button>
+          );
+        })}
+      </div>
+    )}
     {(actor.concentration || actor.statuses.length > 0) && <div className="hud-status-strip" aria-label="当前角色状态">
       {actor.concentration && <span className="hud-concentration">专注 · {actor.concentration}</span>}
       {actor.statuses.slice(0, 3).map(status => <span key={status}>{conditionName(status)}</span>)}

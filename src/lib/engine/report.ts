@@ -121,6 +121,20 @@ export function suggestPatches(units: BattleUnit[], sheets: CharSheet[]): Sugges
         note: `${sheet.name} 状态 ${name} 解除`,
       });
     }
+    // 资源回写：狂暴/气/法术点等是战中最容易被消耗、又最容易忘记同步的数值。
+    // 只写 当前值 —— 最大值与恢复规则是角色卡定义，不该被战斗过程改写。
+    const beforeRes = new Map<string, number>();
+    for (const r of sheet.resources ?? []) beforeRes.set(r.name, r.current);
+    for (const r of u.resources ?? []) {
+      const prev = beforeRes.get(r.name);
+      if (prev === undefined || prev === r.current) continue;
+      patches.push({
+        op: 'replace',
+        path: `/角色列表/${sheet.name}/资源/${r.name}/当前值`,
+        value: r.current,
+        note: `${sheet.name} 【${r.name}】${prev} → ${r.current}`,
+      });
+    }
   }
   return patches;
 }
@@ -141,6 +155,17 @@ export function resourceSummary(units: BattleUnit[], sheets: CharSheet[]): strin
         }
       }
       if (spent.length > 0) parts.push(`法术位：${spent.join('、')}`);
+    }
+    // 资源消耗：与法术位同样重要，战报里要能让 DM 叙述「气力耗尽」这类状态
+    if (sheet?.resources?.length) {
+      const used: string[] = [];
+      for (const r of u.resources ?? []) {
+        const origin = sheet.resources!.find(x => x.name === r.name);
+        if (origin && origin.current !== r.current) {
+          used.push(`${r.name} ${r.current}/${r.max}（战前 ${origin.current}）`);
+        }
+      }
+      if (used.length > 0) parts.push(`资源：${used.join('、')}`);
     }
     if (u.hp <= 0 && !u.deathSaves?.dead) parts.push('倒地昏迷，需救助');
     if (u.deathSaves?.dead) parts.push('阵亡');

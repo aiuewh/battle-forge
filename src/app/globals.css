@@ -351,6 +351,16 @@
 .hud-status-strip > span { border-radius: 5px; padding: 3px 7px; color: #ffb8a7; background: rgba(99,54,45,.4); }
 .hud-status-strip > .hud-concentration { color: #80dbcd; background: rgba(30,102,90,.33); }
 .hud-status-strip button { min-height: 24px !important; padding: 1px 5px !important; font-size: 11px !important; }
+/* 职业资源：琥珀=可用，暗红=耗尽。点击消耗 1 点（恢复走人物卡/休息） */
+.hud-status-strip .hud-resource {
+  color: #f6d79a !important; background: rgba(96, 74, 32, .45) !important;
+  border-color: rgba(216, 178, 122, .45) !important;
+}
+.hud-status-strip .hud-resource:hover:not(:disabled) { background: rgba(126, 96, 40, .6) !important; }
+.hud-status-strip .hud-resource-empty {
+  color: #e08f86 !important; background: rgba(92, 38, 32, .45) !important;
+  border-color: rgba(200, 96, 82, .4) !important;
+}
 .hud-version { display: block; color: #c7bba7; padding: 4px 0 10px; overflow-wrap: anywhere; }
 .hud-upcast { display: block; color: #f4cc89; }
 .hud-cast-level { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; }

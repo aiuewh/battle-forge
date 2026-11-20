@@ -166,6 +166,52 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
           </label>
         </div>
 
+        {/* 职业资源：战斗中要实时看见余量并一键消耗，因此常驻不折叠。
+            没有资源（非施法者/未登记）时不占空间。 */}
+        {unit.resources && unit.resources.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {unit.resources.map(res => {
+              const full = res.current >= res.max;
+              const empty = res.current <= 0;
+              return (
+                <div key={res.name}
+                  className={cn('flex items-center gap-1 rounded-lg border px-1.5 py-1 transition-colors',
+                    empty ? 'border-red-500/40 bg-red-950/25' : full ? 'border-border/50 bg-black/25' : 'border-amber-500/40 bg-amber-950/20')}
+                  title={[res.desc, res.rule ? `恢复：${res.rule}` : ''].filter(Boolean).join(' · ')}
+                >
+                  <button
+                    type="button"
+                    onClick={() => store.spendResource(unit.id, res.name)}
+                    disabled={store.readOnly || empty}
+                    aria-label={`消耗 1 点${res.name}`}
+                    className="text-[13px] leading-none text-muted-foreground transition-colors hover:text-red-300 disabled:opacity-40 disabled:hover:text-muted-foreground"
+                  >−</button>
+                  <span className="text-[11.5px] font-medium text-foreground/90">{res.name}</span>
+                  {/* 点数用圆点表示余量；max 过大（>12）时退回数字，避免撑爆一行 */}
+                  {res.max <= 12 ? (
+                    <span className="flex gap-0.5" aria-hidden>
+                      {Array.from({ length: res.max }).map((_, i) => (
+                        <i key={i} className={cn('h-2 w-2 rounded-full',
+                          i < res.current ? 'bg-amber-300 shadow-[0_0_5px_rgba(252,211,77,0.55)]' : 'bg-white/15')} />
+                      ))}
+                    </span>
+                  ) : null}
+                  <span className="text-[11px] tabular-nums text-muted-foreground">
+                    <b className={cn('font-semibold', empty ? 'text-red-300' : 'text-foreground/80')}>{res.current}</b>/{res.max}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => store.restoreResource(unit.id, res.name)}
+                    disabled={store.readOnly || full}
+                    aria-label={`恢复 1 点${res.name}`}
+                    className="text-[13px] leading-none text-muted-foreground transition-colors hover:text-emerald-300 disabled:opacity-40 disabled:hover:text-muted-foreground"
+                  >+</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {unit.knockedOut && (
           <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 p-2 text-[11.5px]">
             <span className="flex-1">留活口 · 1 HP 昏迷 · 已开始短休</span>
@@ -392,14 +438,33 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
         <DamageAdjuster unit={unit} />
       </Section>
 
-      {/* 法术位 */}
+      {/* 法术位 + 资源恢复：两者都是「休息时回满」的东西，放在同一折叠区 */}
       <Section
-        title="法术位"
-        summary={unit.spellSlots
-          ? Object.entries(unit.spellSlots).sort((a, b) => Number(a[0]) - Number(b[0])).map(([lv, s]) => `${lv}环${s.current}/${s.max}`).join(' ')
-          : '未设置'}
+        title="法术位与资源"
+        summary={[
+          unit.spellSlots
+            ? Object.entries(unit.spellSlots).sort((a, b) => Number(a[0]) - Number(b[0])).map(([lv, s]) => `${lv}环${s.current}/${s.max}`).join(' ')
+            : '',
+          unit.resources?.length ? `资源 ${unit.resources.map(r => `${r.name}${r.current}/${r.max}`).join(' ')}` : '',
+        ].filter(Boolean).join(' · ') || '未设置'}
       >
-        <SpellSlotEditor unitId={unit.id} />
+        <div className="flex flex-col gap-2">
+          <SpellSlotEditor unitId={unit.id} />
+          {unit.resources && unit.resources.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10.5px] text-muted-foreground">休息恢复</span>
+              <Button size="sm" variant="ghost" className="h-6 text-[11px]"
+                onClick={() => { store.restoreResourcesByRule(unit.id, 'short'); }}>
+                短休
+              </Button>
+              <Button size="sm" variant="ghost" className="h-6 text-[11px]"
+                onClick={() => { store.restoreResourcesByRule(unit.id, 'long'); }}>
+                长休
+              </Button>
+              <span className="text-[10px] text-muted-foreground/60">按各资源「恢复规则」匹配</span>
+            </div>
+          )}
+        </div>
       </Section>
 
       {/* 备注 */}

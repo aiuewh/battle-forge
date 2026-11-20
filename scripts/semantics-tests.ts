@@ -10,7 +10,7 @@ import { parseFormula, rollFormula, setRng } from '../src/lib/engine/dice';
 import { parseEncounterDefs } from '../src/lib/engine/statblocks';
 import { applyPatches, charSheetsFromTree, unitFromCharSheet } from '../src/lib/engine/sheetbridge';
 import { mergeUnitFromProtocol } from '../src/lib/engine/merge';
-import { suggestPatches } from '../src/lib/engine/report';
+import { suggestPatches, resourceSummary } from '../src/lib/engine/report';
 import { planTurn, validateStep, type AiContext } from '../src/lib/engine/ai';
 import type { BattleUnit } from '../src/lib/engine/types';
 
@@ -417,6 +417,54 @@ console.log('\n━━━━━━ S10. 2026-11-20 武器射程/两用与 PB 回�
   // 两用：词条只在 属性特征 时抽出第二段骰
   ok('s10f 两用词条抽出第二段骰',
     ab('长剑', { 伤害公式: '1d8', 熟练: true, 属性特征: '两用(1d10)' }).versatileDice === '1d10');
+}
+
+console.log('\n━━━━━━ S11. 职业资源（/资源 → 战斗面板） ━━━━━━');
+{
+  const mkChar = (res: Record<string, unknown>): Record<string, unknown> => ({
+    姓名: '僧', 等级: 5, 生命值: { 当前: 30, 最大: 30 }, 护甲等级: { 总值: 16 },
+    属性: { 力量: 16, 敏捷: 16, 体质: 14, 智力: 10, 感知: 14, 魅力: 8 },
+    熟练配置: { 技能: {}, 豁免: {} }, 物品: { 武器: {} }, 施法: {}, 资源: res,
+  });
+  const sheetOf = (res: Record<string, unknown>) => charSheetsFromTree({ 角色列表: { 僧: mkChar(res) } } as never)[0];
+
+  // 标准 MVU 形态
+  const s1 = sheetOf({ 气: { 当前值: 3, 最大值: 5, 恢复规则: '短休', 描述: '武僧气点' } });
+  ok('s11a 资源解析（名称/当前/最大/规则）',
+    s1.resources?.length === 1 && s1.resources[0].name === '气'
+    && s1.resources[0].current === 3 && s1.resources[0].max === 5
+    && s1.resources[0].rule === '短休' && s1.resources[0].desc === '武僧气点',
+    JSON.stringify(s1.resources));
+
+  // 当前值超上限要钳制
+  ok('s11b 当前值钳制到最大值', sheetOf({ 气: { 当前值: 9, 最大值: 5 } }).resources?.[0].current === 5);
+  // 最大值 0 的条目跳过（占位/废弃资源不该出现在 HUD）
+  ok('s11c 最大值 0 跳过', sheetOf({ 空: { 当前值: 0, 最大值: 0 } }).resources === undefined);
+  // 数字简写兼容
+  ok('s11d 数字简写', sheetOf({ 气: 4 }).resources?.[0].current === 4);
+  // 无资源时不占位
+  ok('s11e 无资源为 undefined', sheetOf({}).resources === undefined);
+
+  // BattleUnit 拿到独立副本，改战斗不会回写 sheet
+  const sf = sheetOf({ 气: { 当前值: 3, 最大值: 5 } });
+  const unit = unitFromCharSheet(sf);
+  ok('s11f 资源进入 BattleUnit', unit.resources?.[0].current === 3);
+  ok('s11g 资源是独立副本', unit.resources !== sf.resources);
+
+  // 战报补丁：资源下降要回写 当前值
+  const patches = suggestPatches(
+    [{ ...unit, resources: [{ name: '气', current: 1, max: 5, rule: '短休' }] }],
+    [sf],
+  );
+  const resPatch = patches.find(p => p.path === '/角色列表/僧/资源/气/当前值');
+  ok('s11h 资源变化生成补丁', !!resPatch && resPatch.op === 'replace' && resPatch.value === 1,
+    JSON.stringify(resPatch));
+  // 未变化不产补丁
+  ok('s11i 资源未变不产补丁',
+    suggestPatches([{ ...unit, resources: [{ name: '气', current: 3, max: 5 }] }], [sf]).length === 0);
+  // 战报摘要体现资源消耗
+  const lines = resourceSummary([{ ...unit, resources: [{ name: '气', current: 1, max: 5 }] }], [sf]);
+  ok('s11j 战报摘要含资源消耗', lines.some(l => l.includes('资源') && l.includes('气 1/5')), JSON.stringify(lines));
 }
 
 console.log('\n━━━━━━━━━━━━━━ 语义测试汇总 ━━━━━━━━━━━━━━');

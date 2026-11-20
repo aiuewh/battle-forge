@@ -8,7 +8,7 @@
  *   /状态.{名}.{存在}、/熟练配置.技能.隐匿
  */
 import type {
-  Abilities, AbilityKey, AiAbility, BattleUnit, DamageType, SpellSlots, UnitSpeeds,
+  Abilities, AbilityKey, AiAbility, BattleUnit, DamageType, SpellSlots, UnitSpeeds, UnitResource,
 } from './types';
 import { abilityMod, proficiencyBonus, formatMod } from './rules';
 import { DAMAGE_TYPE_CN, DAMAGE_TYPE_TO_CN, stripInstanceSuffix, parseAttack } from './statblocks';
@@ -228,6 +228,8 @@ export interface CharSheet {
   speeds?: UnitSpeeds;
   abilities: Abilities;
   spellSlots?: SpellSlots;
+  /** 职业资源（来自 MVU /资源/{名称}） */
+  resources?: UnitResource[];
   weapons: WeaponDef[];
   spells: SpellDef[];
   /** 特性动作：/特性.{种族,职业,专长} 下带结构化动作字段的条目（自设招式），按敌卡解析器结算 */
@@ -593,6 +595,38 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       }
     }
 
+    // 职业资源 → UnitResource[]
+    // MVU 形态：/资源/{名称} = {当前值, 最大值, 恢复规则, 描述}
+    // 战斗面板只做「看见 + 消耗 + 恢复」；什么时候该花、花几点由玩家/AI 决定。
+    // 最大值 <= 0 的条目跳过（占位或已废弃资源）。
+    let resources: UnitResource[] | undefined;
+    const resRaw = c['资源'];
+    if (resRaw && typeof resRaw === 'object' && !Array.isArray(resRaw)) {
+      const list: UnitResource[] = [];
+      for (const [resName, rv] of Object.entries(resRaw as Record<string, unknown>)) {
+        const nm = String(resName || '').trim();
+        if (!nm) continue;
+        if (rv === null || typeof rv !== 'object') {
+          // 兼容极简形态：资源名: 数字（当作 当前值=最大值）
+          const n = typeof rv === 'number' ? rv : NaN;
+          if (Number.isFinite(n) && n > 0) list.push({ name: nm, current: n, max: n });
+          continue;
+        }
+        const cur = getNum(rv, '当前值', '当前');
+        const max = getNum(rv, '最大值', '最大');
+        const maxVal = max ?? (cur ?? 0);
+        if (!(maxVal > 0)) continue;
+        list.push({
+          name: nm,
+          current: Math.max(0, Math.min(cur ?? maxVal, maxVal)),
+          max: maxVal,
+          rule: getStr(rv, '恢复规则') ?? '',
+          desc: getStr(rv, '描述') ?? '',
+        });
+      }
+      if (list.length > 0) resources = list;
+    }
+
     // 武器 → WeaponDef
     const weapons: WeaponDef[] = [];
     const invRaw = c['物品'];
@@ -800,6 +834,7 @@ export function charSheetsFromTree(tree: VarTree): CharSheet[] {
       ac, initMod, speed, speeds,
       abilities,
       spellSlots,
+      resources,
       weapons,
       spells,
       traitActions,
@@ -918,6 +953,7 @@ export function unitFromCharSheet(sheet: CharSheet, opts: SheetToUnitOptions = {
     immunities: [...sheet.immunities],
     vulnerabilities: [...sheet.vulnerabilities],
     spellSlots: sheet.spellSlots ? JSON.parse(JSON.stringify(sheet.spellSlots)) : undefined,
+    resources: sheet.resources ? JSON.parse(JSON.stringify(sheet.resources)) : undefined,
     concentration: undefined,
     actionEconomy: { action: false, bonus: false, reaction: false, movementUsed: 0 },
     hasActed: false,

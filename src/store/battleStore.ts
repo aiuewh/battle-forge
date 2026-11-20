@@ -383,6 +383,15 @@ export interface BattleStore {
   /** 消耗一个法术位；返回实际消耗的环阶（升环向上代打时可能 > level），未消耗返回 null。旧调用不读返回值即兼容 */
   spendSpellSlot: (id: string, level: number, opts?: { allowHigher?: boolean }) => number | null;
   restoreSpellSlots: (id: string, longRest?: boolean) => void;
+
+  // ---- 职业资源（狂暴/气/法术点/龙吐息充能等，来自 MVU /资源）----
+  /** 消耗资源；余量不足时不消耗并记提示。返回消耗后的余量，失败返回 null */
+  spendResource: (id: string, name: string, amount?: number) => number | null;
+  /** 恢复资源；已满时不动作。返回恢复后的余量 */
+  restoreResource: (id: string, name: string, amount?: number) => number | null;
+  /** 按恢复规则批量恢复（short=短休/长休都恢复，long=只恢复长休类） */
+  restoreResourcesByRule: (id: string, mode: 'short' | 'long') => number;
+
   setConcentration: (id: string, spell: string | null) => void;
 
   // ---- 死亡豁免 ----
@@ -690,6 +699,7 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
       vulnerabilities: unit.vulnerabilities ?? [],
       deathSaves: unit.deathSaves,
       spellSlots: unit.spellSlots,
+      resources: unit.resources,
       concentration: unit.concentration,
       legendary: unit.legendary,
       actionEconomy: defaultActionEconomy(),
@@ -988,6 +998,63 @@ export const useBattleStore = create<BattleStore>((set, get) => ({
     set({ units: get().units.map(u => (u.id === id ? { ...u, spellSlots: slots } : u)) });
     get().logEvent({ type: 'spell-slot', actorId: id, text: `${unit.name} ${longRest ? '长休' : '短休(房规半恢复)'}恢复法术位`, level: 'good' });
     persist(get());
+  },
+
+  // ---- 职业资源 ----
+  spendResource: (id, name, amount = 1) => {
+    const unit = get().units.find(u => u.id === id);
+    const res = unit?.resources?.find(r => r.name === name);
+    if (!unit || !res) return null;
+    const n = Math.max(1, Math.floor(amount));
+    if (res.current < n) {
+      get().logEvent({ type: 'resource', actorId: id, text: `⛔ ${unit.name} 的【${name}】不足（${res.current}/${res.max}）`, level: 'info' });
+      return null;
+    }
+    const next = res.current - n;
+    set({ units: get().units.map(u => (u.id === id
+      ? { ...u, resources: (u.resources ?? []).map(r => (r.name === name ? { ...r, current: next } : r)) }
+      : u)) });
+    get().logEvent({ type: 'resource', actorId: id, text: `${unit.name} 消耗【${name}】${n} 点（余 ${next}/${res.max}）`, level: 'info' });
+    persist(get());
+    return next;
+  },
+
+  restoreResource: (id, name, amount = 1) => {
+    const unit = get().units.find(u => u.id === id);
+    const res = unit?.resources?.find(r => r.name === name);
+    if (!unit || !res) return null;
+    if (res.current >= res.max) return res.current;
+    const n = Math.max(1, Math.floor(amount));
+    const next = Math.min(res.max, res.current + n);
+    set({ units: get().units.map(u => (u.id === id
+      ? { ...u, resources: (u.resources ?? []).map(r => (r.name === name ? { ...r, current: next } : r)) }
+      : u)) });
+    get().logEvent({ type: 'resource', actorId: id, text: `${unit.name} 恢复【${name}】至 ${next}/${res.max}`, level: 'good' });
+    persist(get());
+    return next;
+  },
+
+  restoreResourcesByRule: (id, mode) => {
+    const unit = get().units.find(u => u.id === id);
+    if (!unit?.resources?.length) return 0;
+    // 恢复规则是自由文本（「短休」「长休」「无」…）。匹配不上时按长休处理最宽松的假设不安全，
+    // 因此只在明确含「短休」「长休」「每回合」等关键词时才恢复；否则保持不动，由玩家手动点。
+    const matches = (rule: string | undefined) => {
+      const r = String(rule ?? '');
+      if (mode === 'long') return /长休|日|每天|long/i.test(r);
+      return /短休|长休|回合|遭遇|short|long/i.test(r);
+    };
+    let count = 0;
+    const next = unit.resources.map(ruler => {
+      if (ruler.current >= ruler.max || !matches(ruler.rule)) return ruler;
+      count++;
+      return { ...ruler, current: ruler.max };
+    });
+    if (count === 0) return 0;
+    set({ units: get().units.map(u => (u.id === id ? { ...u, resources: next } : u)) });
+    get().logEvent({ type: 'resource', actorId: id, text: `${unit.name} ${mode === 'long' ? '长休' : '短休'}恢复 ${count} 项资源`, level: 'good' });
+    persist(get());
+    return count;
   },
 
   setConcentration: (id, spell) => {

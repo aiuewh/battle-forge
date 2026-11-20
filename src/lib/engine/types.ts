@@ -250,6 +250,20 @@ export interface UnitSpeeds {
   swim?: number;
 }
 
+/** 职业资源（狂暴/气/法术点/龙吐息充能/引导神力等）。
+ *  来自 MVU `/资源/{名称}`：{当前值, 最大值, 恢复规则, 描述}。
+ *  战斗面板只负责「看见 + 消耗 + 恢复」，具体规则由叙事与 AI 决定。 */
+export interface UnitResource {
+  /** 资源名（= MVU 里的键名） */
+  name: string;
+  current: number;
+  max: number;
+  /** 恢复规则：短休 / 长休 / 无，用于「恢复」按钮的说明与分组 */
+  rule?: string;
+  /** 描述（能力来源、效果说明） */
+  desc?: string;
+}
+
 /** 战斗单位 */
 export interface BattleUnit {
   /** 协议 UnitId（唯一标识） */
@@ -299,6 +313,8 @@ export interface BattleUnit {
   knockedOut?: boolean;
   slotCastThisTurn?: boolean;
   spellSlots?: SpellSlots;
+  /** 职业资源（狂暴/气/法术点等）：来自 MVU /资源，战斗中可消耗与恢复 */
+  resources?: UnitResource[];
   legendary?: { points: number; max: number };
   /** 传奇动作列表（敌卡「传奇动作」字段；在其他单位回合结束后消耗点数自动执行） */
   legendaryActions?: LegendaryActionDef[];
@@ -437,7 +453,7 @@ export type BattleEventType =
   | 'round-start' | 'turn-start' | 'turn-end'
   | 'attack' | 'damage' | 'heal' | 'save' | 'check'
   | 'status-add' | 'status-remove' | 'move'
-  | 'death' | 'stabilize' | 'revive' | 'spell-slot'
+  | 'death' | 'stabilize' | 'revive' | 'spell-slot' | 'resource'
   | 'concentration' | 'legendary' | 'lair'
   | 'unit-add' | 'unit-remove' | 'note' | 'custom';
 
