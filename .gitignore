@@ -61,3 +61,6 @@ server.log
 /.next-export/
 # 本地测试页（仅本地验证，不部署）
 /public/action-flow-harness.html
+
+# 本地视觉验证脚本（非产品代码）
+/.viz/

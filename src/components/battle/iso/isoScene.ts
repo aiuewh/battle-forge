@@ -49,6 +49,17 @@ export const STAGE_PALETTE = {
   plateBorder: 'rgba(229,189,125,0.32)',
   plateBorderCurrent: 'rgba(229,189,125,0.9)',
   plateBorderSelected: 'rgba(255,246,224,0.82)',
+  // ── 环境层（v2 2026-11-23）──
+  // 此前战场只有纯色棋盘格 + 单位，画面扁平单调。这三层是低成本的氛围叠加：
+  //   ① 光晕：从战场中心向外的暖光衰减，制造"被火把照亮"的焦点感
+  //   ② 边界晕影：地图外圈向内压暗，视线自然收拢到中心
+  //   ③ 地面颗粒：极淡的噪点，避免大色块显得像塑料板
+  vignetteEdge: 'rgba(4,3,2,0.62)',
+  vignetteCore: 'rgba(4,3,2,0)',
+  glowCore: 'rgba(255,214,150,0.11)',
+  glowEdge: 'rgba(255,200,120,0)',
+  gritLight: 'rgba(255,236,200,0.030)',
+  gritDark: 'rgba(0,0,0,0.055)',
 } as const;
 
 /**
@@ -140,6 +151,313 @@ export function drawFloorTile(
   ctx.strokeStyle = inBounds ? STAGE_PALETTE.gridIn : STAGE_PALETTE.gridOut;
   ctx.lineWidth = 1;
   ctx.stroke();
+
+  // 每 5 格一条主网格线：地图类 UI 的通行做法，
+  // 让小格有了「尺」的参照，扫读距离时不用逐格数。
+  if (inBounds && (cx % 5 === 0 || cy % 5 === 0)) {
+    const n = proj.p(cx, cy), e = proj.p(cx + 1, cy);
+    const s2 = proj.p(cx + 1, cy + 1), w2 = proj.p(cx, cy + 1);
+    ctx.strokeStyle = 'rgba(229,189,125,0.16)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (cy % 5 === 0) { ctx.moveTo(n.x, n.y); ctx.lineTo(e.x, e.y); }       // 北边
+    if (cx % 5 === 0) { ctx.moveTo(w2.x, w2.y); ctx.lineTo(s2.x, s2.y); }   // 西边
+    ctx.stroke();
+  }
+}
+
+/**
+ * 地面颗粒：极淡的随机噪点，打散大色块的塑料感。
+ * 用 muHash 保证同一格每帧噪点一致（否则会闪）。只在地图范围内画。
+ */
+export function drawFloorGrit(
+  ctx: CanvasRenderingContext2D,
+  proj: Projector,
+  cx: number,
+  cy: number,
+  seed: number,
+) {
+  // 每格 5-7 个点，位置由 (格坐标, 序号, seed) 决定 —— 稳定不闪
+  const n = 5 + (seed % 3);
+  for (let i = 0; i < n; i++) {
+    const h1 = ((cx * 73856093) ^ (cy * 19349663) ^ (i * 83492791) ^ seed) >>> 0;
+    const h2 = (h1 * 2654435761) >>> 0;
+    const fx = (h1 % 1000) / 1000;
+    const fy = (h2 % 1000) / 1000;
+    const p = proj.p(cx + fx, cy + fy);
+    const r = 0.5 + ((h1 >> 8) % 3) * 0.28;
+    ctx.fillStyle = (i % 2 === 0) ? STAGE_PALETTE.gritLight : STAGE_PALETTE.gritDark;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/**
+ * 地形装饰：在部分格子上撒确定性碎石/裂纹/苔痕。
+ *
+ * 为什么需要它：纯棋盘格 + 光照解决不了「单调」——地面没有任何信息密度。
+ * 装饰用格坐标哈希决定，同一格永远同一图案（不闪），也不需要美术素材。
+ * 密度由 seed 控制；只画很小的笔触，不遮挡格线、不影响点击判定。
+ */
+export function drawTerrainDetail(
+  ctx: CanvasRenderingContext2D,
+  proj: Projector,
+  cx: number,
+  cy: number,
+  seed: number,
+) {
+  const h = ((cx * 73856093) ^ (cy * 19349663) ^ (seed * 83492791)) >>> 0;
+  const kind = h % 10;
+  // 10 格里约 3 格有装饰。碎石在 1280px 下会退化成均匀白点（像脏屏），
+  // 所以只保留裂纹与苔痕这两种「成片」的笔触。
+  if (kind > 2) return;
+
+  const cxF = ((h >> 4) % 700) / 700 * 0.7 + 0.15;
+  const cyF = ((h >> 11) % 700) / 700 * 0.7 + 0.15;
+  const p = proj.p(cx + cxF, cy + cyF);
+  const sc = proj.scale;
+
+  ctx.save();
+  if (kind === 0) {
+    // 裂纹：一条折线
+    ctx.strokeStyle = 'rgba(14,11,8,0.72)';
+    ctx.lineWidth = Math.max(1.2, 1.8 * sc);
+    ctx.beginPath();
+    let px = p.x - 16 * sc, py = p.y;
+    ctx.moveTo(px, py);
+    for (let i = 0; i < 3; i++) {
+      const hh = (h * (i + 7) * 2246822519) >>> 0;
+      px += (8 + (hh % 6)) * sc;
+      py += (((hh >> 5) % 9) - 4) * sc * 0.85;
+      ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  } else {
+    // 苔痕：一小片暗淡绿斑
+    const g = ctx.createRadialGradient(p.x, p.y, 1, p.x, p.y, 17 * sc);
+    g.addColorStop(0, 'rgba(88,112,66,0.52)');
+    g.addColorStop(0.6, 'rgba(74,98,56,0.26)');
+    g.addColorStop(1, 'rgba(66,88,50,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, 17 * sc, 8.5 * sc, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * 战场光晕：以可见区域中心为源的径向暖光，让玩家视线落在战场中央。
+ * 画在全部地面之后、单位之前，alpha 很低不会影响格线可读性。
+ */
+export function drawStageGlow(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+) {
+  const cx = w * 0.5;
+  const cy = h * 0.46;
+  const radius = Math.max(w, h) * 0.62;
+  const g = ctx.createRadialGradient(cx, cy, radius * 0.08, cx, cy, radius);
+  g.addColorStop(0, STAGE_PALETTE.glowCore);
+  g.addColorStop(0.55, 'rgba(255,205,130,0.042)');
+  g.addColorStop(1, STAGE_PALETTE.glowEdge);
+  ctx.save();
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+/**
+ * 边界晕影：四边向内压暗，把视线收拢到战场中心。
+ * 用四条线性渐变而不是单体径向，避免中间区域被压平。
+ */
+export function drawStageVignette(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  strength = 1,
+) {
+  const band = Math.max(64, Math.min(w, h) * 0.22);
+  ctx.save();
+  ctx.globalAlpha = strength;
+
+  // 上：边缘深 → 内侧透明
+  let g = ctx.createLinearGradient(0, 0, 0, band);
+  g.addColorStop(0, STAGE_PALETTE.vignetteEdge);
+  g.addColorStop(1, STAGE_PALETTE.vignetteCore);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, band);
+
+  // 下：反向
+  g = ctx.createLinearGradient(0, h, 0, h - band);
+  g.addColorStop(0, STAGE_PALETTE.vignetteEdge);
+  g.addColorStop(1, STAGE_PALETTE.vignetteCore);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, h - band, w, band);
+
+  // 左：边缘深 → 内侧透明
+  g = ctx.createLinearGradient(0, 0, band, 0);
+  g.addColorStop(0, STAGE_PALETTE.vignetteEdge);
+  g.addColorStop(1, STAGE_PALETTE.vignetteCore);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, band, h);
+
+  // 右：反向
+  g = ctx.createLinearGradient(w, 0, w - band, 0);
+  g.addColorStop(0, STAGE_PALETTE.vignetteEdge);
+  g.addColorStop(1, STAGE_PALETTE.vignetteCore);
+  ctx.fillStyle = g;
+  ctx.fillRect(w - band, 0, band, h);
+
+  ctx.restore();
+}
+
+/**
+ * 台面厚度：沿地图菱形的两条前边（南、东）向下画出"地基"，
+ * 让整张地图看起来是一块有厚度的石台，而不是浮着的平面贴图。
+ *
+ * 这是等距视角最能提升体积感的一步 —— 平面贴图无论怎么加光照都是"贴纸"，
+ * 有了侧壁立刻变成"物件"。只用两个多边形 + 一条顶楞高光。
+ */
+export function drawSlabWall(
+  ctx: CanvasRenderingContext2D,
+  proj: Projector,
+  mapW: number,
+  mapH: number,
+  depthPx: number,
+) {
+  const cS = proj.p(mapW, mapH);   // 南角（最下方）
+  const cE = proj.p(mapW, 0);       // 东角（右侧）
+  const cW = proj.p(0, mapH);       // 西角（左侧）
+
+  ctx.save();
+  // 右侧壁（S→E 的下沿）
+  ctx.beginPath();
+  ctx.moveTo(cE.x, cE.y);
+  ctx.lineTo(cS.x, cS.y);
+  ctx.lineTo(cS.x, cS.y + depthPx);
+  ctx.lineTo(cE.x, cE.y + depthPx);
+  ctx.closePath();
+  const gR = ctx.createLinearGradient(cE.x, cE.y, cS.x, cS.y + depthPx);
+  gR.addColorStop(0, 'rgba(48,40,30,0.98)');
+  gR.addColorStop(0.5, 'rgba(38,32,24,0.98)');
+  gR.addColorStop(1, 'rgba(26,22,16,0.98)');
+  ctx.fillStyle = gR;
+  ctx.fill();
+
+  // 左侧壁（S→W 的下沿）
+  ctx.beginPath();
+  ctx.moveTo(cS.x, cS.y);
+  ctx.lineTo(cW.x, cW.y);
+  ctx.lineTo(cW.x, cW.y + depthPx);
+  ctx.lineTo(cS.x, cS.y + depthPx);
+  ctx.closePath();
+  const gL = ctx.createLinearGradient(cS.x, cS.y, cW.x, cW.y + depthPx);
+  gL.addColorStop(0, 'rgba(30,25,19,0.98)');
+  gL.addColorStop(1, 'rgba(20,17,13,0.98)');
+  ctx.fillStyle = gL;
+  ctx.fill();
+
+  // 南角竖楞：最靠前的那条边，加一道亮线强调厚度转角
+  ctx.beginPath();
+  ctx.moveTo(cS.x, cS.y);
+  ctx.lineTo(cS.x, cS.y + depthPx);
+  ctx.strokeStyle = 'rgba(229,189,125,0.20)';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+
+  // 底部收边：比壁面更暗一线，制造"侵入地面"的落影
+  ctx.beginPath();
+  ctx.moveTo(cW.x, cW.y + depthPx);
+  ctx.lineTo(cS.x, cS.y + depthPx);
+  ctx.lineTo(cE.x, cE.y + depthPx);
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/**
+ * 边界外深渊：在地图菱形之外画一层向外衰减的暗色，
+ * 让"地图浮在深渊上"而不是"贴在一块黑布上"。
+ * 做法：先用菱形路径 + 反向 even-odd 填充整屏，再叠径向渐变压暗外缘。
+ */
+export function drawAbyss(
+  ctx: CanvasRenderingContext2D,
+  proj: Projector,
+  mapW: number,
+  mapH: number,
+  w: number,
+  h: number,
+) {
+  const cN = proj.p(0, 0), cE = proj.p(mapW, 0), cS = proj.p(mapW, mapH), cW = proj.p(0, mapH);
+  // 地图重心（用于径向渐变的圆心）
+  const cx = (cN.x + cS.x) / 2;
+  const cy = (cN.y + cS.y) / 2;
+  // 从地图边界到屏幕角落的距离
+  const far = Math.hypot(Math.max(cx, w - cx), Math.max(cy, h - cy));
+
+  ctx.save();
+  // even-odd：整屏减去地图菱形
+  ctx.beginPath();
+  ctx.rect(0, 0, w, h);
+  ctx.moveTo(cN.x, cN.y); ctx.lineTo(cE.x, cE.y); ctx.lineTo(cS.x, cS.y); ctx.lineTo(cW.x, cW.y);
+  ctx.closePath();
+  ctx.clip('evenodd');
+
+  // 以地图中心为源的径向渐变：近处透明、远处渐深再回一点（避免实黑）
+  const g = ctx.createRadialGradient(cx, cy, Math.min(w, h) * 0.18, cx, cy, far);
+  g.addColorStop(0, 'rgba(6,4,3,0.00)');
+  g.addColorStop(0.45, 'rgba(6,4,3,0.30)');
+  g.addColorStop(0.80, 'rgba(8,5,4,0.52)');
+  g.addColorStop(1, 'rgba(10,7,5,0.42)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+/**
+ * 地板光照带：沿地图对角线方向打一条柔和的高光，制造"火把斜照"的体积感。
+ * 纯色棋盘格最大的问题是平坦 —— 一条带方向的亮度梯度就能救回大半。
+ * 只在 detailFloor 时调用，alpha 极低不干扰格线。
+ */
+export function drawFloorLightSweep(
+  ctx: CanvasRenderingContext2D,
+  proj: Projector,
+  mapW: number,
+  mapH: number,
+) {
+  // 从地图左上角到右下角的投影线方向
+  const a = proj.p(0, 0);
+  const b = proj.p(mapW, mapH);
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // 沿 (dy, -dx) 法线方向偏移，形成斜向渐变
+  const nx = dy / len, ny = -dx / len;
+  const halfSpan = Math.max(mapW, mapH) * TILE_W * proj.scale * 0.55;
+  const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+
+  const g = ctx.createLinearGradient(
+    cx + nx * halfSpan, cy + ny * halfSpan,
+    cx - nx * halfSpan, cy - ny * halfSpan,
+  );
+  g.addColorStop(0, 'rgba(255,224,170,0.14)');
+  g.addColorStop(0.42, 'rgba(255,214,150,0.062)');
+  g.addColorStop(1, 'rgba(0,0,0,0.105)');
+
+  // 只在地图菱形内生效：用边界路径做 clip
+  const cN = proj.p(0, 0), cE = proj.p(mapW, 0), cS = proj.p(mapW, mapH), cW = proj.p(0, mapH);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(cN.x, cN.y); ctx.lineTo(cE.x, cE.y); ctx.lineTo(cS.x, cS.y); ctx.lineTo(cW.x, cW.y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.restore();
 }
 
 /** 单元格覆盖高亮（移动范围 / AoE） */

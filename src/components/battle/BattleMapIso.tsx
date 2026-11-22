@@ -27,6 +27,7 @@ import { getIconStage, resolveIconKind } from './emblem3d/stage';
 import {
   makeProjector, strHash, drawFloorTile, drawCellOverlay, drawCube, drawShadow,
   drawSphere, drawPyramid, drawLabel, drawRing, STAGE_PALETTE,
+  drawFloorGrit, drawStageGlow, drawStageVignette, drawFloorLightSweep, drawAbyss, drawTerrainDetail, drawSlabWall,
   plateLayout, drawNameplate, type NameplateInfo,
   drawSlash, drawFloatText, drawBadge, drawSpotlight, TILE_W, TILE_H,
   type IsoCam,
@@ -305,6 +306,12 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
       // 反 DoS：地面绘制跨度上限 240 格（恶意/异常坐标不冻结画布；合法地图 ≤ 60×60）
       maxX = Math.min(maxX, minX + 240); maxY = Math.min(maxY, minY + 240);
 
+      // ---- 环境层⑤⑥（必须在地面之前，否则会盖住地图）----
+      // ⑤ 边界外深渊：让地图"浮"在黑暗中而不是贴黑布
+      drawAbyss(ctx, proj, s.mapConfig.width, s.mapConfig.height, w, h);
+      // ⑥ 台面厚度：沿南/东两条前边画出地基侧壁 —— 平面贴图 → 立体石台的转折点
+      drawSlabWall(ctx, proj, s.mapConfig.width, s.mapConfig.height, Math.max(10, 22 * cam.scale));
+
       // ---- 地面 ----
       // 性能：逐格 drawFloorTile 在大地图上是主要开销（30×30 = 900 次/帧）。
       // 缩小到格子不足 3px 时视觉上已是纯色，跳过细格只画底色块。
@@ -319,10 +326,17 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
           }
         }
       } else {
+        // 环境层②：地面颗粒。只在地图内、且格子够大时才画（缩小后是噪点噪声）
+        const drawGrit = cellPx >= 22;
         for (let cx = minX; cx < maxX; cx++) {
           for (let cy = minY; cy < maxY; cy++) {
             const inBounds = cx >= 0 && cy >= 0 && cx < s.mapConfig.width && cy < s.mapConfig.height;
             drawFloorTile(ctx, proj, cx, cy, inBounds);
+            if (drawGrit && inBounds) {
+              drawFloorGrit(ctx, proj, cx, cy, 7);
+              // 地形装饰：碎石/裂纹/苔痕/接缝，让地面有信息密度
+              drawTerrainDetail(ctx, proj, cx, cy, 7);
+            }
           }
         }
       }
@@ -344,6 +358,15 @@ export function BattleMapIso({ compact = false, workspace = false, boundary, onI
         ctx.stroke();
         ctx.restore();
       }
+
+      // ---- 环境层（2026-11-23）----
+      // ④ 斜向光照带：纯色棋盘格最大的问题是平坦，一条带方向的亮度梯度能救回体积感
+      drawFloorLightSweep(ctx, proj, s.mapConfig.width, s.mapConfig.height);
+      // ① 战场光晕：中心暖光衰减，把视线拉到战场中央（在网格之上、单位之下）
+      // ③ 边界晕影：四边压暗收拢视线。用 canvas 尺寸而非地图 bbox，
+      //    这样地图很小（8x8）时画面四周也不会空得像贴纸。
+      drawStageGlow(ctx, w, h);
+      drawStageVignette(ctx, w, h, 0.85);
 
       // ---- 移动范围（选中单位） ----
       const selected = s.units.find(u => u.id === s.selectedId);
