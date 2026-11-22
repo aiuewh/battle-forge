@@ -12,6 +12,18 @@
   --font-sans-cjk: var(--font-sans-sc), var(--font-geist-sans), "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   /* 衬线标题栈：Noto Serif SC（next/font 注入） > 系统衬线回退 */
   --font-serif-cjk: var(--font-serif-sc), "Songti SC", "SimSun", Georgia, serif;
+  /* ── HUD 字号阶梯（4 档）──
+     此前散落了 8 个值，其中 10.5 / 11 / 11.5 三档肉眼不可辨却并存。
+     所有 HUD 文案只用这四档；徽章/角标用 xs，说明文字用 sm，正文用 md，标题用 lg。 */
+  --text-hud-xs: 10px;
+  --text-hud-sm: 11.5px;
+  --text-hud-md: 13px;
+  --text-hud-lg: 15px;
+  /* ── HUD 圆角阶梯（3 档）──
+     按钮/输入 6、卡片/菜单 9、面板/工作区 12。别再出现 7/8/10/11/14/16。 */
+  --radius-hud-sm: 6px;
+  --radius-hud-md: 9px;
+  --radius-hud-lg: 12px;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -251,8 +263,8 @@
 
 /* 战斗日志滚动条 */
 .log-scroll::-webkit-scrollbar { width: 8px; }
-.log-scroll::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.3); border-radius: 8px; }
-.log-scroll::-webkit-scrollbar-thumb { background: rgba(216, 178, 122, 0.25); border-radius: 8px; }
+.log-scroll::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.3); border-radius: var(--radius-hud-md); }
+.log-scroll::-webkit-scrollbar-thumb { background: rgba(216, 178, 122, 0.25); border-radius: var(--radius-hud-md); }
 .log-scroll::-webkit-scrollbar-thumb:hover { background: rgba(216, 178, 122, 0.45); }
 
 /* 状态 chip */
@@ -310,7 +322,17 @@
   --hud-ok-bg: #234b3e;
   --hud-ok-ink: #a9dfc8;
   --hud-track: #3a352c;
-  height: 720px;
+  /* 顶部浮层纵向阶梯：所有 absolute 浮层的 top 只从这里取，避免手写值互相压字。
+     66 = 舞台标题行下沿；110 = 先攻追踪条底沿；之后每条留 6-8px 呼吸。 */
+  --stage-top-title: 66px;
+  --stage-top-tracker: 66px;
+  --stage-top-tracker-end: 110px;
+  --stage-top-recent: 116px;
+  --stage-top-notice: 150px;
+  --stage-top-hint: 152px;
+  /* 高度跟随视口：1280x720 下也要能一眼看到底部动作栏。
+     减 130px 是顶栏（约 65）+ 上下留白；820px 上限避免超wide屏下拉成一条长带。 */
+  height: clamp(520px, calc(100dvh - 130px), 820px);
   width: 100%;
   position: relative;
   isolation: isolate;
@@ -320,17 +342,18 @@
   color: var(--hud-ink);
   font: 14px/1.45 var(--font-sans-cjk);
 }
-.battle-workspace-embedded { height: 650px; }
+/* 嵌入酒馆 iframe 时由宿主控制高度，保持固定值不被 dvh 撑破 */
+.battle-workspace-embedded { height: clamp(520px, calc(100dvh - 220px), 700px); }
 .stage-turn-preview { position: absolute; z-index: 20; top: 68px; left: 65px; right: 12px; display: flex; gap: 4px; overflow: hidden; }
 .stage-turn-preview button { min-height: 28px; font-size: 11px; padding: 3px 7px; flex-shrink: 0; background: rgba(26,21,16,.91); border-color: #6a5a41; }
 .turn-side { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #56bdaa; }
 .turn-side.side-2 { background: #eb8775; border-radius: 0; transform: rotate(45deg); }
 .turn-side.side-1 { background: #e2bd7b; }
 /* 常驻先攻追踪条（桌面档；≤800px 由媒体查询隐藏并回退到 stage-turn-preview） */
-.stage-tracker { position: absolute; z-index: 20; top: 66px; left: 65px; right: 12px; display: flex; align-items: center; gap: 5px; overflow-x: auto; overflow-y: hidden; padding: 2px; scrollbar-width: none; }
+.stage-tracker { position: absolute; z-index: 20; top: var(--stage-top-tracker); left: 65px; right: 12px; display: flex; align-items: center; gap: 5px; overflow-x: auto; overflow-y: hidden; padding: 2px; scrollbar-width: none; }
 .stage-tracker::-webkit-scrollbar { display: none; }
-.stage-tracker-round { flex: 0 0 auto; padding: 5px 10px; border-radius: 7px; background: #3b3023; border: 1px solid #79694e; color: var(--hud-gold); font-size: 12px; font-weight: 600; white-space: nowrap; }
-.stage-tracker-chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 9px; border-radius: 7px; background: rgba(26,21,16,.91); border: 1px solid #55503f; font-size: 12px; }
+.stage-tracker-round { flex: 0 0 auto; padding: 5px 10px; border-radius: var(--radius-hud-md); background: #3b3023; border: 1px solid #79694e; color: var(--hud-gold); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.stage-tracker-chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 9px; border-radius: var(--radius-hud-md); background: rgba(26,21,16,.91); border: 1px solid #55503f; font-size: 12px; }
 .stage-tracker-chip b { font-size: 13px; font-weight: 600; color: #b9b2a0; font-variant-numeric: tabular-nums; }
 .stage-tracker-chip > span { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--hud-ink); }
 .stage-tracker-chip .st-ico { font-size: 11px; line-height: 1; }
@@ -339,7 +362,7 @@
 .stage-tracker-chip.is-current b, .stage-tracker-chip.is-current > span { color: var(--hud-gold); }
 .stage-tracker-chip.is-down { opacity: .45; }
 /* Token 上下文快捷菜单：就近弹出在棋子旁 */
-.token-quick-menu { position: absolute; z-index: 50; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: rgba(36,37,34,.97); border: 1px solid #79694e; border-radius: 10px; box-shadow: 0 10px 28px #0009; }
+.token-quick-menu { position: absolute; z-index: 50; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: rgba(36,37,34,.97); border: 1px solid #79694e; border-radius: var(--radius-hud-md); box-shadow: 0 10px 28px #0009; }
 .token-quick-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 6px 6px; border-bottom: 1px solid #4a4436; margin-bottom: 3px; }
 .token-quick-menu-head strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .token-quick-menu-head button { min-height: 24px; min-width: 24px; width: 24px; padding: 0; border: 0; background: transparent; }
@@ -368,7 +391,7 @@
 .battle-workspace:fullscreen { width: 100vw; height: 100dvh; border-radius: 0; }
 .battle-map-fill { position: absolute !important; inset: 0; width: 100%; height: 100%; border: 0; border-radius: inherit; }
 .battle-workspace :where(button:not([data-slot="switch"])), .hud-menu button, .hud-dialog-button {
-  min-height: 40px; border: 1px solid var(--hud-border, #565b50); border-radius: 7px;
+  min-height: 40px; border: 1px solid var(--hud-border, #565b50); border-radius: var(--radius-hud-md);
   background: var(--hud-surface, #242522); color: var(--hud-ink, #f2f0e8); padding: 7px 10px;
   font-size: 13px; line-height: 1.4; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
@@ -376,26 +399,26 @@
 .battle-workspace button:not([data-slot="switch"]):disabled, .hud-menu button:disabled { opacity: .43; cursor: not-allowed; }
 .battle-workspace button:not([data-slot="switch"]):focus-visible, .hud-menu button:focus-visible { outline: 2px solid var(--hud-gold, #e5bd7d); outline-offset: 2px; }
 .stage-header { position: absolute; z-index: 25; top: 12px; left: 12px; right: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; pointer-events: none; }
-.stage-title { min-width: 0; max-width: 55%; display: flex; flex-direction: column; padding: 8px 12px; border-radius: 8px; background: rgba(36,37,34,.95); pointer-events: auto; }
+.stage-title { min-width: 0; max-width: 55%; display: flex; flex-direction: column; padding: 8px 12px; border-radius: var(--radius-hud-md); background: rgba(36,37,34,.95); pointer-events: auto; }
 .stage-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
 .stage-title span { color: var(--hud-muted); font-size: 12px; }
 .stage-header-buttons { display: flex; flex-shrink: 0; gap: 6px; pointer-events: auto; }
 .stage-map-tools { top: 112px; left: 12px; display: flex; flex-direction: column; gap: 6px; }
 .stage-map-tool-button { width: 40px; height: 40px; padding: 0 !important; }
-.stage-inspector { position: absolute; top: 112px; right: 12px; z-index: 25; width: min(240px, calc(100% - 80px)); background: var(--hud-surface); border: 1px solid var(--hud-border); border-radius: 9px; padding: 12px; display: flex; flex-direction: column; gap: 7px; }
+.stage-inspector { position: absolute; top: 112px; right: 12px; z-index: 25; width: min(240px, calc(100% - 80px)); background: var(--hud-surface); border: 1px solid var(--hud-border); border-radius: var(--radius-hud-md); padding: 12px; display: flex; flex-direction: column; gap: 7px; }
 .stage-inspector > div { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .stage-inspector > div button { min-height: 28px; width: 28px; padding: 0; border: 0; }
 .stage-inspector > span, .stage-inspector > small { color: var(--hud-muted); }
-.stage-recent { position: absolute; top: 105px; left: 65px; max-width: calc(100% - 340px); z-index: 15; min-height: 28px; padding: 4px 10px; border: 0; background: rgba(36,37,34,.9); color: var(--hud-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
-.stage-target-hint { position: absolute; z-index: 22; left: 65px; top: 125px; max-width: calc(100% - 90px); background: rgba(36,37,34,.92); color: #efcf9b; padding: 6px 12px; border-radius: 6px; font-size: 13px; pointer-events: none; }
-.stage-notice { position: absolute; z-index: 45; top: 115px; left: 65px; right: 12px; padding: 8px 12px; background: var(--hud-surface); border-radius: 7px; display: flex; align-items: center; gap: 10px; }
+.stage-recent { position: absolute; top: var(--stage-top-recent); left: 65px; max-width: calc(100% - 340px); z-index: 15; min-height: 28px; padding: 4px 10px; border: 0; background: rgba(36,37,34,.9); color: var(--hud-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.stage-target-hint { position: absolute; z-index: 22; left: 65px; top: var(--stage-top-hint); max-width: calc(100% - 90px); background: rgba(36,37,34,.92); color: #efcf9b; padding: 6px 12px; border-radius: 6px; font-size: 13px; pointer-events: none; }
+.stage-notice { position: absolute; z-index: 45; top: var(--stage-top-notice); left: 65px; right: 12px; padding: 8px 12px; background: var(--hud-surface); border-radius: var(--radius-hud-md); display: flex; align-items: center; gap: 10px; }
 .stage-notice button { margin-left: auto; }
-.stage-move-preview { top: 130px; left: 65px; max-width: calc(100% - 90px); }
-.stage-move-confirm { top: 125px; right: 12px; width: min(330px, calc(100% - 80px)); }
+.stage-move-preview { top: var(--stage-top-notice); left: 65px; max-width: calc(100% - 90px); }
+.stage-move-confirm { top: var(--stage-top-hint); right: 12px; width: min(330px, calc(100% - 80px)); }
 .stage-move-confirm button { min-height: 44px; }
 .token-hud { position: absolute; z-index: 35; flex-wrap: wrap; bottom: 14px; left: 16px; right: 16px; display: flex; align-items: center; gap: 16px; padding: 12px; border: 1px solid var(--hud-border); border-radius: 12px; background: var(--hud-surface); box-shadow: 0 8px 30px #0006; color: var(--hud-ink); }
 .hud-character { display: flex; align-items: center; gap: 9px; min-width: 180px; max-width: 245px; flex-wrap: wrap; }
-.hud-portrait { position: relative; height: 44px; width: 44px; min-width: 44px; padding: 0 !important; border-color: var(--hud-gold) !important; border-radius: 9px !important; overflow: hidden; background: #3b3023 !important; color: var(--hud-gold) !important; }
+.hud-portrait { position: relative; height: 44px; width: 44px; min-width: 44px; padding: 0 !important; border-color: var(--hud-gold) !important; border-radius: var(--radius-hud-md) !important; overflow: hidden; background: #3b3023 !important; color: var(--hud-gold) !important; }
 .hud-portrait span { font-size: 20px; }
 .hud-portrait img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .hud-character-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -426,13 +449,36 @@
 .hud-moving { display: flex; align-items: center; gap: 10px; }
 .hud-moving span { flex: 1; }
 .hud-wait { color: var(--hud-muted); display: flex; align-items: center; gap: 10px; }
-.hud-reaction, .hud-error { position: absolute; bottom: calc(100% + 10px); right: 0; width: min(450px, 100%); padding: 12px; border: 1px solid #7fb3a4; border-radius: 9px; background: var(--hud-surface); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.hud-reaction, .hud-error { position: absolute; bottom: calc(100% + 10px); right: 0; width: min(450px, 100%); padding: 12px; border: 1px solid #7fb3a4; border-radius: var(--radius-hud-md); background: var(--hud-surface); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .hud-reaction > span { font-size: 12px; color: var(--hud-muted); }
 .hud-reaction > div { display: flex; gap: 8px; width: 100%; }
 .hud-error { border-color: #be8275; color: #ffd1c4; justify-content: space-between; }
 .hud-error > span { flex: 1; }
 .hud-ready-button { min-height: 28px !important; font-size: 12px !important; padding: 3px 6px !important; }
-.hud-menu { z-index: 60; width: min(350px, var(--radix-popover-content-available-width)); max-height: min(330px, calc(100dvh - 150px), var(--radix-popover-content-available-height)); overflow-y: auto; overscroll-behavior: contain; background: rgba(36,37,34,.96); border: 1px solid #6b6154; border-radius: 10px; padding: 12px; color: var(--hud-ink); box-shadow: 0 12px 35px #0008; font: 14px/1.5 var(--font-sans-cjk); }
+/* max-height 从 330px 提到 60dvh：720p 下「其他动作」有 11 项、旧值只能显示 4 项，
+   玩家看不到「预备动作/逃离战场」会以为功能不存在。
+   底/顶 20px 渐隐提示"还有内容"，滚动条加宽到 10px 并提亮。 */
+.hud-menu {
+  z-index: 60;
+  width: min(350px, var(--radix-popover-content-available-width));
+  max-height: min(60dvh, 480px, calc(100dvh - 150px), var(--radix-popover-content-available-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: rgba(36,37,34,.96);
+  border: 1px solid #6b6154;
+  border-radius: var(--radius-hud-md, 9px);
+  padding: 12px;
+  color: var(--hud-ink);
+  box-shadow: 0 12px 35px #0008;
+  font: 14px/1.5 var(--font-sans-cjk);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 18px), transparent 100%);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(229,189,125,.35) transparent;
+}
+.hud-menu::-webkit-scrollbar { width: 10px; }
+.hud-menu::-webkit-scrollbar-thumb { background: rgba(229,189,125,.3); border-radius: 999px; }
+.hud-menu::-webkit-scrollbar-thumb:hover { background: rgba(229,189,125,.5); }
 .hud-menu-arrow { fill: #242522; }
 .hud-menu-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .hud-menu-heading button { width: 30px; min-height: 30px; padding: 0; border: 0; }
@@ -458,7 +504,7 @@
 .app-confirm { width: min(92vw, 420px); max-width: 420px; }
 .app-confirm-message { margin: 2px 0 14px; font-size: 13px; line-height: 1.65; color: var(--hud-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
 .app-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.app-confirm-actions button { min-height: 44px; min-width: 96px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--hud-border); background: var(--hud-raised); color: var(--hud-ink); font-size: 13px; cursor: pointer; }
+.app-confirm-actions button { min-height: 44px; min-width: 96px; padding: 8px 16px; border-radius: var(--radius-hud-md); border: 1px solid var(--hud-border); background: var(--hud-raised); color: var(--hud-ink); font-size: 13px; cursor: pointer; }
 .app-confirm-actions button:focus-visible { outline: 2px solid var(--hud-gold); outline-offset: 2px; }
 .app-confirm-actions .app-confirm-primary { border-color: var(--hud-gold); color: var(--hud-gold); }
 .app-confirm-actions .app-confirm-danger { border-color: #d5453c; color: #ff9c8a; background: rgba(120,20,10,.35); }
@@ -477,8 +523,8 @@
   .stage-map-tools { top: 124px; left: 8px; }
   .stage-map-tool-button { height: 42px; min-height: 42px !important; width: 38px; }
   .stage-inspector { top: 124px; right: 8px; }
-  .stage-recent { left: 55px; top: 108px; max-width: calc(100% - 70px); }
-  .stage-target-hint { left: 55px; top: 115px; max-width: calc(100% - 70px); font-size: 12px; }
+  .stage-recent { left: 55px; top: var(--stage-top-recent); max-width: calc(100% - 70px); }
+  .stage-target-hint { left: 55px; top: var(--stage-top-hint); max-width: calc(100% - 70px); font-size: 12px; }
   .stage-move-preview { top: 120px; left: 55px; }
   .stage-move-confirm { top: 115px; left: 55px; right: 8px; width: auto; }
   .token-hud { left: 8px; right: 8px; bottom: 8px; flex-direction: column; align-items: stretch; gap: 9px; padding: 10px; }
@@ -501,6 +547,21 @@
   .hud-menu-heading button { min-height: 30px; }
   .hud-ready-button { max-width: 65px; }
   .battle-dialog { padding: 20px 16px; }
+  /* 移动端：对话框必须吃满可用宽度。否则 7 个 Tab 横排会溢出视口，
+     375px 实测「规则/骰子」被推出屏幕。高度改按 dvh，避免地址栏收缩时跳动。 */
+  .battle-dialog {
+    width: calc(100vw - 16px);
+    max-width: none;
+    height: calc(100dvh - 32px);
+    max-height: none;
+  }
+  /* Tab 改 4 列网格比横向滚动更易发现（7 项正好两行） */
+  .battle-tool-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .battle-tool-tabs > button { width: 100%; min-width: 0; }
   .battle-dialog .settings-rule-row { flex-direction: column; }
   .battle-dialog .settings-rule-row > div { width: 100%; }
   .battle-dialog .settings-rule-row > div:last-child { justify-content: flex-start; }

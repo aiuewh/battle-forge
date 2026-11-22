@@ -64,9 +64,9 @@ export function EncounterBriefing({ compact = false }: { compact?: boolean }) {
             <div className="mb-1.5 flex items-center gap-1.5">
               <span className="text-[13px] font-bold text-red-100">{d.name}</span>
               {d.cr !== undefined && (
-                <span className="rounded border border-border/60 px-1 text-[11.5px] text-muted-foreground">CR {d.cr}</span>
+                <span className="rounded border border-border/60 px-1 text-[12px] text-muted-foreground">CR {d.cr}</span>
               )}
-              {d.size && <span className="text-[11.5px] text-muted-foreground">{d.size}</span>}
+              {d.size && <span className="text-[12px] text-muted-foreground">{d.size}</span>}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
               <span className="flex items-center gap-1"><Heart className="h-3 w-3 text-red-400/80" />{d.hp}</span>
@@ -90,12 +90,12 @@ export function EncounterBriefing({ compact = false }: { compact?: boolean }) {
                   </div>
                 ))}
                 {d.attacks.length > (compact ? 2 : 3) && (
-                  <span className="text-[11.5px] text-muted-foreground">…共 {d.attacks.length} 个动作</span>
+                  <span className="text-[12px] text-muted-foreground">…共 {d.attacks.length} 个动作</span>
                 )}
               </div>
             )}
             {d.aiProfile && (
-              <div className="mt-1.5 flex items-center gap-1 text-[10.5px] text-muted-foreground">
+              <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">
                 <Eye className="h-3 w-3" />
                 战术：{AI_PROFILE_META[d.aiProfile]?.label ?? d.aiProfile}
               </div>

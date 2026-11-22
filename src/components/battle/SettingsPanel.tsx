@@ -41,11 +41,11 @@ export function SettingsPanel() {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <Label className="text-xs font-medium text-foreground">{m.name}</Label>
-            <span className={`rounded-full border px-1.5 py-px text-[9px] leading-tight ${SOURCE_STYLE[m.source]}`}>
+            <span className={`rounded-full border px-1.5 py-px text-[10px] leading-tight ${SOURCE_STYLE[m.source]}`}>
               {HOUSE_RULE_SOURCE_LABEL[m.source]}
             </span>
           </div>
-          <p className="mt-0.5 text-[10.5px] leading-snug text-muted-foreground">{m.description}</p>
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{m.description}</p>
         </div>
         {m.choices ? (
           <div className="flex shrink-0 flex-wrap justify-end gap-1">
@@ -87,7 +87,7 @@ export function SettingsPanel() {
             ↺ 恢复 2024 官方默认
           </button>
         </div>
-        <p className="text-[10.5px] leading-snug text-muted-foreground">
+        <p className="text-[11px] leading-snug text-muted-foreground">
           每个模块独立生效、可任意组合；徽标标注出处（2024 RAW / 官方变体 / 官方草案 / 社区房规）。战斗进行中修改即时生效。
         </p>
         {groups.map(g => (
@@ -129,7 +129,7 @@ export function SettingsPanel() {
         </div>
         <ul className="flex flex-col gap-1">
           {RULES_2024_NOTES.map((n, i) => (
-            <li key={i} className="text-[10.5px] leading-snug text-muted-foreground">· {n}</li>
+            <li key={i} className="text-[11px] leading-snug text-muted-foreground">· {n}</li>
           ))}
         </ul>
       </div>

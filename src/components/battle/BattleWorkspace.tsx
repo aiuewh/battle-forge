@@ -28,7 +28,9 @@ export function BattleWorkspace({ compact = false }: { compact?: boolean }) {
   const store = useBattleStore();
   const ui = useActionUiStore();
   const [boundary, setBoundary] = useState<HTMLDivElement | null>(null);
-  const [menu, setMenu] = useState<'initiative' | 'more' | null>(null);
+  // 浮层互斥：统一走 actionUiStore.openMenu，避免与 ActionBar 的 HUD 菜单叠在一起
+  const menu = (ui.openMenu && ui.openMenu.startsWith('stage:') ? ui.openMenu.slice(6) : null) as 'initiative' | 'more' | null;
+  const setMenu = (v: 'initiative' | 'more' | null) => ui.setMenu(v ? 'stage:' + v : null);
   const [panel, setPanel] = useState<'log' | 'unit' | 'tools' | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [copyNote, setCopyNote] = useState('');

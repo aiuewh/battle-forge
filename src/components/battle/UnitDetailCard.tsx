@@ -16,6 +16,7 @@ import { CONDITIONS, PROTOCOL_STATUSES } from '@/lib/engine/conditions';
 import { ATTITUDE_META, ABILITY_META, DAMAGE_TYPE_META, AI_PROFILE_META } from '@/lib/engine/types';
 import type { DamageType, AbilityKey, AIProfile } from '@/lib/engine/types';
 import { abilityMod, formatMod, effectiveSpeed } from '@/lib/engine/rules';
+import { hpGradient } from './iso/isoScene';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -36,7 +37,7 @@ function Section({ title, summary, defaultOpen = false, children }: {
         type="button"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[11.5px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
+        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[12px] font-semibold text-muted-foreground transition-colors hover:text-foreground"
       >
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         {title}
@@ -52,6 +53,8 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
   const unit = store.units.find(u => u.id === unitId);
   const [amount, setAmount] = useState('');
   const [dmgType, setDmgType] = useState<DamageType | ''>('');
+  // 状态网格默认收起：战斗通常只挂 1-3 个状态，17 个全平铺会占掉首屏 1/4
+  const [statusOpen, setStatusOpen] = useState(false);
 
   if (!unit) {
     return (
@@ -106,7 +109,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
           <div className="hp-bar-track h-3.5 flex-1">
             <div className="hp-bar-fill" style={{
               width: `${hpRatio * 100}%`,
-              background: hpRatio > 0.5 ? 'linear-gradient(90deg,#4f9d43,#6dbf5e)' : hpRatio > 0.25 ? 'linear-gradient(90deg,#c9973a,#e0b040)' : 'linear-gradient(90deg,#b03a3a,#e05252)',
+              background: hpGradient(hpRatio),
             }} />
           </div>
           <span className="text-sm font-bold tabular-nums">
@@ -141,7 +144,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
 
         {/* 快捷档位 + 伤害类型（只在扣血时用得上，所以并到这一行） */}
         <div className="flex flex-wrap items-center gap-1">
-          <span className="text-[10.5px] text-muted-foreground">快捷</span>
+          <span className="text-[11px] text-muted-foreground">快捷</span>
           {QUICK_AMOUNTS.map(n => (
             <button key={n} onClick={() => setAmount(String((amountNum || 0) + n))}
               className="rounded border border-border/50 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground">
@@ -150,7 +153,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
           ))}
           <button onClick={() => setAmount('')} className="rounded px-1 py-0.5 text-[11px] text-muted-foreground hover:text-foreground">清空</button>
           <div className="grow" />
-          <label className="flex items-center gap-1 text-[10.5px] text-muted-foreground">
+          <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
             伤害类型
             <select
               className="rounded border border-border/50 bg-black/40 px-1 py-0.5 text-[11px] text-foreground"
@@ -186,7 +189,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
                     aria-label={`消耗 1 点${res.name}`}
                     className="text-[13px] leading-none text-muted-foreground transition-colors hover:text-red-300 disabled:opacity-40 disabled:hover:text-muted-foreground"
                   >−</button>
-                  <span className="text-[11.5px] font-medium text-foreground/90">{res.name}</span>
+                  <span className="text-[12px] font-medium text-foreground/90">{res.name}</span>
                   {/* 点数用圆点表示余量；max 过大（>12）时退回数字，避免撑爆一行 */}
                   {res.max <= 12 ? (
                     <span className="flex gap-0.5" aria-hidden>
@@ -213,14 +216,14 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
         )}
 
         {unit.knockedOut && (
-          <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 p-2 text-[11.5px]">
+          <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 p-2 text-[12px]">
             <span className="flex-1">留活口 · 1 HP 昏迷 · 已开始短休</span>
             <Button size="sm" variant="secondary" className="h-7 text-[11px]" onClick={() => store.stabilizeUnit(unit.id)}>急救唤醒</Button>
           </div>
         )}
 
         {unit.effects?.length ? (
-          <div className="rounded-lg border border-border/40 p-2 text-[11.5px]">
+          <div className="rounded-lg border border-border/40 p-2 text-[12px]">
             <strong>持续效果</strong>
             {unit.effects.map(effect => (
               <p key={effect.id} className="text-muted-foreground">
@@ -268,58 +271,95 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
         )}
       </div>
 
-      {/* ── 状态：战斗中高频，保持展开但压缩成 chip 流 ── */}
+      {/* ── 状态：默认只显示「已激活」的，点＋状态才展开全部 17 个 ──
+          战斗中真正挂上的通常只有 1-3 个，把整张表平铺会让扣血/回血往下挤。 */}
       <div>
         <div className="mb-1 flex items-center gap-1">
           <span className="text-[11px] font-semibold text-muted-foreground">状态</span>
-          {unit.concentration && <span className="status-chip" style={{ borderColor: 'rgba(94,176,201,.8)', color: '#5eb0c9', background: 'rgba(94,176,201,.15)' }}>专注 · {unit.concentration}</span>}
-          {unit.statuses.length === 0 && !unit.concentration && <span className="text-[10.5px] text-muted-foreground/60">无</span>}
-        </div>
-        <div className="flex flex-wrap gap-1">
-          {PROTOCOL_STATUSES.map(s => {
+          {unit.concentration && (
+            <span className="status-chip" style={{ borderColor: 'rgba(94,176,201,.8)', color: '#5eb0c9', background: 'rgba(94,176,201,.15)' }}>
+              专注 · {unit.concentration}
+            </span>
+          )}
+          {/* 已激活的常规状态：常驻显示 */}
+          {PROTOCOL_STATUSES.filter(s => unit.statuses.includes(s)).map(s => {
             const def = CONDITIONS[s];
-            const active = unit.statuses.includes(s);
             return (
-              <button
-                key={s}
-                onClick={() => store.toggleStatus(unit.id, s)}
-                title={def.brief}
-                aria-pressed={active}
-                className={cn('status-chip transition-all', active ? 'scale-105 shadow-md' : 'opacity-45 hover:opacity-80')}
-                style={{
-                  borderColor: def.color + (active ? 'cc' : '44'),
-                  color: def.color,
-                  background: active ? def.color + '26' : 'rgba(0,0,0,0.35)',
-                }}
-              >
+              <button key={s} onClick={() => store.toggleStatus(unit.id, s)} title={def.brief} aria-pressed
+                className="status-chip scale-105 shadow-md transition-all"
+                style={{ borderColor: def.color + 'cc', color: def.color, background: def.color + '26' }}>
                 {def.icon} {def.name}
               </button>
             );
           })}
-          {['concentration', 'flying', 'blessed'].map(s => {
+          {['flying', 'blessed'].filter(s => unit.statuses.includes(s)).map(s => {
             const def = CONDITIONS[s];
-            const active = unit.statuses.includes(s) || (s === 'concentration' && !!unit.concentration);
             return (
-              <button
-                key={s}
-                onClick={() => {
-                  if (s === 'concentration') store.setConcentration(unit.id, active ? null : '法术');
-                  else store.toggleStatus(unit.id, s);
-                }}
-                title={def.brief}
-                aria-pressed={active}
-                className={cn('status-chip transition-all', active ? 'scale-105' : 'opacity-45 hover:opacity-80')}
-                style={{
-                  borderColor: def.color + (active ? 'cc' : '44'),
-                  color: def.color,
-                  background: active ? def.color + '26' : 'rgba(0,0,0,0.35)',
-                }}
-              >
+              <button key={s} onClick={() => store.toggleStatus(unit.id, s)} title={def.brief} aria-pressed
+                className="status-chip scale-105 transition-all"
+                style={{ borderColor: def.color + 'cc', color: def.color, background: def.color + '26' }}>
                 {def.icon} {def.name}
               </button>
             );
           })}
+          {unit.statuses.length === 0 && !unit.concentration && (
+            <span className="text-[11px] text-muted-foreground/60">无</span>
+          )}
+          <button
+            onClick={() => setStatusOpen(v => !v)}
+            aria-expanded={statusOpen}
+            className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+          >
+            {statusOpen ? '收起' : '＋状态'}
+          </button>
         </div>
+        {statusOpen && (
+          <div className="flex flex-wrap gap-1 rounded-lg border border-border/40 bg-black/20 p-1.5">
+            {PROTOCOL_STATUSES.map(s => {
+              const def = CONDITIONS[s];
+              const active = unit.statuses.includes(s);
+              return (
+                <button
+                  key={s}
+                  onClick={() => store.toggleStatus(unit.id, s)}
+                  title={def.brief}
+                  aria-pressed={active}
+                  className={cn('status-chip transition-all', active ? 'scale-105 shadow-md' : 'opacity-55 hover:opacity-90')}
+                  style={{
+                    borderColor: def.color + (active ? 'cc' : '44'),
+                    color: def.color,
+                    background: active ? def.color + '26' : 'rgba(0,0,0,0.35)',
+                  }}
+                >
+                  {def.icon} {def.name}
+                </button>
+              );
+            })}
+            {['concentration', 'flying', 'blessed'].map(s => {
+              const def = CONDITIONS[s];
+              const active = unit.statuses.includes(s) || (s === 'concentration' && !!unit.concentration);
+              return (
+                <button
+                  key={s}
+                  onClick={() => {
+                    if (s === 'concentration') store.setConcentration(unit.id, active ? null : '法术');
+                    else store.toggleStatus(unit.id, s);
+                  }}
+                  title={def.brief}
+                  aria-pressed={active}
+                  className={cn('status-chip transition-all', active ? 'scale-105' : 'opacity-55 hover:opacity-90')}
+                  style={{
+                    borderColor: def.color + (active ? 'cc' : '44'),
+                    color: def.color,
+                    background: active ? def.color + '26' : 'rgba(0,0,0,0.35)',
+                  }}
+                >
+                  {def.icon} {def.name}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* ── 以下为低频区：默认折叠 ── */}
@@ -452,7 +492,7 @@ export function UnitDetailCard({ unitId, compact = false }: { unitId: string | n
           <SpellSlotEditor unitId={unit.id} />
           {unit.resources && unit.resources.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[10.5px] text-muted-foreground">休息恢复</span>
+              <span className="text-[11px] text-muted-foreground">休息恢复</span>
               <Button size="sm" variant="ghost" className="h-6 text-[11px]"
                 onClick={() => { store.restoreResourcesByRule(unit.id, 'short'); }}>
                 短休
@@ -530,7 +570,7 @@ function DamageAdjuster({ unit }: { unit: ReturnType<typeof useBattleStore.getSt
           const on = dt === type;
           return (
             <button key={dt} onClick={() => setType(dt)} aria-pressed={on}
-              className={cn('rounded px-1.5 py-0.5 text-[11.5px] transition-colors',
+              className={cn('rounded px-1.5 py-0.5 text-[12px] transition-colors',
                 on ? 'bg-primary/25 text-foreground ring-1 ring-primary/60' : 'text-muted-foreground hover:text-foreground')}>
               {DAMAGE_TYPE_META[dt].icon} {DAMAGE_TYPE_META[dt].name}
             </button>
@@ -542,14 +582,14 @@ function DamageAdjuster({ unit }: { unit: ReturnType<typeof useBattleStore.getSt
           const active = lists[key].includes(type);
           return (
             <button key={key} onClick={() => toggle(key)} aria-pressed={active}
-              className={cn('rounded border px-2 py-1 text-[11.5px] transition-all',
+              className={cn('rounded border px-2 py-1 text-[12px] transition-all',
                 active ? `${activeCls} border-transparent ring-1` : 'border-border/50 text-muted-foreground hover:text-foreground')}>
               {label}
             </button>
           );
         })}
       </div>
-      <p className="text-[10.5px] text-muted-foreground/70">
+      <p className="text-[11px] text-muted-foreground/70">
         当前对「{DAMAGE_TYPE_META[type].name}」：{
           [lists.resistances.includes(type) && '抗性',
            lists.immunities.includes(type) && '免疫',

@@ -26,7 +26,9 @@ export function ActionBar({ compact = false, boundary, onInspect }: {
 }) {
   const store = useBattleStore();
   const ui = useActionUiStore();
-  const [menu, setMenu] = useState<Menu>(null);
+  // 与 BattleWorkspace 的战场菜单互斥：共用 actionUiStore.openMenu，前缀 hud: 区分来源
+  const menu = (ui.openMenu && ui.openMenu.startsWith('hud:') ? ui.openMenu.slice(4) : null) as Menu;
+  const setMenu = (v: Menu) => ui.setMenu(v ? 'hud:' + v : null);
   const [spellLevel, setSpellLevel] = useState<number | null>(null);
   const [nonLethal, setNonLethal] = useState(false);
   const [generic, setGeneric] = useState<GenericCastRequest | null>(null);

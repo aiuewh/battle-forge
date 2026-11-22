@@ -4,6 +4,7 @@
  * 先攻条 + 回合控制：按先攻排序、当前行动者高亮、HP 条、状态 chip
  */
 import React from 'react';
+import { hpGradient } from './iso/isoScene';
 import { useBattleStore } from '@/store/battleStore';
 import { ATTITUDE_META } from '@/lib/engine/types';
 import { CONDITIONS } from '@/lib/engine/conditions';
@@ -95,7 +96,7 @@ export function InitiativeBar({ compact = false, showControls = true }: { compac
                     <Dices className="h-2.5 w-2.5 text-amber-300/80" />
                   )}
                 </span>
-                <span className="text-[8px] leading-none text-muted-foreground">先攻</span>
+                <span className="text-[10px] leading-none text-muted-foreground">先攻</span>
               </div>
               {/* 名字 + HP */}
               <div className="min-w-0 flex-1">
@@ -116,14 +117,7 @@ export function InitiativeBar({ compact = false, showControls = true }: { compac
                   <div className="hp-bar-track h-2 flex-1">
                     <div
                       className="hp-bar-fill"
-                      style={{
-                        width: `${hpRatio * 100}%`,
-                        background: hpRatio > 0.5
-                          ? 'linear-gradient(90deg,#4f9d43,#6dbf5e)'
-                          : hpRatio > 0.25
-                            ? 'linear-gradient(90deg,#c9973a,#e0b040)'
-                            : 'linear-gradient(90deg,#b03a3a,#e05252)',
-                      }}
+                      style={{ width: `${hpRatio * 100}%`, background: hpGradient(hpRatio) }}
                     />
                   </div>
                   <span className="w-16 text-right text-[11px] tabular-nums text-muted-foreground">
@@ -173,7 +167,7 @@ export function InitiativeBar({ compact = false, showControls = true }: { compac
               {/* AC 徽章 */}
               <div className="flex h-8 w-8 shrink-0 flex-col items-center justify-center rounded-full border border-border/50 bg-black/30" title={`AC ${u.ac}`}>
                 <span className="text-[11px] font-bold leading-none">{u.ac}</span>
-                <span className="text-[7px] leading-none text-muted-foreground">AC</span>
+                <span className="text-[10px] leading-none text-muted-foreground">AC</span>
               </div>
             </div>
           );

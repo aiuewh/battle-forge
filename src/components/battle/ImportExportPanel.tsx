@@ -131,7 +131,7 @@ export function ExportPanel() {
           {copied === 'result' ? <Check className="h-3.5 w-3.5 text-green-400" /> : <ClipboardList className="h-3.5 w-3.5" />}
           复制战报
         </Button>
-        <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
           点「战报送回对话」会直接把战报送进酒馆对话并触发 DM 回复；无法回传时（独立打开页面 / 旧壳）自动降级为复制。
           战斗中/结束后均可：进行中 → DM 只渲染氛围不推进战斗；已结束 → DM 按战报数值叙述战后（伤亡/战利品/经验）并应用建议的变量补丁。数值以前端结算为唯一事实。
         </p>

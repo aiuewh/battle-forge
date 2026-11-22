@@ -179,7 +179,7 @@ export function EnemyDesigner() {
               </div>
               <div className="grid grid-cols-3 gap-1.5 md:grid-cols-6">
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] text-muted-foreground">类型</span>
+                  <span className="text-[10px] text-muted-foreground">类型</span>
                   <select className="h-7 rounded border border-border/50 bg-black/30 px-1 text-[11px] focus:outline-none"
                     value={a.kind} onChange={e => patchAbility(idx, { kind: e.target.value as AiAbilityKind })}>
                     {(Object.keys(AI_ABILITY_KIND_META) as AiAbilityKind[]).map(k => (
@@ -188,29 +188,29 @@ export function EnemyDesigner() {
                   </select>
                 </label>
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] text-muted-foreground">命中加值</span>
+                  <span className="text-[10px] text-muted-foreground">命中加值</span>
                   <Input className="h-7 border-border/50 bg-black/30 text-center text-[11px]" type="number"
                     value={a.attackBonus ?? 0} onChange={e => patchAbility(idx, { attackBonus: parseInt(e.target.value, 10) || 0 })} />
                 </label>
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] text-muted-foreground">伤害/治疗</span>
+                  <span className="text-[10px] text-muted-foreground">伤害/治疗</span>
                   <Input className="h-7 border-border/50 bg-black/30 text-center font-mono text-[11px]" placeholder="1d6+2"
                     value={a.dice} onChange={e => patchAbility(idx, { dice: e.target.value })} />
                 </label>
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] text-muted-foreground">伤害类型</span>
+                  <span className="text-[10px] text-muted-foreground">伤害类型</span>
                   <select className="h-7 rounded border border-border/50 bg-black/30 px-1 text-[11px] focus:outline-none"
                     value={a.damageType ?? 'slashing'} onChange={e => patchAbility(idx, { damageType: e.target.value as DamageType })}>
                     {ALL_DAMAGE_TYPES.map(t => <option key={t} value={t}>{DAMAGE_TYPE_META[t].name}</option>)}
                   </select>
                 </label>
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] text-muted-foreground">射程(尺)</span>
+                  <span className="text-[10px] text-muted-foreground">射程(尺)</span>
                   <Input className="h-7 border-border/50 bg-black/30 text-center text-[11px]" type="number"
                     value={a.range} onChange={e => patchAbility(idx, { range: parseInt(e.target.value, 10) || 5 })} />
                 </label>
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[9px] text-muted-foreground">多重攻击</span>
+                  <span className="text-[10px] text-muted-foreground">多重攻击</span>
                   <Input className="h-7 border-border/50 bg-black/30 text-center text-[11px]" type="number" min={1}
                     value={a.multiAttack ?? 1} onChange={e => patchAbility(idx, { multiAttack: Math.max(1, parseInt(e.target.value, 10) || 1) })} />
                 </label>
@@ -218,14 +218,14 @@ export function EnemyDesigner() {
               {['save-aoe', 'save'].includes(a.kind) && (
                 <div className="mt-1.5 grid grid-cols-3 gap-1.5 md:grid-cols-5">
                   <label className="flex flex-col gap-0.5">
-                    <span className="text-[9px] text-muted-foreground">豁免属性</span>
+                    <span className="text-[10px] text-muted-foreground">豁免属性</span>
                     <select className="h-7 rounded border border-border/50 bg-black/30 px-1 text-[11px] focus:outline-none"
                       value={a.saveAbility ?? 'dex'} onChange={e => patchAbility(idx, { saveAbility: e.target.value as typeof SAVE_KEYS[number] })}>
                       {SAVE_KEYS.map(k => <option key={k} value={k}>{ABILITY_NAMES[k]}</option>)}
                     </select>
                   </label>
                   <label className="flex flex-col gap-0.5">
-                    <span className="text-[9px] text-muted-foreground">DC</span>
+                    <span className="text-[10px] text-muted-foreground">DC</span>
                     <Input className="h-7 border-border/50 bg-black/30 text-center text-[11px]" type="number"
                       value={a.saveDc ?? 13} onChange={e => patchAbility(idx, { saveDc: parseInt(e.target.value, 10) || 13 })} />
                   </label>
@@ -237,14 +237,14 @@ export function EnemyDesigner() {
                   {a.kind === 'save-aoe' && (
                     <>
                       <label className="flex flex-col gap-0.5">
-                        <span className="text-[9px] text-muted-foreground">AoE 形状</span>
+                        <span className="text-[10px] text-muted-foreground">AoE 形状</span>
                         <select className="h-7 rounded border border-border/50 bg-black/30 px-1 text-[11px] focus:outline-none"
                           value={a.aoe?.kind ?? 'sphere'} onChange={e => patchAbility(idx, { aoe: { kind: e.target.value as typeof AOE_KINDS[number], size: a.aoe?.size ?? 20 } })}>
                           {AOE_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
                         </select>
                       </label>
                       <label className="flex flex-col gap-0.5">
-                        <span className="text-[9px] text-muted-foreground">AoE 尺寸(尺)</span>
+                        <span className="text-[10px] text-muted-foreground">AoE 尺寸(尺)</span>
                         <Input className="h-7 border-border/50 bg-black/30 text-center text-[11px]" type="number"
                           value={a.aoe?.size ?? 20} onChange={e => patchAbility(idx, { aoe: { kind: a.aoe?.kind ?? 'sphere', size: parseInt(e.target.value, 10) || 20 } })} />
                       </label>

@@ -218,7 +218,7 @@ export function SpellCastDialog({
             </label>
           )}
           {kind === 'save-aoe' && (
-            <p className="text-[11.5px] text-muted-foreground">配置完成后，在地图选择落点并预览将波及的单位。</p>
+            <p className="text-[12px] text-muted-foreground">配置完成后，在地图选择落点并预览将波及的单位。</p>
           )}
 
           <label className="flex items-center gap-2">

@@ -51,10 +51,23 @@ export const STAGE_PALETTE = {
   plateBorderSelected: 'rgba(255,246,224,0.82)',
 } as const;
 
-/** HP 比例 → 色梯（画布名牌与 DOM 血条共用） */
+/**
+ * HP 比例 → 色梯（画布名牌与 DOM 血条共用）。
+ * 单一来源：所有 HP 颜色都必须经过这里，别在组件里硬编码 hex ——
+ * 此前 InitiativeBar / UnitDetailCard 各自写了一套 #c9973a/#b03a3a，
+ * 与画布的 #d3a13c/#d5453c 不一致，同一条血条在地图和列表里颜色不同。
+ */
 export function hpColor(ratio: number): string {
   const r = Math.max(0, Math.min(1, ratio));
   return r > 0.5 ? STAGE_PALETTE.hpHigh : r > 0.25 ? STAGE_PALETTE.hpMid : STAGE_PALETTE.hpLow;
+}
+
+/** HP 比例 → 渐变（DOM 进度条用）。终点色比主色亮一档，保持与画布同一色相。 */
+export function hpGradient(ratio: number): string {
+  const r = Math.max(0, Math.min(1, ratio));
+  if (r > 0.5) return `linear-gradient(90deg, ${STAGE_PALETTE.hpHigh}, #6dbf5e)`;
+  if (r > 0.25) return `linear-gradient(90deg, ${STAGE_PALETTE.hpMid}, #e0b040)`;
+  return `linear-gradient(90deg, ${STAGE_PALETTE.hpLow}, #e05252)`;
 }
 
 /** canvas 内中文字体栈：Noto Sans SC 未内嵌时按平台回退，避免掉到衬线默认 */
